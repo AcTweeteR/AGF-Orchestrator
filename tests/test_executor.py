@@ -1,0 +1,224 @@
+import subprocess
+from dataclasses import replace
+
+import pytest
+
+from agf_orchestrator.adapters.codex import CodexAdapter
+from agf_orchestrator.execution_models import ExecutionStatus
+from agf_orchestrator.executor import Executor, write_execution_result
+from agf_orchestrator.models import ExecutionPlan, PlanStatus, RepositoryContext, Task
+
+
+def git(path, *args):
+    return subprocess.run(
+        ["git", "-C", str(path), *args], check=True, capture_output=True, text=True
+    )
+
+
+def init_repo(tmp_path, branch="feature"):
+    git(tmp_path, "init", "-b", branch)
+    git(tmp_path, "config", "user.email", "test@example.com")
+    git(tmp_path, "config", "user.name", "Test")
+    (tmp_path / "allowed.txt").write_text("before\n")
+    git(tmp_path, "add", "allowed.txt")
+    git(tmp_path, "commit", "-m", "initial")
+    git(tmp_path, "remote", "add", "origin", "https://example.invalid/repo.git")
+
+
+def make_plan(repo, *, branch="feature", task=None, architecture=None, status=PlanStatus.READY):
+    task = task or Task(
+        "task-001", "Update allowed file", "Update allowed.txt", ["allowed.txt"], [],
+        ["allowed file contains the new value"], ["git diff --check -- allowed.txt"],
+        "low", "Implementer", PlanStatus.READY,
+    )
+    repository = RepositoryContext(
+        str(repo), branch, "https://example.invalid/repo.git", True, "abc123"
+    )
+    plan = ExecutionPlan(
+        "1.0", "plan-test", "1970-01-01T00:00:00Z", repository, "Update the file",
+        {"in": ["allowed.txt"], "out": []}, [], [],
+        architecture or {"status": "approved", "requires_architect": False}, [task], [],
+        [[task.task_id]], ["Reviewer"], ["task outcome"], [], status,
+    )
+    plan.validate()
+    return plan
+
+
+def fake_codex(
+    tmp_path,
+    *,
+    body=None,
+    exit_code=0,
+):
+    if body is None:
+        body = (
+            "printf 'done\\n'\nprintf 'API_KEY=sk-test-secret-value\\n' >&2\n"
+            "printf 'updated\\n' > allowed.txt"
+        )
+    fake = tmp_path.parent / f"fake-codex-{tmp_path.name}"
+    fake.write_text(f"#!/bin/sh\n{body}\nexit {exit_code}\n")
+    fake.chmod(0o755)
+    return fake
+
+
+def test_dry_run_does_not_invoke_fake_executable(tmp_path):
+    init_repo(tmp_path)
+    plan = make_plan(tmp_path)
+    result = Executor(CodexAdapter(executable=str(tmp_path / "does-not-exist"))).execute(
+        plan, "task-001", str(tmp_path)
+    )
+    assert result.status is ExecutionStatus.DRY_RUN
+    assert result.exit_code is None
+
+
+def test_fake_codex_success_is_completed_with_scoped_change(tmp_path):
+    init_repo(tmp_path)
+    result = Executor(CodexAdapter(str(fake_codex(tmp_path)), timeout=2)).execute(
+        make_plan(tmp_path), "task-001", str(tmp_path), dry_run=False
+    )
+    assert result.status is ExecutionStatus.COMPLETED
+    assert result.files_changed == ["allowed.txt"]
+    assert result.exit_code == 0
+    assert "sk-test-secret-value" not in result.stderr_summary
+
+
+def test_unauthorized_change_is_rejected(tmp_path):
+    init_repo(tmp_path)
+    fake = fake_codex(
+        tmp_path,
+        body="printf 'updated\\n' > allowed.txt\nprintf 'bad\\n' > unauthorized.txt",
+    )
+    result = Executor(CodexAdapter(str(fake), timeout=2)).execute(
+        make_plan(tmp_path), "task-001", str(tmp_path), dry_run=False
+    )
+    assert result.status is ExecutionStatus.FAILED
+    assert any("unauthorized" in issue for issue in result.blocking_issues)
+
+
+def test_fake_codex_failure_is_reported(tmp_path):
+    init_repo(tmp_path)
+    result = Executor(CodexAdapter(str(fake_codex(tmp_path, exit_code=7)), timeout=2)).execute(
+        make_plan(tmp_path), "task-001", str(tmp_path), dry_run=False
+    )
+    assert result.status is ExecutionStatus.FAILED
+    assert result.exit_code == 7
+
+
+def test_timeout_is_reported(tmp_path):
+    init_repo(tmp_path)
+    fake = fake_codex(tmp_path, body="sleep 1")
+    result = Executor(CodexAdapter(str(fake), timeout=0.01)).execute(
+        make_plan(tmp_path), "task-001", str(tmp_path), dry_run=False
+    )
+    assert result.status is ExecutionStatus.FAILED
+    assert result.exit_code is None
+    assert "timeout" in result.evidence[1]
+
+
+def test_failed_validation_prevents_completed(tmp_path):
+    init_repo(tmp_path)
+    task = replace(make_plan(tmp_path).tasks[0], validation_commands=["false"])
+    result = Executor(CodexAdapter(str(fake_codex(tmp_path)), timeout=2)).execute(
+        make_plan(tmp_path, task=task), "task-001", str(tmp_path), dry_run=False
+    )
+    assert result.status is ExecutionStatus.FAILED
+    assert any("validations failed" in issue for issue in result.blocking_issues)
+
+
+@pytest.mark.parametrize(
+    "branch, expected",
+    [("main", "main or master"), ("master", "main or master")],
+)
+def test_default_branches_are_blocked(tmp_path, branch, expected):
+    init_repo(tmp_path, branch=branch)
+    result = Executor().execute(
+        make_plan(tmp_path, branch=branch), "task-001", str(tmp_path), dry_run=False
+    )
+    assert result.status is ExecutionStatus.BLOCKED
+    assert expected in result.blocking_issues[0]
+
+
+def test_detached_head_is_blocked(tmp_path):
+    init_repo(tmp_path)
+    git(tmp_path, "checkout", "--detach")
+    result = Executor().execute(
+        make_plan(tmp_path, branch="feature"), "task-001", str(tmp_path), dry_run=False
+    )
+    assert result.status is ExecutionStatus.BLOCKED
+    assert "detached HEAD" in result.blocking_issues[0]
+
+
+def test_dirty_repository_is_blocked(tmp_path):
+    init_repo(tmp_path)
+    (tmp_path / "allowed.txt").write_text("dirty\n")
+    result = Executor().execute(make_plan(tmp_path), "task-001", str(tmp_path), dry_run=False)
+    assert result.status is ExecutionStatus.BLOCKED
+    assert "dirty" in result.blocking_issues[0]
+
+
+def test_missing_origin_is_blocked(tmp_path):
+    init_repo(tmp_path)
+    git(tmp_path, "remote", "remove", "origin")
+    result = Executor().execute(make_plan(tmp_path), "task-001", str(tmp_path), dry_run=False)
+    assert result.status is ExecutionStatus.BLOCKED
+    assert "origin" in result.blocking_issues[0]
+
+
+def test_human_required_plan_is_blocked(tmp_path):
+    init_repo(tmp_path)
+    plan = make_plan(tmp_path, status=PlanStatus.HUMAN_REQUIRED)
+    result = Executor().execute(plan, "task-001", str(tmp_path))
+    assert result.status is ExecutionStatus.BLOCKED
+
+
+def test_nonexistent_task_is_blocked(tmp_path):
+    init_repo(tmp_path)
+    result = Executor().execute(make_plan(tmp_path), "missing", str(tmp_path))
+    assert result.status is ExecutionStatus.BLOCKED
+    assert "does not exist" in result.blocking_issues[0]
+
+
+@pytest.mark.parametrize(
+    "task_change, plan_change, expected",
+    [
+        (lambda task: replace(task, allowed_paths=[]), lambda plan: plan, "allowed_paths"),
+        (
+            lambda task: task,
+            lambda plan: replace(plan, human_intervention=["clarify"]),
+            "human intervention",
+        ),
+        (
+            lambda task: task,
+            lambda plan: replace(plan, architecture_impact={"status": "pending"}),
+            "architecture",
+        ),
+    ],
+)
+def test_live_safety_gates_block(task_change, plan_change, expected, tmp_path):
+    init_repo(tmp_path)
+    base = make_plan(tmp_path)
+    plan = plan_change(replace(base, tasks=[task_change(base.tasks[0])]))
+    result = Executor().execute(plan, "task-001", str(tmp_path), dry_run=False)
+    assert result.status is ExecutionStatus.BLOCKED
+    assert expected in result.blocking_issues[0]
+
+
+def test_report_serialization_failure_leaves_no_partial_file(tmp_path, monkeypatch):
+    from agf_orchestrator import executor as executor_module
+
+    output = tmp_path / "execution.json"
+    result = ExecutionResultForTest()
+
+    def fail_replace(source, target):
+        raise OSError("serialization replacement failed")
+
+    monkeypatch.setattr(executor_module.os, "replace", fail_replace)
+    with pytest.raises(OSError):
+        write_execution_result(result, output)
+    assert not output.exists()
+    assert not list(tmp_path.glob(".execution.json.*.tmp"))
+
+
+class ExecutionResultForTest:
+    def to_dict(self):
+        return {"status": "DRY_RUN"}

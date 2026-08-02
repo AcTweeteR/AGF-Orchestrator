@@ -48,6 +48,19 @@ The command performs repository preflight, never modifies the target repository,
 
 Preflight requires a resolvable named branch, an `origin` remote, and a resolvable `HEAD`. Missing repository context is an explicit non-zero error. When `--allow-dirty` is used, the plan preserves `clean: false` and records the dirty-state risk and required evidence.
 
+Execute one approved task with a dry-run by default:
+
+```text
+agf-orchestrator execute \
+  --plan /path/to/plan.json \
+  --task task-001 \
+  --repository /path/to/project \
+  --adapter codex \
+  --dry-run
+```
+
+Live execution requires both `--execute` and `--confirm-execution`, plus a clean named non-default branch, approved architecture, allowed paths, acceptance criteria, validations, and no unresolved intervention. The Codex adapter invokes the locally discovered `codex exec` command without shell interpretation, enforces a timeout, verifies changed-file scope, runs only task-declared validations, and never commits or pushes.
+
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing changes. Governance concerns are recorded as architecture decision records where appropriate.
