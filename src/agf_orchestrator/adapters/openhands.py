@@ -21,6 +21,7 @@ OPENHANDS_SUCCESS_STATES = {"completed", "complete", "finished", "success", "suc
 OPENHANDS_FAILURE_STATES = {"failed", "failure", "error", "rejected", "cancelled", "canceled"}
 OPENHANDS_INTERACTION_STATES = {
     "awaiting_confirmation",
+    "waiting_for_confirmation",
     "awaiting_input",
     "confirmation_required",
     "interaction_required",
@@ -30,6 +31,12 @@ OPENHANDS_INTERACTION_STATES = {
 OPENHANDS_STATE_EVENT = "conversationstateupdateevent"
 OPENHANDS_EXECUTION_STATUS_KEY = "execution_status"
 OPENHANDS_FULL_STATE_KEY = "full_state"
+OPENHANDS_JSON_TRUNCATED = "OPENHANDS_JSON_TRUNCATED"
+OPENHANDS_JSON_INVALID = "OPENHANDS_JSON_INVALID"
+OPENHANDS_NO_TERMINAL_STATE = "OPENHANDS_NO_TERMINAL_STATE"
+OPENHANDS_CONTRADICTORY_TERMINAL_STATE = "OPENHANDS_CONTRADICTORY_TERMINAL_STATE"
+_MAX_OPENHANDS_OUTPUT = 1_000_000
+_MAX_OPENHANDS_OBJECTS = 1_000
 OPENHANDS_CONFIGURATION = re.compile(
     r"(?is)(headless mode requires existing settings|configure your settings|"
     r"(missing|required|invalid).{0,40}(model|provider|api key|configuration)|"
@@ -89,6 +96,10 @@ class OpenHandsInterpretation:
     status_code: str | None
     human_required: bool
     final_message: str | None
+    object_count: int = 0
+    terminal_event_found: bool = False
+    terminal_execution_status: str | None = None
+    final_agent_message_present: bool = False
 
 
 def _normalized_state(value: object) -> str | None:
@@ -127,44 +138,69 @@ def _state_event_state(item: dict) -> str | None:
     return None
 
 
+def _json_failure_code(text: str, error: json.JSONDecodeError) -> str:
+    remaining = text[error.pos:].rstrip()
+    truncated = not remaining or error.pos >= len(text.rstrip()) - 1
+    return OPENHANDS_JSON_TRUNCATED if truncated else OPENHANDS_JSON_INVALID
+
+
+def _extract_json_values(stdout: str) -> tuple[list[object], str | None]:
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", stdout)
+    if len(text) > _MAX_OPENHANDS_OUTPUT:
+        return [], OPENHANDS_JSON_INVALID
+    decoder = json.JSONDecoder()
+    values: list[object] = []
+    cursor = 0
+    candidate_seen = False
+    while cursor < len(text):
+        match = re.search(r"[\[{]", text[cursor:])
+        if match is None:
+            break
+        start = cursor + match.start()
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError as error:
+            if candidate_seen or not text[:start].strip():
+                return [], _json_failure_code(text, error)
+            cursor = start + 1
+            continue
+        candidate_seen = True
+        values.append(value)
+        cursor = end
+        if len(values) > _MAX_OPENHANDS_OBJECTS:
+            return [], OPENHANDS_JSON_INVALID
+    return values, None
+
+
+def _walk_json(value: object):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_json(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_json(child)
+
+
 def parse_openhands_output(stdout: str, stderr: str = "") -> OpenHandsInterpretation:
-    """Interpret only explicit JSONL terminal states from this CLI."""
+    """Interpret bounded OpenHands JSON/JSONL terminal events conservatively."""
     if OPENHANDS_CONFIGURATION.search(stdout) or OPENHANDS_CONFIGURATION.search(stderr):
         return OpenHandsInterpretation("OPENHANDS_CONFIGURATION_REQUIRED", True, None)
-    objects: list[dict] = []
-    non_json_lines = 0
-    for line in stdout.splitlines():
-        candidate = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", line).strip()
-        if not candidate:
-            continue
-        try:
-            value = json.loads(candidate)
-        except json.JSONDecodeError:
-            non_json_lines += 1
-            continue
-        if isinstance(value, dict):
-            objects.append(value)
+    values, extraction_error = _extract_json_values(stdout)
+    if extraction_error:
+        return OpenHandsInterpretation(extraction_error, True, None)
+    objects = list(item for value in values for item in _walk_json(value))
+    if len(objects) > _MAX_OPENHANDS_OBJECTS:
+        return OpenHandsInterpretation(OPENHANDS_JSON_INVALID, True, None)
     if not objects:
-        return OpenHandsInterpretation(
-            "OPENHANDS_JSON_INVALID" if non_json_lines else "OPENHANDS_NO_TERMINAL_STATE",
-            True,
-            None,
-        )
+        code = OPENHANDS_NO_TERMINAL_STATE if values else OPENHANDS_JSON_INVALID
+        return OpenHandsInterpretation(code, True, None)
     states: list[str] = []
     final_message = None
     for item in objects:
         nested_state = _state_event_state(item)
         if nested_state:
             states.append(nested_state)
-        for key in ("status", "state", "agent_state", "event_type", "type"):
-            state = _normalized_state(item.get(key))
-            if (
-                state
-                in OPENHANDS_SUCCESS_STATES
-                | OPENHANDS_FAILURE_STATES
-                | OPENHANDS_INTERACTION_STATES
-            ):
-                states.append(state)
         for key in ("final_message", "message"):
             if isinstance(item.get(key), str) and item[key].strip():
                 final_message = item[key]
@@ -179,18 +215,56 @@ def parse_openhands_output(stdout: str, stderr: str = "") -> OpenHandsInterpreta
         else "interaction"
         for state in states
     }
+    terminal_statuses = {
+        state
+        for state in states
+        if state
+        in OPENHANDS_SUCCESS_STATES | OPENHANDS_FAILURE_STATES | OPENHANDS_INTERACTION_STATES
+    }
     if len(categories) > 1:
         return OpenHandsInterpretation(
-            "OPENHANDS_CONTRADICTORY_TERMINAL_STATE", True, final_message
+            OPENHANDS_CONTRADICTORY_TERMINAL_STATE,
+            True,
+            final_message,
+            len(objects),
+            bool(terminal_statuses),
+            states[-1] if states else None,
+            bool(final_message),
         )
-    if not states:
-        return OpenHandsInterpretation("OPENHANDS_NO_TERMINAL_STATE", True, final_message)
+    if not terminal_statuses:
+        return OpenHandsInterpretation(
+            OPENHANDS_NO_TERMINAL_STATE,
+            True,
+            final_message,
+            len(objects),
+            False,
+            None,
+            bool(final_message),
+        )
     state = states[-1]
     if state in OPENHANDS_INTERACTION_STATES:
-        return OpenHandsInterpretation("OPENHANDS_INTERACTION_REQUIRED", True, final_message)
+        return OpenHandsInterpretation(
+            "OPENHANDS_INTERACTION_REQUIRED",
+            True,
+            final_message,
+            len(objects),
+            True,
+            state,
+            bool(final_message),
+        )
     if state in OPENHANDS_FAILURE_STATES:
-        return OpenHandsInterpretation("OPENHANDS_TASK_FAILED", False, final_message)
-    return OpenHandsInterpretation(None, False, final_message)
+        return OpenHandsInterpretation(
+            "OPENHANDS_TASK_FAILED",
+            False,
+            final_message,
+            len(objects),
+            True,
+            state,
+            bool(final_message),
+        )
+    return OpenHandsInterpretation(
+        None, False, final_message, len(objects), True, state, bool(final_message)
+    )
 
 
 class OpenHandsAdapter:

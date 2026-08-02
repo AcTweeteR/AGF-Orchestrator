@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from .adapters.codex import CodexAdapter, CodexProcessResult, redact_secrets
+from .adapters.openhands import parse_openhands_output
 from .execution_models import ExecutionResult, ExecutionStatus
 from .models import ExecutionPlan, PlanStatus, Task, plan_from_dict
 from .preflight import PreflightError, collect_repository
@@ -352,6 +353,21 @@ class Executor:
             )
             process = self.adapter.execute(instruction, worktree)
             evidence.append(f"{invocation_label}: yes")
+            if self.adapter.name == "openhands":
+                interpretation = parse_openhands_output(
+                    process.stdout_summary, process.stderr_summary
+                )
+                evidence.extend(
+                    [
+                        f"OpenHands JSON objects parsed: {interpretation.object_count}",
+                        "OpenHands terminal event found: "
+                        f"{'yes' if interpretation.terminal_event_found else 'no'}",
+                        "OpenHands terminal execution_status: "
+                        f"{interpretation.terminal_execution_status or 'none'}",
+                        "OpenHands final agent message present: "
+                        f"{'yes' if interpretation.final_agent_message_present else 'no'}",
+                    ]
+                )
             after = _status_lines(worktree)
             changed = _changed_paths(before, after)
             if process.human_required:

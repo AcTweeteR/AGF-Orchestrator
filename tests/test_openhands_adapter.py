@@ -1,3 +1,4 @@
+import json
 import subprocess
 
 import pytest
@@ -175,10 +176,13 @@ def test_openhands_rejects_invalid_model_and_base_url(monkeypatch, tmp_path):
 
 
 def test_json_terminal_success_and_failure_are_interpreted():
-    success = parse_openhands_output('{"state":"finished","message":"done"}\n')
+    success = parse_openhands_output(OBSERVED_FINISHED_EVENT)
     assert success.status_code is None
     assert success.human_required is False
-    failed = parse_openhands_output('{"status":"failed","error":"task failed"}\n')
+    failed = parse_openhands_output(
+        '{"kind":"ConversationStateUpdateEvent","key":"execution_status",'
+        '"value":"error"}\n'
+    )
     assert failed.status_code == "OPENHANDS_TASK_FAILED"
     assert failed.human_required is False
 
@@ -226,6 +230,35 @@ def test_non_json_banner_is_ignored_with_observed_event():
     assert result.human_required is False
 
 
+def test_multiline_concatenated_array_and_nested_transports_parse():
+    multiline = (
+        '{\n  "kind": "ConversationStateUpdateEvent",\n'
+        '  "key": "execution_status",\n  "value": "finished"\n}\n'
+    )
+    assert parse_openhands_output(multiline).status_code is None
+    assert parse_openhands_output(
+        f'{OBSERVED_AGENT_MESSAGE}{OBSERVED_FINISHED_EVENT}'
+    ).status_code is None
+    array = f"[{OBSERVED_AGENT_MESSAGE},{OBSERVED_FINISHED_EVENT}]"
+    assert parse_openhands_output(array).status_code is None
+    nested = json.dumps({"data": {"events": [{"payload": json.loads(OBSERVED_FINISHED_EVENT)}]}})
+    assert parse_openhands_output(nested).status_code is None
+
+
+def test_truncated_and_malformed_transport_objects_are_rejected():
+    truncated = '{"kind":"ConversationStateUpdateEvent","key":"execution_status"'
+    malformed = f'{OBSERVED_FINISHED_EVENT}\n{{"kind":"broken",}}\n'
+    assert parse_openhands_output(truncated).status_code == "OPENHANDS_JSON_TRUNCATED"
+    assert parse_openhands_output(malformed).status_code == "OPENHANDS_JSON_INVALID"
+
+
+def test_json_input_and_object_bounds_are_enforced():
+    oversized = parse_openhands_output("{" + "a" * 1_000_001)
+    assert oversized.status_code == "OPENHANDS_JSON_INVALID"
+    many = "[" + ",".join(OBSERVED_FINISHED_EVENT for _ in range(1_001)) + "]"
+    assert parse_openhands_output(many).status_code == "OPENHANDS_JSON_INVALID"
+
+
 def test_json_missing_terminal_or_malformed_output_requires_human():
     no_terminal = parse_openhands_output('{"event":"message","message":"working"}\n')
     malformed = parse_openhands_output("not json\n")
@@ -236,8 +269,15 @@ def test_json_missing_terminal_or_malformed_output_requires_human():
 
 
 def test_json_interaction_and_contradictory_states_require_human():
-    interaction = parse_openhands_output('{"state":"awaiting_confirmation"}\n')
-    contradictory = parse_openhands_output('{"state":"finished"}\n{"state":"failed"}\n')
+    interaction = parse_openhands_output(
+        '{"kind":"ConversationStateUpdateEvent","key":"execution_status",'
+        '"value":"waiting_for_confirmation"}\n'
+    )
+    contradictory = parse_openhands_output(
+        f'{OBSERVED_FINISHED_EVENT}\n'
+        '{"kind":"ConversationStateUpdateEvent","key":"execution_status",'
+        '"value":"error"}\n'
+    )
     assert interaction.status_code == "OPENHANDS_INTERACTION_REQUIRED"
     assert contradictory.status_code == "OPENHANDS_CONTRADICTORY_TERMINAL_STATE"
     assert interaction.human_required is True
