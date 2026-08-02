@@ -26,6 +26,28 @@ This repository is the documentation release for AGF-Orchestrator v0.1. It speci
 
 Version 0.1 is a formal documentation baseline. It is intended to establish a shared vocabulary and reference architecture for future implementations.
 
+## Director Runtime MVP
+
+The first executable layer provides a read-only Director planning command. Install the package with Python 3.12+ and the development tools:
+
+```text
+python -m pip install -e .
+python -m pip install pytest ruff
+```
+
+Generate a deterministic plan for a clean Git repository:
+
+```text
+agf-orchestrator plan \
+  --repository /path/to/project \
+  --goal "High-level objective" \
+  --output /path/to/plan.json
+```
+
+The command performs repository preflight, never modifies the target repository, and returns `HUMAN_REQUIRED` for ambiguous goals. Use `--allow-dirty` only when the caller explicitly accepts planning against a dirty working tree. The runtime currently uses a deterministic local adapter; no remote model or provider API is called.
+
+Preflight requires a resolvable named branch, an `origin` remote, and a resolvable `HEAD`. Missing repository context is an explicit non-zero error. When `--allow-dirty` is used, the plan preserves `clean: false` and records the dirty-state risk and required evidence.
+
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing changes. Governance concerns are recorded as architecture decision records where appropriate.
