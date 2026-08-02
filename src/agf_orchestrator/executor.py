@@ -297,10 +297,11 @@ class Executor:
                 plan, task.task_id, repository, started, execution_id, str(exc), []
             )
 
+        invocation_label = f"adapter invoked: {self.adapter.name}"
         if dry_run:
             evidence = [
                 *gate_evidence,
-                "Codex invoked: no",
+                f"{invocation_label}: no",
                 "task validation commands executed: no",
                 "caller repository changes applied: no",
                 "cleanup: not applicable (dry-run)",
@@ -314,7 +315,7 @@ class Executor:
                 _now(),
                 context.root,
                 context.branch,
-                "dry-run: Codex was not invoked",
+                f"dry-run: {self.adapter.name} was not invoked",
                 None,
                 ExecutionStatus.DRY_RUN,
                 [],
@@ -330,7 +331,7 @@ class Executor:
         changed: list[str] = []
         evidence = [
             *gate_evidence,
-            "Codex invoked: pending",
+            f"{invocation_label}: pending",
             "caller repository changes applied: no",
         ]
         blockers: list[str] = []
@@ -350,7 +351,7 @@ class Executor:
                 stop_conditions=["scope expansion", "missing context", "architecture uncertainty"],
             )
             process = self.adapter.execute(instruction, worktree)
-            evidence.append("Codex invoked: yes")
+            evidence.append(f"{invocation_label}: yes")
             after = _status_lines(worktree)
             changed = _changed_paths(before, after)
             if process.human_required:

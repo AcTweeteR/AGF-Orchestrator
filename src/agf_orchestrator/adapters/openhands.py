@@ -27,6 +27,9 @@ OPENHANDS_INTERACTION_STATES = {
     "paused",
     "needs_input",
 }
+OPENHANDS_STATE_EVENT = "conversationstateupdateevent"
+OPENHANDS_EXECUTION_STATUS_KEY = "execution_status"
+OPENHANDS_FULL_STATE_KEY = "full_state"
 OPENHANDS_CONFIGURATION = re.compile(
     r"(?is)(headless mode requires existing settings|configure your settings|"
     r"(missing|required|invalid).{0,40}(model|provider|api key|configuration)|"
@@ -94,6 +97,36 @@ def _normalized_state(value: object) -> str | None:
     return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
 
 
+def _nested_message(value: object) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    message = value.get("llm_message")
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    if not isinstance(content, list):
+        return None
+    parts = [
+        item.get("text")
+        for item in content
+        if isinstance(item, dict) and isinstance(item.get("text"), str)
+    ]
+    text = "".join(parts).strip()
+    return text or None
+
+
+def _state_event_state(item: dict) -> str | None:
+    if _normalized_state(item.get("kind")) != OPENHANDS_STATE_EVENT:
+        return None
+    key = _normalized_state(item.get("key"))
+    value = item.get("value")
+    if key == OPENHANDS_EXECUTION_STATUS_KEY:
+        return _normalized_state(value)
+    if key == OPENHANDS_FULL_STATE_KEY and isinstance(value, dict):
+        return _normalized_state(value.get(OPENHANDS_EXECUTION_STATUS_KEY))
+    return None
+
+
 def parse_openhands_output(stdout: str, stderr: str = "") -> OpenHandsInterpretation:
     """Interpret only explicit JSONL terminal states from this CLI."""
     if OPENHANDS_CONFIGURATION.search(stdout) or OPENHANDS_CONFIGURATION.search(stderr):
@@ -120,6 +153,9 @@ def parse_openhands_output(stdout: str, stderr: str = "") -> OpenHandsInterpreta
     states: list[str] = []
     final_message = None
     for item in objects:
+        nested_state = _state_event_state(item)
+        if nested_state:
+            states.append(nested_state)
         for key in ("status", "state", "agent_state", "event_type", "type"):
             state = _normalized_state(item.get(key))
             if (
@@ -132,6 +168,9 @@ def parse_openhands_output(stdout: str, stderr: str = "") -> OpenHandsInterpreta
         for key in ("final_message", "message"):
             if isinstance(item.get(key), str) and item[key].strip():
                 final_message = item[key]
+        nested_message = _nested_message(item)
+        if nested_message:
+            final_message = nested_message
     categories = {
         "success"
         if state in OPENHANDS_SUCCESS_STATES

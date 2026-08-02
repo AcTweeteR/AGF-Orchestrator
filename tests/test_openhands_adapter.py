@@ -8,6 +8,16 @@ from agf_orchestrator.adapters.codex import CodexProcessResult
 from agf_orchestrator.adapters.openhands import OpenHandsAdapter, parse_openhands_output
 from agf_orchestrator.executor import Executor
 
+OBSERVED_AGENT_MESSAGE = (
+    '{"kind":"MessageEvent","source":"agent",'
+    '"llm_message":{"role":"assistant","content":['
+    '{"type":"text","text":"confirmation"}]}}'
+)
+OBSERVED_FINISHED_EVENT = (
+    '{"kind":"ConversationStateUpdateEvent","source":"environment",'
+    '"key":"execution_status","value":"finished"}'
+)
+
 
 def test_instruction_contains_exact_safety_context(tmp_path):
     instruction = OpenHandsAdapter().build_instruction(
@@ -173,6 +183,49 @@ def test_json_terminal_success_and_failure_are_interpreted():
     assert failed.human_required is False
 
 
+def test_observed_openhands_message_and_finished_event_parse_as_success():
+    result = parse_openhands_output(f"{OBSERVED_AGENT_MESSAGE}\n{OBSERVED_FINISHED_EVENT}\n")
+    assert result.status_code is None
+    assert result.human_required is False
+    assert result.final_message == "confirmation"
+
+
+def test_nested_full_state_completion_event_is_supported():
+    output = (
+        '{"kind":"ConversationStateUpdateEvent","source":"environment",'
+        '"key":"full_state","value":{"execution_status":"finished"}}\n'
+    )
+    result = parse_openhands_output(output)
+    assert result.status_code is None
+    assert result.human_required is False
+
+
+def test_assistant_prose_without_terminal_event_is_incomplete():
+    result = parse_openhands_output(OBSERVED_AGENT_MESSAGE)
+    assert result.status_code == "OPENHANDS_NO_TERMINAL_STATE"
+    assert result.human_required is True
+    assert result.final_message == "confirmation"
+
+
+def test_observed_finished_and_failure_events_are_contradictory():
+    failure = (
+        '{"kind":"ConversationStateUpdateEvent","source":"environment",'
+        '"key":"execution_status","value":"error"}'
+    )
+    output = f"{OBSERVED_FINISHED_EVENT}\n{failure}\n"
+    result = parse_openhands_output(output)
+    assert result.status_code == "OPENHANDS_CONTRADICTORY_TERMINAL_STATE"
+    assert result.human_required is True
+
+
+def test_non_json_banner_is_ignored_with_observed_event():
+    result = parse_openhands_output(
+        "OpenHands CLI terminal UI may not work correctly\n" + OBSERVED_FINISHED_EVENT
+    )
+    assert result.status_code is None
+    assert result.human_required is False
+
+
 def test_json_missing_terminal_or_malformed_output_requires_human():
     no_terminal = parse_openhands_output('{"event":"message","message":"working"}\n')
     malformed = parse_openhands_output("not json\n")
@@ -217,3 +270,5 @@ def test_executor_rejects_openhands_exit_zero_without_changes(tmp_path):
     )
     assert result.status.value == "FAILED"
     assert "OPENHANDS_NO_CHANGES" in result.blocking_issues
+    assert "adapter invoked: openhands: yes" in result.evidence
+    assert not any("Codex invoked" in item for item in result.evidence)

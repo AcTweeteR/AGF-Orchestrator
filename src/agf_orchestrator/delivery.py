@@ -162,7 +162,7 @@ def _run_attempt(
         if correction:
             instruction += "\nCorrection request (accepted findings only):\n" + correction
         process = adapter.execute(instruction, worktree)
-        evidence.append("Codex invoked: yes")
+        evidence.append(f"adapter invoked: {adapter.name}: yes")
         after = _status_lines(worktree)
         changed = _changed_paths([], after)
         evidence.append("changed-file scope checked")
