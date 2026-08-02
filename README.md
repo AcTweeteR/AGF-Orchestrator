@@ -4,7 +4,7 @@ AGF-Orchestrator is the reference operational model for coordinating autonomous 
 
 AGF defines the governing rules. AGF-Orchestrator defines how work, decisions, evidence, reviews, compliance checks, and releases move through an accountable system. The model is vendor neutral: an agent provider is an interchangeable adapter, not a governing authority.
 
-This repository is the documentation release for AGF-Orchestrator v0.1. It specifies the system boundary, roles, lifecycle, workflow, decision rights, failure handling, and maturity path. It does not contain an implementation.
+This repository contains the AGF-Orchestrator v0.1 documentation baseline and its first controlled runtime layers. It specifies the system boundary, roles, lifecycle, workflow, decision rights, failure handling, and delivery safeguards.
 
 ## Read the model
 
@@ -60,6 +60,21 @@ agf-orchestrator execute \
 ```
 
 Live execution requires both `--execute` and `--confirm-execution`, plus a clean named non-default branch, approved architecture, allowed paths, acceptance criteria, validations, and no unresolved intervention. The Codex adapter invokes the locally discovered `codex exec` command without shell interpretation, enforces a timeout, verifies changed-file scope, runs only task-declared validations, and never commits or pushes.
+
+## Autonomous delivery pipeline
+
+The delivery workflow defaults to dry-run and requires all three flags for live delivery: `--execute`, `--confirm-execution`, and `--confirm-delivery`. It executes one task in isolation, creates a patch outside the target repository, runs independent review and compliance gates, applies only the approved patch in a fresh delivery worktree, commits and pushes an `agf/<plan-id>/<task-id>` branch, and opens a draft PR. AGF-Orchestrator never merges PRs.
+
+```text
+agf-orchestrator deliver \
+  --plan /path/to/plan.json \
+  --task task-001 \
+  --repository /path/to/project \
+  --adapter codex \
+  --output /path/to/delivery-report.json
+```
+
+Dry-run performs no model, Git, branch, commit, push, or PR mutation. For a controlled local test, `--simulate-pr` returns a local draft-PR reference instead of contacting GitHub. Live delivery requires `--execute --confirm-execution --confirm-delivery` together; it never bypasses sandboxing or approvals.
 
 ## Contributing
 
