@@ -1,5 +1,8 @@
 
-from agf_orchestrator.adapters.codex import CodexAdapter, redact_secrets
+import subprocess
+
+from agf_orchestrator.adapters import codex as codex_module
+from agf_orchestrator.adapters.codex import SAFE_ENV_KEYS, CodexAdapter, redact_secrets
 
 
 def test_instruction_is_self_contained():
@@ -36,3 +39,18 @@ def test_fake_executable_captures_output(tmp_path):
     assert result.exit_code == 0
     assert "fake stdout" in result.stdout_summary
     assert "fake stderr" in result.stderr_summary
+
+
+def test_safe_environment_allowlist_excludes_secret_variables(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setenv("TOKEN_SHOULD_NOT_PASS", "secret")
+    monkeypatch.setattr(codex_module.subprocess, "run", fake_run)
+    CodexAdapter(executable="codex").execute("instruction", str(tmp_path))
+    assert set(captured["env"]) <= SAFE_ENV_KEYS
+    assert "TOKEN_SHOULD_NOT_PASS" not in captured["env"]
+    assert "PATH" in captured["env"]

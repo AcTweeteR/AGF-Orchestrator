@@ -13,6 +13,10 @@ SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{12,}\b"),
 )
+SAFE_ENV_KEYS = {
+    "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+}
 
 
 def redact_secrets(value: str, *, limit: int = 4000) -> str:
@@ -95,7 +99,7 @@ class CodexAdapter:
                 text=True,
                 timeout=self.timeout,
                 shell=False,
-                env={"PATH": os.environ.get("PATH", "")},
+                env={key: os.environ[key] for key in SAFE_ENV_KEYS if key in os.environ},
             )
         except subprocess.TimeoutExpired as exc:
             stdout = redact_secrets(_as_text(exc.stdout))
