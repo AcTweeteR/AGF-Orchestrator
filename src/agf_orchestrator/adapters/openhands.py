@@ -7,11 +7,103 @@ and delivery pipeline retain their existing safety gates.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from .codex import CodexProcessResult, _as_text, redact_secrets
+
+OPENHANDS_SUCCESS_STATES = {"completed", "complete", "finished", "success", "succeeded"}
+OPENHANDS_FAILURE_STATES = {"failed", "failure", "error", "rejected", "cancelled", "canceled"}
+OPENHANDS_INTERACTION_STATES = {
+    "awaiting_confirmation",
+    "awaiting_input",
+    "confirmation_required",
+    "interaction_required",
+    "paused",
+    "needs_input",
+}
+OPENHANDS_CONFIGURATION = re.compile(
+    r"(?is)(headless mode requires existing settings|configure your settings|"
+    r"(missing|required|invalid).{0,40}(model|provider|api key|configuration)|"
+    r"(model|provider).{0,40}(missing|required|not configured))"
+)
+
+
+@dataclass(frozen=True)
+class OpenHandsInterpretation:
+    status_code: str | None
+    human_required: bool
+    final_message: str | None
+
+
+def _normalized_state(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+
+
+def parse_openhands_output(stdout: str, stderr: str = "") -> OpenHandsInterpretation:
+    """Interpret only explicit JSONL terminal states from this CLI."""
+    if OPENHANDS_CONFIGURATION.search(stdout) or OPENHANDS_CONFIGURATION.search(stderr):
+        return OpenHandsInterpretation("OPENHANDS_CONFIGURATION_REQUIRED", True, None)
+    objects: list[dict] = []
+    non_json_lines = 0
+    for line in stdout.splitlines():
+        candidate = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", line).strip()
+        if not candidate:
+            continue
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError:
+            non_json_lines += 1
+            continue
+        if isinstance(value, dict):
+            objects.append(value)
+    if not objects:
+        return OpenHandsInterpretation(
+            "OPENHANDS_JSON_INVALID" if non_json_lines else "OPENHANDS_NO_TERMINAL_STATE",
+            True,
+            None,
+        )
+    states: list[str] = []
+    final_message = None
+    for item in objects:
+        for key in ("status", "state", "agent_state", "event_type", "type"):
+            state = _normalized_state(item.get(key))
+            if (
+                state
+                in OPENHANDS_SUCCESS_STATES
+                | OPENHANDS_FAILURE_STATES
+                | OPENHANDS_INTERACTION_STATES
+            ):
+                states.append(state)
+        for key in ("final_message", "message"):
+            if isinstance(item.get(key), str) and item[key].strip():
+                final_message = item[key]
+    categories = {
+        "success"
+        if state in OPENHANDS_SUCCESS_STATES
+        else "failure"
+        if state in OPENHANDS_FAILURE_STATES
+        else "interaction"
+        for state in states
+    }
+    if len(categories) > 1:
+        return OpenHandsInterpretation(
+            "OPENHANDS_CONTRADICTORY_TERMINAL_STATE", True, final_message
+        )
+    if not states:
+        return OpenHandsInterpretation("OPENHANDS_NO_TERMINAL_STATE", True, final_message)
+    state = states[-1]
+    if state in OPENHANDS_INTERACTION_STATES:
+        return OpenHandsInterpretation("OPENHANDS_INTERACTION_REQUIRED", True, final_message)
+    if state in OPENHANDS_FAILURE_STATES:
+        return OpenHandsInterpretation("OPENHANDS_TASK_FAILED", False, final_message)
+    return OpenHandsInterpretation(None, False, final_message)
 
 
 class OpenHandsAdapter:
@@ -123,9 +215,15 @@ class OpenHandsAdapter:
                 human_required=True,
                 transport_error="OPENHANDS_PROCESS_FAILED",
             )
+        interpretation = parse_openhands_output(completed.stdout, completed.stderr)
         return CodexProcessResult(
             summary,
             completed.returncode,
             redact_secrets(completed.stdout),
             redact_secrets(completed.stderr),
+            human_required=interpretation.human_required,
+            final_message=redact_secrets(interpretation.final_message)
+            if interpretation.final_message
+            else None,
+            transport_error=interpretation.status_code,
         )
