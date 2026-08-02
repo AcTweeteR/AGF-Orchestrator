@@ -202,9 +202,7 @@ def _run_attempt(
     return Attempt(status, changed, validation_results, evidence, blockers, None, caller_clean)
 
 
-def _correction_request(
-    findings: list[ReviewFinding], task: Task, current_patch: str = ""
-) -> str:
+def _correction_request(findings: list[ReviewFinding], task: Task, current_patch: str = "") -> str:
     accepted = [
         finding
         for finding in findings
@@ -268,6 +266,7 @@ class DeliveryPipeline:
         pr_creator: DraftPRCreator | None = None,
         artifact_dir: str | Path | None = None,
         validation_timeout: float = 60.0,
+        max_correction_rounds: int = MAX_CORRECTION_ROUNDS,
     ):
         self.adapter = adapter or CodexAdapter()
         self.deterministic_reviewer = deterministic_reviewer or (
@@ -280,6 +279,9 @@ class DeliveryPipeline:
         self.pr_creator = pr_creator or DraftPRCreator()
         self.artifact_dir = Path(artifact_dir or tempfile.gettempdir())
         self.validation_timeout = validation_timeout
+        if not 0 <= max_correction_rounds <= MAX_CORRECTION_ROUNDS:
+            raise ValueError("maximum correction rounds must be between 0 and 2")
+        self.max_correction_rounds = max_correction_rounds
 
     def deliver(
         self, plan: ExecutionPlan, task_id: str, repository: str, *, execute: bool
@@ -324,16 +326,16 @@ class DeliveryPipeline:
             previous_findings: list[ReviewFinding] = []
             previous_patch_sha: str | None = None
             previous_patch = ""
-            for _round_number in range(MAX_CORRECTION_ROUNDS + 1):
+            for _round_number in range(self.max_correction_rounds + 1):
                 attempt = _run_attempt(
                     plan,
                     task,
                     repository,
                     self.adapter,
                     self.artifact_dir,
-                    None if review is None else _correction_request(
-                        review.findings, task, previous_patch
-                    ),
+                    None
+                    if review is None
+                    else _correction_request(review.findings, task, previous_patch),
                     self.validation_timeout,
                 )
                 if (
@@ -387,7 +389,7 @@ class DeliveryPipeline:
                 correction_rounds += 1
                 if (
                     review.status is not ReviewStatus.REQUEST_CHANGES
-                    or correction_rounds > MAX_CORRECTION_ROUNDS
+                    or correction_rounds > self.max_correction_rounds
                 ):
                     raise ExecutionValidationError("review did not approve within correction limit")
             assert attempt is not None and review is not None and attempt.patch is not None

@@ -9,11 +9,45 @@ from test_delivery import plan_for, setup_repo
 
 def run_cli(repo, plan, output, *extra):
     env = {**os.environ, "PYTHONPATH": str(Path("src").resolve())}
+    env["AGF_STATE_DIR"] = str(output.parent / f"agf-state-{output.stem}")
+    register = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agf_orchestrator.cli",
+            "project",
+            "add",
+            "--name",
+            repo.name,
+            "--repository",
+            str(repo),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert register.returncode in (0, 2), register.stderr
     return subprocess.run(
-        [sys.executable, "-m", "agf_orchestrator.cli", "deliver",
-         "--plan", str(plan), "--task", "task-001", "--repository", str(repo),
-         "--adapter", "codex", "--output", str(output), *extra],
-        capture_output=True, text=True, env=env,
+        [
+            sys.executable,
+            "-m",
+            "agf_orchestrator.cli",
+            "deliver",
+            "--plan",
+            str(plan),
+            "--task",
+            "task-001",
+            "--repository",
+            str(repo),
+            "--adapter",
+            "codex",
+            "--output",
+            str(output),
+            *extra,
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
     )
 
 

@@ -76,6 +76,22 @@ agf-orchestrator deliver \
 
 Dry-run performs no model, Git, branch, commit, push, or PR mutation. For a controlled local test, `--simulate-pr` returns a local draft-PR reference instead of contacting GitHub. Live delivery requires `--execute --confirm-execution --confirm-delivery` together; it never bypasses sandboxing or approvals.
 
+## Project and session control
+
+Projects must be registered explicitly before persistent workflows are created. State is stored outside managed repositories in `~/.agf-orchestrator` (override with `AGF_STATE_DIR`) using `projects.json`, `sessions/`, `artifacts/`, and `locks/`.
+
+```text
+agf-orchestrator project add --name my-project --repository /path/to/project
+agf-orchestrator project list --json
+agf-orchestrator project verify --project my-project --json
+agf-orchestrator session start --project my-project --goal "Bounded objective"
+agf-orchestrator session resume --project my-project --session SESSION_ID
+agf-orchestrator session lock-status --session SESSION_ID --json
+agf-orchestrator inbox --json
+```
+
+Registration is read-only and does not enable live execution or delivery. Those actions require both explicit CLI confirmations and project policy authorization. `session resume --execute --confirm-execution` records an execution authorization checkpoint only; it does not run the existing execution/review/compliance/delivery pipeline or fabricate reports, commits, pushes, or PRs. Sessions preserve immutable transition events and evidence references, detect repository/base-SHA or artifact drift as `STALE`, and acquire locks in session-then-project order. The inbox reports only human attention items, including stale, blocked, human-required, failed, and `PR_READY` sessions; it never performs merges.
+
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing changes. Governance concerns are recorded as architecture decision records where appropriate.
