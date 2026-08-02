@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .adapters.codex import CodexAdapter
+from .adapters.openhands import OpenHandsAdapter
 from .compliance import ComplianceChecker
 from .delivery import DeliveryPipeline, write_delivery_report
 from .director import Director
@@ -42,13 +43,14 @@ def build_parser() -> argparse.ArgumentParser:
     execute.add_argument("--task", required=True, help="selected task ID")
     execute.add_argument("--repository", help="target Git repository")
     execute.add_argument("--project", help="registered project name or ID")
-    execute.add_argument("--adapter", choices=["codex"], default="codex")
+    execute.add_argument("--adapter", choices=["codex", "openhands"], default="codex")
     execute.add_argument("--dry-run", action="store_true", help="explicitly request dry-run")
     execute.add_argument("--execute", action="store_true", help="allow live execution")
     execute.add_argument(
         "--confirm-execution", action="store_true", help="confirm live execution explicitly"
     )
     execute.add_argument("--codex-path", default="codex", help="Codex executable path")
+    execute.add_argument("--openhands-path", default="openhands", help="OpenHands executable path")
     execute.add_argument("--timeout", type=float, default=300.0, help="Codex timeout in seconds")
     execute.add_argument("--output", help="optional report path outside the target repository")
     deliver = commands.add_parser("deliver", help="run the autonomous delivery pipeline")
@@ -56,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     deliver.add_argument("--task", required=True)
     deliver.add_argument("--repository")
     deliver.add_argument("--project", help="registered project name or ID")
-    deliver.add_argument("--adapter", choices=["codex"], default="codex")
+    deliver.add_argument("--adapter", choices=["codex", "openhands"], default="codex")
     deliver.add_argument("--output", required=True)
     deliver.add_argument("--execute", action="store_true")
     deliver.add_argument("--confirm-execution", action="store_true")
@@ -64,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     deliver.add_argument("--reviewer", choices=["deterministic", "codex"], default="deterministic")
     deliver.add_argument("--simulate-pr", action="store_true")
     deliver.add_argument("--codex-path", default="codex")
+    deliver.add_argument("--openhands-path", default="openhands")
     deliver.add_argument("--timeout", type=float, default=300.0)
     project = commands.add_parser("project", help="manage explicitly registered projects")
     project_commands = project.add_subparsers(dest="project_command", required=True)
@@ -323,7 +326,11 @@ def run_execute(args: argparse.Namespace) -> int:
                 raise ExecutionValidationError(
                     "execution report must not be written inside the target repository"
                 )
-        adapter = CodexAdapter(executable=args.codex_path, timeout=args.timeout)
+        adapter = (
+            OpenHandsAdapter(executable=args.openhands_path, timeout=args.timeout)
+            if args.adapter == "openhands"
+            else CodexAdapter(executable=args.codex_path, timeout=args.timeout)
+        )
         result = Executor(adapter=adapter).execute(
             plan, args.task, str(target_root), dry_run=not args.execute
         )
@@ -372,9 +379,15 @@ def run_deliver(args: argparse.Namespace) -> int:
             raise ExecutionValidationError(
                 "delivery report must not be written inside the target repository"
             )
-        adapter = CodexAdapter(executable=args.codex_path, timeout=args.timeout)
+        adapter = (
+            OpenHandsAdapter(executable=args.openhands_path, timeout=args.timeout)
+            if args.adapter == "openhands"
+            else CodexAdapter(executable=args.codex_path, timeout=args.timeout)
+        )
         reviewer = (
-            CodexReviewerAdapter(adapter) if args.reviewer == "codex" else DeterministicReviewer()
+            CodexReviewerAdapter(CodexAdapter(executable=args.codex_path, timeout=args.timeout))
+            if args.reviewer == "codex"
+            else DeterministicReviewer()
         )
         pipeline = DeliveryPipeline(
             adapter=adapter,
