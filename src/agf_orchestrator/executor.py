@@ -364,6 +364,7 @@ class Executor:
                         f"{'yes' if interpretation.terminal_event_found else 'no'}",
                         "OpenHands terminal execution_status: "
                         f"{interpretation.terminal_execution_status or 'none'}",
+                        f"OpenHands selected transport: {interpretation.transport or 'none'}",
                         "OpenHands final agent message present: "
                         f"{'yes' if interpretation.final_agent_message_present else 'no'}",
                     ]
@@ -388,6 +389,9 @@ class Executor:
                     "OPENHANDS_CONTRADICTORY_TERMINAL_STATE",
                     "OPENHANDS_NO_TERMINAL_STATE",
                     "OPENHANDS_JSON_INVALID",
+                    "OPENHANDS_STRUCTURED_OUTPUT_MISSING",
+                    "OPENHANDS_STRUCTURED_OUTPUT_CONFLICT",
+                    "OPENHANDS_STDERR_EVENT_STREAM_INVALID",
                 }:
                     status = ExecutionStatus.HUMAN_REQUIRED
                 else:

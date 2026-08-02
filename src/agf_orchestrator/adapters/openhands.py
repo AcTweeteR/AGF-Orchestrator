@@ -11,7 +11,7 @@ import json
 import os
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -31,12 +31,23 @@ OPENHANDS_INTERACTION_STATES = {
 OPENHANDS_STATE_EVENT = "conversationstateupdateevent"
 OPENHANDS_EXECUTION_STATUS_KEY = "execution_status"
 OPENHANDS_FULL_STATE_KEY = "full_state"
+OPENHANDS_STRUCTURED_OUTPUT_MISSING = "OPENHANDS_STRUCTURED_OUTPUT_MISSING"
+OPENHANDS_STRUCTURED_OUTPUT_CONFLICT = "OPENHANDS_STRUCTURED_OUTPUT_CONFLICT"
+OPENHANDS_STDERR_EVENT_STREAM_INVALID = "OPENHANDS_STDERR_EVENT_STREAM_INVALID"
 OPENHANDS_JSON_TRUNCATED = "OPENHANDS_JSON_TRUNCATED"
 OPENHANDS_JSON_INVALID = "OPENHANDS_JSON_INVALID"
 OPENHANDS_NO_TERMINAL_STATE = "OPENHANDS_NO_TERMINAL_STATE"
 OPENHANDS_CONTRADICTORY_TERMINAL_STATE = "OPENHANDS_CONTRADICTORY_TERMINAL_STATE"
 _MAX_OPENHANDS_OUTPUT = 1_000_000
 _MAX_OPENHANDS_OBJECTS = 1_000
+OPENHANDS_EVENT_KINDS = {
+    "messageevent",
+    "conversationstateupdateevent",
+    "actionevent",
+    "observationevent",
+    "agenterrorevent",
+    "pauseevent",
+}
 OPENHANDS_CONFIGURATION = re.compile(
     r"(?is)(headless mode requires existing settings|configure your settings|"
     r"(missing|required|invalid).{0,40}(model|provider|api key|configuration)|"
@@ -100,6 +111,7 @@ class OpenHandsInterpretation:
     terminal_event_found: bool = False
     terminal_execution_status: str | None = None
     final_agent_message_present: bool = False
+    transport: str | None = None
 
 
 def _normalized_state(value: object) -> str | None:
@@ -161,14 +173,14 @@ def _extract_json_values(stdout: str) -> tuple[list[object], str | None]:
             value, end = decoder.raw_decode(text, start)
         except json.JSONDecodeError as error:
             if candidate_seen or not text[:start].strip():
-                return [], _json_failure_code(text, error)
+                return values, _json_failure_code(text, error)
             cursor = start + 1
             continue
         candidate_seen = True
         values.append(value)
         cursor = end
         if len(values) > _MAX_OPENHANDS_OBJECTS:
-            return [], OPENHANDS_JSON_INVALID
+            return values, OPENHANDS_JSON_INVALID
     return values, None
 
 
@@ -182,11 +194,24 @@ def _walk_json(value: object):
             yield from _walk_json(child)
 
 
-def parse_openhands_output(stdout: str, stderr: str = "") -> OpenHandsInterpretation:
-    """Interpret bounded OpenHands JSON/JSONL terminal events conservatively."""
-    if OPENHANDS_CONFIGURATION.search(stdout) or OPENHANDS_CONFIGURATION.search(stderr):
-        return OpenHandsInterpretation("OPENHANDS_CONFIGURATION_REQUIRED", True, None)
-    values, extraction_error = _extract_json_values(stdout)
+def _stream_metadata(stream: str) -> tuple[tuple[str, ...], tuple[str, ...], str | None]:
+    values, extraction_error = _extract_json_values(stream)
+    objects = [item for value in values for item in _walk_json(value)]
+    events = [
+        item
+        for item in objects
+        if _normalized_state(item.get("kind")) in OPENHANDS_EVENT_KINDS
+    ]
+    fingerprints = tuple(
+        json.dumps(item, sort_keys=True, separators=(",", ":")) for item in events
+    )
+    kinds = tuple(_normalized_state(item.get("kind")) or "" for item in events)
+    return kinds, fingerprints, extraction_error
+
+
+def _parse_openhands_stream(stream: str) -> OpenHandsInterpretation:
+    """Interpret one bounded OpenHands JSON/JSONL stream."""
+    values, extraction_error = _extract_json_values(stream)
     if extraction_error:
         return OpenHandsInterpretation(extraction_error, True, None)
     objects = list(item for value in values for item in _walk_json(value))
@@ -265,6 +290,36 @@ def parse_openhands_output(stdout: str, stderr: str = "") -> OpenHandsInterpreta
     return OpenHandsInterpretation(
         None, False, final_message, len(objects), True, state, bool(final_message)
     )
+
+
+def parse_openhands_output(stdout: str, stderr: str = "") -> OpenHandsInterpretation:
+    """Select one independent, recognized OpenHands structured stream."""
+    if OPENHANDS_CONFIGURATION.search(stdout) or OPENHANDS_CONFIGURATION.search(stderr):
+        return OpenHandsInterpretation("OPENHANDS_CONFIGURATION_REQUIRED", True, None)
+    stdout_result = _parse_openhands_stream(stdout)
+    stderr_result = _parse_openhands_stream(stderr)
+    stdout_kinds, stdout_fingerprints, stdout_error = _stream_metadata(stdout)
+    stderr_kinds, stderr_fingerprints, stderr_error = _stream_metadata(stderr)
+    stdout_has_events = bool(stdout_kinds)
+    stderr_has_events = bool(stderr_kinds)
+    if stdout_has_events and stderr_has_events:
+        if stdout_fingerprints != stderr_fingerprints:
+            return OpenHandsInterpretation(OPENHANDS_STRUCTURED_OUTPUT_CONFLICT, True, None)
+        return replace(stdout_result, transport="stdout")
+    if stdout_has_events:
+        return replace(stdout_result, transport="stdout")
+    if stderr_has_events:
+        if stderr_error in {OPENHANDS_JSON_INVALID, OPENHANDS_JSON_TRUNCATED}:
+            return OpenHandsInterpretation(OPENHANDS_STDERR_EVENT_STREAM_INVALID, True, None)
+        return replace(stderr_result, transport="stderr")
+    error = stdout_error or stderr_error
+    if error in {OPENHANDS_JSON_INVALID, OPENHANDS_JSON_TRUNCATED}:
+        return OpenHandsInterpretation(error, True, None)
+    if stdout_result.status_code == OPENHANDS_NO_TERMINAL_STATE:
+        return stdout_result
+    if stderr_result.status_code == OPENHANDS_NO_TERMINAL_STATE:
+        return stderr_result
+    return OpenHandsInterpretation(OPENHANDS_STRUCTURED_OUTPUT_MISSING, True, None)
 
 
 class OpenHandsAdapter:

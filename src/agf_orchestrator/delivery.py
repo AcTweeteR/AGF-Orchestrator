@@ -175,6 +175,7 @@ def _run_attempt(
                     f"{'yes' if interpretation.terminal_event_found else 'no'}",
                     "OpenHands terminal execution_status: "
                     f"{interpretation.terminal_execution_status or 'none'}",
+                    f"OpenHands selected transport: {interpretation.transport or 'none'}",
                     "OpenHands final agent message present: "
                     f"{'yes' if interpretation.final_agent_message_present else 'no'}",
                 ]

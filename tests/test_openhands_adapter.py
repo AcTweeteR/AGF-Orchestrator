@@ -141,7 +141,10 @@ def test_openhands_forwards_only_authorized_llm_environment(monkeypatch, tmp_pat
         captured["command"] = command
         captured["env"] = kwargs["env"]
         return subprocess.CompletedProcess(
-            command, 0, f"Authorization: Bearer {key}; key={key}", ""
+            command,
+            0,
+            f"Authorization: Bearer {key}; key={key}",
+            f"Authorization: Bearer {key}; key={key}",
         )
 
     monkeypatch.setattr(openhands_module.subprocess, "run", fake_run)
@@ -259,9 +262,46 @@ def test_json_input_and_object_bounds_are_enforced():
     assert parse_openhands_output(many).status_code == "OPENHANDS_JSON_INVALID"
 
 
+def test_structured_transport_channel_selection_and_deduplication():
+    warning = "warning: provider diagnostics"
+    stdout_only = parse_openhands_output(OBSERVED_FINISHED_EVENT, warning)
+    stderr_only = parse_openhands_output(warning, OBSERVED_FINISHED_EVENT)
+    assert stdout_only.transport == "stdout"
+    assert stderr_only.transport == "stderr"
+    assert stderr_only.status_code is None
+    identical = parse_openhands_output(OBSERVED_FINISHED_EVENT, OBSERVED_FINISHED_EVENT)
+    assert identical.status_code is None
+    assert identical.transport == "stdout"
+
+
+def test_structured_transport_conflict_and_missing_are_blocked():
+    failure = (
+        '{"kind":"ConversationStateUpdateEvent","key":"execution_status",'
+        '"value":"error"}'
+    )
+    conflict = parse_openhands_output(OBSERVED_FINISHED_EVENT, failure)
+    missing = parse_openhands_output("plain stdout banner", "plain stderr warning")
+    assert conflict.status_code == "OPENHANDS_STRUCTURED_OUTPUT_CONFLICT"
+    assert missing.status_code == "OPENHANDS_STRUCTURED_OUTPUT_MISSING"
+
+
+def test_ansi_wrapped_stderr_event_is_selected():
+    stderr = "\x1b[32mprogress\x1b[0m\n" + OBSERVED_FINISHED_EVENT
+    result = parse_openhands_output("", stderr)
+    assert result.status_code is None
+    assert result.transport == "stderr"
+
+
+def test_malformed_stderr_event_stream_is_rejected():
+    stderr = f"{OBSERVED_FINISHED_EVENT}\n{{broken\n"
+    result = parse_openhands_output("plain banner", stderr)
+    assert result.status_code == "OPENHANDS_STDERR_EVENT_STREAM_INVALID"
+    assert result.human_required is True
+
+
 def test_json_missing_terminal_or_malformed_output_requires_human():
     no_terminal = parse_openhands_output('{"event":"message","message":"working"}\n')
-    malformed = parse_openhands_output("not json\n")
+    malformed = parse_openhands_output("{not json\n")
     assert no_terminal.status_code == "OPENHANDS_NO_TERMINAL_STATE"
     assert malformed.status_code == "OPENHANDS_JSON_INVALID"
     assert no_terminal.human_required is True
