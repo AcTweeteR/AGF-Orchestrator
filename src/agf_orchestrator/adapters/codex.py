@@ -38,7 +38,9 @@ class CodexInvocationProfile:
 
     global_options_before_exec: bool = True
 
-    def build_command(self, executable: str, instruction: str) -> list[str]:
+    def build_command(
+        self, executable: str, instruction: str, *, sandbox: str = "workspace-write"
+    ) -> list[str]:
         if not self.global_options_before_exec:
             raise ValueError("unsupported Codex invocation profile")
         return [
@@ -46,7 +48,7 @@ class CodexInvocationProfile:
             "-c",
             'approval_policy="never"',
             "-s",
-            "workspace-write",
+            sandbox,
             "exec",
             instruction,
         ]
@@ -142,7 +144,13 @@ class CodexAdapter:
         ]
         return "\n".join(lines)
 
-    def execute(self, instruction: str, repository: str) -> CodexProcessResult:
+    def execute(
+        self,
+        instruction: str,
+        repository: str,
+        *,
+        sandbox: str = "workspace-write",
+    ) -> CodexProcessResult:
         profile = self.profile or discover_invocation_profile(self.executable)
         if profile is None:
             return CodexProcessResult(
@@ -150,9 +158,9 @@ class CodexAdapter:
                 "Codex invocation syntax could not be verified from parser help",
                 human_required=True,
             )
-        command = profile.build_command(self.executable, instruction)
+        command = profile.build_command(self.executable, instruction, sandbox=sandbox)
         summary = (
-            'codex -c approval_policy="never" -s workspace-write '
+            f'codex -c approval_policy="never" -s {sandbox} '
             "exec <task-instruction>"
         )
         try:
