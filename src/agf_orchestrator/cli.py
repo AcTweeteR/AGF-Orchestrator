@@ -9,7 +9,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+from .adapters.codex import CodexAdapter
 from .director import Director
+from .execution_models import ExecutionStatus
+from .executor import ExecutionValidationError, Executor, load_plan, write_execution_result
 from .models import PlanStatus
 from .preflight import PreflightError, collect_repository
 
@@ -22,6 +25,19 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--goal", required=True, help="high-level project goal")
     plan.add_argument("--output", required=True, help="JSON output path")
     plan.add_argument("--allow-dirty", action="store_true", help="allow a dirty target repository")
+    execute = commands.add_parser("execute", help="execute one approved task under safety gates")
+    execute.add_argument("--plan", required=True, help="validated execution plan JSON")
+    execute.add_argument("--task", required=True, help="selected task ID")
+    execute.add_argument("--repository", required=True, help="target Git repository")
+    execute.add_argument("--adapter", choices=["codex"], default="codex")
+    execute.add_argument("--dry-run", action="store_true", help="explicitly request dry-run")
+    execute.add_argument("--execute", action="store_true", help="allow live execution")
+    execute.add_argument(
+        "--confirm-execution", action="store_true", help="confirm live execution explicitly"
+    )
+    execute.add_argument("--codex-path", default="codex", help="Codex executable path")
+    execute.add_argument("--timeout", type=float, default=300.0, help="Codex timeout in seconds")
+    execute.add_argument("--output", help="optional report path outside the target repository")
     return parser
 
 
@@ -68,10 +84,48 @@ def run_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_execute(args: argparse.Namespace) -> int:
+    if args.execute != args.confirm_execution:
+        print("ERROR: --execute and --confirm-execution must be supplied together", file=sys.stderr)
+        return 2
+    if args.execute and args.dry_run:
+        print("ERROR: --dry-run cannot be combined with live execution", file=sys.stderr)
+        return 2
+    try:
+        plan = load_plan(args.plan)
+        target_root = Path(args.repository).expanduser().resolve()
+        if args.output:
+            output = Path(args.output).expanduser().resolve()
+            if output == target_root or target_root in output.parents:
+                raise ExecutionValidationError(
+                    "execution report must not be written inside the target repository"
+                )
+        adapter = CodexAdapter(executable=args.codex_path, timeout=args.timeout)
+        result = Executor(adapter=adapter).execute(
+            plan, args.task, str(target_root), dry_run=not args.execute
+        )
+        if args.output:
+            write_execution_result(result, args.output)
+        else:
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    except (ExecutionValidationError, OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if result.status in {
+        ExecutionStatus.BLOCKED,
+        ExecutionStatus.FAILED,
+        ExecutionStatus.HUMAN_REQUIRED,
+    }:
+        return 2
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "plan":
         return run_plan(args)
+    if args.command == "execute":
+        return run_execute(args)
     return 2
 
 
