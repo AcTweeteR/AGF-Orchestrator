@@ -25,28 +25,83 @@ def init_repo(tmp_path):
 
 def write_plan(repo, path):
     task = Task(
-        "task-001", "Update allowed file", "Update allowed.txt", ["allowed.txt"], [],
-        ["allowed file contains the new value"], ["git diff --check -- allowed.txt"],
-        "low", "Implementer", PlanStatus.READY,
+        "task-001",
+        "Update allowed file",
+        "Update allowed.txt",
+        ["allowed.txt"],
+        [],
+        ["allowed file contains the new value"],
+        ["git diff --check -- allowed.txt"],
+        "low",
+        "Implementer",
+        PlanStatus.READY,
     )
     plan = ExecutionPlan(
-        "1.0", "plan-cli", "1970-01-01T00:00:00Z",
-        RepositoryContext(str(repo), "feature", "https://example.invalid/repo.git", True, "abc123"),
-        "Update the file", {"in": ["allowed.txt"], "out": []}, [], [],
-        {"status": "approved", "requires_architect": False}, [task], [], [["task-001"]],
-        ["Reviewer"], ["task outcome"], [], PlanStatus.READY,
+        "1.0",
+        "plan-cli",
+        "1970-01-01T00:00:00Z",
+        RepositoryContext(
+            str(repo),
+            "feature",
+            "https://example.invalid/repo.git",
+            True,
+            git(repo, "rev-parse", "HEAD").stdout.strip(),
+        ),
+        "Update the file",
+        {"in": ["allowed.txt"], "out": []},
+        [],
+        [],
+        {"status": "approved", "requires_architect": False},
+        [task],
+        [],
+        [["task-001"]],
+        ["Reviewer"],
+        ["task outcome"],
+        [],
+        PlanStatus.READY,
     )
     plan.validate()
     path.write_text(json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n")
 
 
 def run_cli(repo, plan, *extra):
-    env = {**os.environ, "PYTHONPATH": str(Path("src").resolve())}
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path("src").resolve()),
+        "AGF_STATE_DIR": str(plan.parent / f"agf-state-{plan.stem}"),
+    }
+    register = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agf_orchestrator.cli",
+            "project",
+            "add",
+            "--name",
+            repo.name,
+            "--repository",
+            str(repo),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert register.returncode in (0, 2), register.stderr
     return subprocess.run(
         [
-            sys.executable, "-m", "agf_orchestrator.cli", "execute",
-            "--plan", str(plan), "--task", "task-001", "--repository", str(repo),
-            "--adapter", "codex", *extra,
+            sys.executable,
+            "-m",
+            "agf_orchestrator.cli",
+            "execute",
+            "--plan",
+            str(plan),
+            "--task",
+            "task-001",
+            "--repository",
+            str(repo),
+            "--adapter",
+            "codex",
+            *extra,
         ],
         capture_output=True,
         text=True,
@@ -81,7 +136,7 @@ def test_cli_invalid_plan_is_nonzero_without_report(tmp_path):
     repo.mkdir()
     init_repo(repo)
     plan = tmp_path / "invalid.json"
-    plan.write_text("{\"status\": \"READY\"}\n")
+    plan.write_text('{"status": "READY"}\n')
     output = tmp_path / "execution.json"
     result = run_cli(repo, plan, "--output", str(output))
     assert result.returncode != 0

@@ -10,8 +10,10 @@ from agf_orchestrator.reviewer import DeterministicReviewer
 
 def git(path, *args, check=True):
     return subprocess.run(
-        ["git", "-C", str(path), *args], check=check,
-        capture_output=True, text=True,
+        ["git", "-C", str(path), *args],
+        check=check,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -26,27 +28,49 @@ def setup_repo(tmp_path):
     (root / "allowed.txt").write_text("before\n")
     git(root, "add", "allowed.txt")
     git(root, "commit", "-m", "initial")
-    git(root, "remote", "add", "origin", str(bare))
+    git(root, "remote", "add", "origin", bare.as_uri())
     return root
 
 
 def plan_for(root):
     task = Task(
-        "task-001", "Update allowed", "Update allowed.txt to after", ["allowed.txt"], [],
+        "task-001",
+        "Update allowed",
+        "Update allowed.txt to after",
+        ["allowed.txt"],
+        [],
         ["allowed.txt contains after"],
         [
-            "python -B -c \"from pathlib import Path; assert "
+            'python -B -c "from pathlib import Path; assert '
             "Path('allowed.txt').read_text().strip() == 'after'\""
         ],
-        "low", "Implementer", PlanStatus.READY,
+        "low",
+        "Implementer",
+        PlanStatus.READY,
     )
     plan = ExecutionPlan(
-        "1.0", "plan-delivery", "1970-01-01T00:00:00Z",
-        RepositoryContext(str(root), "feature", str(root.parent / "origin.git"), True,
-                          git(root, "rev-parse", "HEAD").stdout.strip()),
-        "Update allowed", {"in": ["allowed.txt"]}, [], [],
-        {"status": "approved", "requires_architect": False}, [task], [],
-        [[task.task_id]], ["Reviewer"], ["review", "compliance"], [], PlanStatus.READY,
+        "1.0",
+        "plan-delivery",
+        "1970-01-01T00:00:00Z",
+        RepositoryContext(
+            str(root),
+            "feature",
+            (root.parent / "origin.git").as_uri(),
+            True,
+            git(root, "rev-parse", "HEAD").stdout.strip(),
+        ),
+        "Update allowed",
+        {"in": ["allowed.txt"]},
+        [],
+        [],
+        {"status": "approved", "requires_architect": False},
+        [task],
+        [],
+        [[task.task_id]],
+        ["Reviewer"],
+        ["review", "compliance"],
+        [],
+        PlanStatus.READY,
     )
     plan.validate()
     return plan
@@ -107,10 +131,17 @@ def blocker_report(name="blocker"):
     return ReviewReport(
         name,
         ReviewStatus.REQUEST_CHANGES,
-        [ReviewFinding(
-            "REV-001", "CORRECTNESS", "blocker", "wrong value", ["allowed.txt"],
-            "patch evidence", "write after",
-        )],
+        [
+            ReviewFinding(
+                "REV-001",
+                "CORRECTNESS",
+                "blocker",
+                "wrong value",
+                ["allowed.txt"],
+                "patch evidence",
+                "write after",
+            )
+        ],
         [],
         ["wrong value"],
     )
@@ -119,8 +150,10 @@ def blocker_report(name="blocker"):
 def test_reviewer_rejection_blocks_delivery(tmp_path):
     root = setup_repo(tmp_path)
     report = DeliveryPipeline(
-        adapter=fake_adapter(tmp_path), reviewer=RejectingReviewer(),
-        pr_creator=DraftPRCreator(simulate=True), artifact_dir=tmp_path / "artifacts",
+        adapter=fake_adapter(tmp_path),
+        reviewer=RejectingReviewer(),
+        pr_creator=DraftPRCreator(simulate=True),
+        artifact_dir=tmp_path / "artifacts",
     ).deliver(plan_for(root), "task-001", str(root), execute=True)
     assert report.status in {"BLOCKED", "HUMAN_REQUIRED"}
     assert git(root, "branch", "--list", "agf/*").stdout == ""
@@ -140,8 +173,13 @@ class CorrectOnRetryReviewer:
             )
         report = DeterministicReviewer().review(*args)
         return ReviewReport(
-            report.reviewer, report.status, report.findings, report.evidence,
-            report.blocking_issues, "REV-001 resolved", report.checks_performed,
+            report.reviewer,
+            report.status,
+            report.findings,
+            report.evidence,
+            report.blocking_issues,
+            "REV-001 resolved",
+            report.checks_performed,
             report.residual_risks,
         )
 
@@ -150,8 +188,10 @@ def test_correction_succeeds_on_first_retry(tmp_path):
     root = setup_repo(tmp_path)
     reviewer = CorrectOnRetryReviewer()
     report = DeliveryPipeline(
-        adapter=fake_adapter(tmp_path), reviewer=reviewer,
-        pr_creator=DraftPRCreator(simulate=True), artifact_dir=tmp_path / "artifacts",
+        adapter=fake_adapter(tmp_path),
+        reviewer=reviewer,
+        pr_creator=DraftPRCreator(simulate=True),
+        artifact_dir=tmp_path / "artifacts",
     ).deliver(plan_for(root), "task-001", str(root), execute=True)
     assert report.status == "COMPLETED"
     assert report.correction_rounds == 1
@@ -161,8 +201,10 @@ def test_correction_succeeds_on_first_retry(tmp_path):
 def test_correction_limit_requires_human(tmp_path):
     root = setup_repo(tmp_path)
     report = DeliveryPipeline(
-        adapter=fake_adapter(tmp_path), reviewer=RejectingReviewer(),
-        pr_creator=DraftPRCreator(simulate=True), artifact_dir=tmp_path / "artifacts",
+        adapter=fake_adapter(tmp_path),
+        reviewer=RejectingReviewer(),
+        pr_creator=DraftPRCreator(simulate=True),
+        artifact_dir=tmp_path / "artifacts",
     ).deliver(plan_for(root), "task-001", str(root), execute=True)
     assert report.status in {"BLOCKED", "HUMAN_REQUIRED"}
     assert git(root, "branch", "--list", "agf/*").stdout == ""
@@ -176,8 +218,10 @@ class FailedPRCreator:
 def test_failed_pr_creation_retains_pushed_branch(tmp_path):
     root = setup_repo(tmp_path)
     report = DeliveryPipeline(
-        adapter=fake_adapter(tmp_path), reviewer=DeterministicReviewer(),
-        pr_creator=FailedPRCreator(), artifact_dir=tmp_path / "artifacts",
+        adapter=fake_adapter(tmp_path),
+        reviewer=DeterministicReviewer(),
+        pr_creator=FailedPRCreator(),
+        artifact_dir=tmp_path / "artifacts",
     ).deliver(plan_for(root), "task-001", str(root), execute=True)
     assert report.status == "HUMAN_REQUIRED"
     assert report.push_status == "PUSHED"
@@ -210,9 +254,11 @@ def test_deterministic_blocker_prevents_codex_review(tmp_path):
     root = setup_repo(tmp_path)
     semantic = NeverCalledReviewer()
     report = DeliveryPipeline(
-        adapter=fake_adapter(tmp_path), reviewer=semantic,
+        adapter=fake_adapter(tmp_path),
+        reviewer=semantic,
         deterministic_reviewer=DeterministicBlocker(),
-        pr_creator=DraftPRCreator(simulate=True), artifact_dir=tmp_path / "artifacts",
+        pr_creator=DraftPRCreator(simulate=True),
+        artifact_dir=tmp_path / "artifacts",
     ).deliver(plan_for(root), "task-001", str(root), execute=True)
     assert semantic.calls == 0
     assert report.review_status == ReviewStatus.REQUEST_CHANGES
@@ -224,8 +270,13 @@ class RepeatingFindingReviewer:
     def review(self, *args):
         report = blocker_report(self.name)
         return ReviewReport(
-            report.reviewer, report.status, report.findings, report.evidence,
-            report.blocking_issues, "REV-001 still open", report.checks_performed,
+            report.reviewer,
+            report.status,
+            report.findings,
+            report.evidence,
+            report.blocking_issues,
+            "REV-001 still open",
+            report.checks_performed,
             report.residual_risks,
         )
 
@@ -233,8 +284,10 @@ class RepeatingFindingReviewer:
 def test_repeated_unchanged_finding_stops_with_human_required(tmp_path):
     root = setup_repo(tmp_path)
     report = DeliveryPipeline(
-        adapter=fake_adapter(tmp_path), reviewer=RepeatingFindingReviewer(),
-        pr_creator=DraftPRCreator(simulate=True), artifact_dir=tmp_path / "artifacts",
+        adapter=fake_adapter(tmp_path),
+        reviewer=RepeatingFindingReviewer(),
+        pr_creator=DraftPRCreator(simulate=True),
+        artifact_dir=tmp_path / "artifacts",
     ).deliver(plan_for(root), "task-001", str(root), execute=True)
     assert report.status == "HUMAN_REQUIRED"
     assert "non-convergence" in report.blocking_issues[0]

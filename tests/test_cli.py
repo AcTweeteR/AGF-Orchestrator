@@ -26,7 +26,32 @@ def init_repo(path):
 
 
 def run_cli(repo, output, goal, *, allow_dirty=False):
-    environment = {**os.environ, "PYTHONPATH": str(Path("src").resolve())}
+    state = repo.parent / f"agf-state-{output.stem}"
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(Path("src").resolve()),
+        "AGF_STATE_DIR": str(state),
+    }
+    register_args = [
+        sys.executable,
+        "-m",
+        "agf_orchestrator.cli",
+        "project",
+        "add",
+        "--name",
+        repo.name,
+        "--repository",
+        str(repo),
+    ]
+    if allow_dirty:
+        register_args.append("--allow-dirty-planning")
+    register = subprocess.run(
+        register_args,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert register.returncode in (0, 2), register.stderr
     command = [
         sys.executable,
         "-m",

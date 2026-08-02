@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 from .adapters.codex import CodexAdapter
@@ -72,6 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
     project_add.add_argument("--allow-dirty-planning", action="store_true")
     project_add.add_argument("--allow-live-execution", action="store_true")
     project_add.add_argument("--allow-delivery", action="store_true")
+    project_add.add_argument("--no-human-merge", action="store_true")
+    project_add.add_argument("--maximum-correction-rounds", type=int, default=2)
     project_add.add_argument("--allowed-remote-host", action="append", default=[])
     project_add.add_argument("--json", action="store_true")
     for command in ("list", "show", "verify", "remove"):
@@ -115,20 +118,57 @@ def _output(value, as_json: bool = False) -> None:
         print(value)
 
 
-def _target_repository(args: argparse.Namespace) -> str:
-    registered = None
-    if getattr(args, "project", None):
-        registered = ProjectRegistry().get(args.project)
-        if registered.status.value != "ACTIVE":
-            raise ProjectRegistryError(f"project status is {registered.status.value}")
-    if getattr(args, "repository", None):
-        repository = str(Path(args.repository).expanduser().resolve())
-        if registered and repository != registered.repository_root:
+def _resolve_project(args: argparse.Namespace, *, verify: bool = True):
+    registry = ProjectRegistry()
+    selected = registry.get(args.project) if getattr(args, "project", None) else None
+    requested = (
+        Path(args.repository).expanduser().resolve() if getattr(args, "repository", None) else None
+    )
+    if requested is not None:
+        try:
+            context = collect_repository(requested, allow_dirty=True)
+            canonical = Path(context.root).resolve()
+        except PreflightError as exc:
+            raise ProjectRegistryError(f"repository selection failed: {exc}") from exc
+        if requested != canonical:
+            raise ProjectRegistryError("repository path must be the canonical repository root")
+        projects = registry.list()
+        nested = [p for p in projects if canonical in Path(p.repository_root).resolve().parents]
+        if nested:
+            raise ProjectRegistryError("repository path is nested inside a registered project")
+        matches = [p for p in projects if Path(p.repository_root).resolve() == canonical]
+        if len(matches) != 1:
+            raise ProjectRegistryError("repository path must match exactly one registered project")
+        if selected and selected.project_id != matches[0].project_id:
             raise ProjectRegistryError("repository does not match the selected project")
-        return repository
-    if registered:
-        return registered.repository_root
-    raise ProjectRegistryError("explicit --project or --repository selection is required")
+        selected = matches[0]
+    if selected is None:
+        raise ProjectRegistryError("an exactly one registered project selection is required")
+    if verify:
+        selected = registry.verify(selected.project_id)
+    if selected.status.value != "ACTIVE":
+        raise ProjectRegistryError(f"project status is {selected.status.value}")
+    return selected, Path(selected.repository_root).resolve()
+
+
+def _validate_plan_project(plan, project, repository: Path) -> None:
+    context = plan.repository
+    if Path(context.root).resolve() != repository:
+        raise ProjectRegistryError("plan repository root does not match the registered project")
+    if context.origin != project.origin_url:
+        raise ProjectRegistryError("plan origin does not match the registered project")
+    if context.branch != project.default_branch:
+        raise ProjectRegistryError("plan branch does not match the registered project")
+    if context.head_sha != project.current_head_sha:
+        raise ProjectRegistryError("plan HEAD does not match the verified project HEAD")
+
+
+def _dirty_policy(project, repository: Path, allow_dirty: bool) -> None:
+    dirty = bool(collect_repository(repository, allow_dirty=True).clean is False)
+    if dirty and (not allow_dirty or not project.policy.allow_dirty_planning):
+        raise ProjectRegistryError(
+            "dirty planning requires --allow-dirty and project policy allow_dirty_planning"
+        )
 
 
 def run_project(args: argparse.Namespace) -> int:
@@ -143,6 +183,8 @@ def run_project(args: argparse.Namespace) -> int:
                     allow_dirty_planning=args.allow_dirty_planning,
                     allow_live_execution=args.allow_live_execution,
                     allow_delivery=args.allow_delivery,
+                    require_human_merge=not args.no_human_merge,
+                    maximum_correction_rounds=args.maximum_correction_rounds,
                 ),
             )
             _output(project.to_dict(), args.json)
@@ -241,11 +283,18 @@ def _write_plan(plan, output: str, repository_root: str) -> None:
 
 def run_plan(args: argparse.Namespace) -> int:
     try:
-        target = _target_repository(args)
-        repository = collect_repository(target, allow_dirty=args.allow_dirty)
+        project, target = _resolve_project(args)
+        _dirty_policy(project, target, args.allow_dirty)
+        repository = collect_repository(target, allow_dirty=True)
+        repository = replace(
+            repository,
+            branch=project.default_branch,
+            origin=project.origin_url,
+            head_sha=project.current_head_sha,
+        )
         plan = Director().create_plan(args.goal, repository)
         _write_plan(plan, args.output, repository.root)
-    except (PreflightError, ValueError, OSError, json.JSONDecodeError) as exc:
+    except (ProjectRegistryError, PreflightError, ValueError, OSError, json.JSONDecodeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     if plan.status is PlanStatus.HUMAN_REQUIRED:
@@ -264,7 +313,10 @@ def run_execute(args: argparse.Namespace) -> int:
         return 2
     try:
         plan = load_plan(args.plan)
-        target_root = Path(_target_repository(args))
+        project, target_root = _resolve_project(args)
+        _validate_plan_project(plan, project, target_root)
+        if args.execute and not project.policy.allow_live_execution:
+            raise ProjectRegistryError("project policy denies live execution")
         if args.output:
             output = Path(args.output).expanduser().resolve()
             if output == target_root or target_root in output.parents:
@@ -279,7 +331,13 @@ def run_execute(args: argparse.Namespace) -> int:
             write_execution_result(result, args.output)
         else:
             print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-    except (ExecutionValidationError, OSError, ValueError, json.JSONDecodeError) as exc:
+    except (
+        ProjectRegistryError,
+        ExecutionValidationError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     if result.status in {
@@ -302,7 +360,13 @@ def run_deliver(args: argparse.Namespace) -> int:
         return 2
     try:
         plan = load_plan(args.plan)
-        target_root = Path(_target_repository(args))
+        project, target_root = _resolve_project(args)
+        _validate_plan_project(plan, project, target_root)
+        if args.execute:
+            if not project.policy.allow_live_execution or not project.policy.allow_delivery:
+                raise ProjectRegistryError("project policy denies live delivery")
+            if not project.policy.require_human_merge:
+                raise ProjectRegistryError("delivery requires human merge approval")
         output = Path(args.output).expanduser().resolve()
         if output == target_root or target_root in output.parents:
             raise ExecutionValidationError(
@@ -317,10 +381,17 @@ def run_deliver(args: argparse.Namespace) -> int:
             reviewer=reviewer,
             compliance=ComplianceChecker(),
             pr_creator=DraftPRCreator(simulate=args.simulate_pr),
+            max_correction_rounds=project.policy.maximum_correction_rounds,
         )
         report = pipeline.deliver(plan, args.task, str(target_root), execute=args.execute)
         write_delivery_report(report, output)
-    except (ExecutionValidationError, OSError, ValueError, json.JSONDecodeError) as exc:
+    except (
+        ProjectRegistryError,
+        ExecutionValidationError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     if report.status in {"BLOCKED", "FAILED", "HUMAN_REQUIRED"}:

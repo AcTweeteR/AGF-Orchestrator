@@ -23,6 +23,13 @@ class ProjectPolicy:
     require_human_merge: bool = True
     maximum_correction_rounds: int = 2
 
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.maximum_correction_rounds, int)
+            or not 0 <= self.maximum_correction_rounds <= 2
+        ):
+            raise ValueError("maximum_correction_rounds must be between 0 and 2")
+
 
 @dataclass(frozen=True)
 class Project:
