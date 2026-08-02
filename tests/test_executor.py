@@ -181,6 +181,17 @@ def test_validation_command_policy_rejects_shell_syntax(tmp_path):
     assert "shell control syntax" in result.blocking_issues[0]
 
 
+def test_quoted_python_validation_command_is_allowed(tmp_path):
+    init_repo(tmp_path)
+    command = (
+        'python -B -c "from pathlib import Path; '
+        "assert Path('allowed.txt').read_text().strip() == 'before'\""
+    )
+    task = replace(make_plan(tmp_path).tasks[0], validation_commands=[command])
+    result = Executor().execute(make_plan(tmp_path, task=task), "task-001", str(tmp_path))
+    assert result.status is ExecutionStatus.DRY_RUN
+
+
 def test_validation_command_timeout_is_reported(tmp_path):
     init_repo(tmp_path)
     task = replace(make_plan(tmp_path).tasks[0], validation_commands=["sleep 1"])

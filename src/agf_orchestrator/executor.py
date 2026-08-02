@@ -18,6 +18,7 @@ from .models import ExecutionPlan, PlanStatus, Task, plan_from_dict
 from .preflight import PreflightError, collect_repository
 
 CONTROL_SYNTAX = (";", "&&", "||", "|", ">", "<", "`", "$(", "\n")
+SHELL_CONTROL_TOKENS = {";", "&&", "||", "|", ">", "<"}
 
 
 class ExecutionValidationError(ValueError):
@@ -109,11 +110,18 @@ def _validate_commands(commands: list[str]) -> list[str]:
     for command in commands:
         if not command.strip():
             raise ExecutionValidationError("validation commands cannot be empty")
-        if any(token in command for token in CONTROL_SYNTAX):
+        if any(token in command for token in ("`", "$(", "\n")):
             raise ExecutionValidationError(
                 f"validation command contains shell control syntax: {command}"
             )
         try:
+            lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+            if any(token in SHELL_CONTROL_TOKENS for token in tokens):
+                raise ExecutionValidationError(
+                    f"validation command contains shell control syntax: {command}"
+                )
             argv = shlex.split(command)
         except ValueError as exc:
             raise ExecutionValidationError(f"invalid validation command: {exc}") from exc
