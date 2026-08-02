@@ -74,8 +74,15 @@ class FileLock:
 
 def lock_status(path: str | Path) -> dict:
     path = Path(path)
+    if fcntl is None:
+        return {
+            "locked": None,
+            "supported": False,
+            "path": str(path),
+            "diagnostic": "filesystem locking is unsupported on this platform",
+        }
     if not path.exists():
-        return {"locked": False, "path": str(path)}
+        return {"locked": False, "supported": True, "path": str(path)}
     handle = path.open("a+", encoding="utf-8")
     try:
         try:
@@ -93,6 +100,7 @@ def lock_status(path: str | Path) -> dict:
         metadata = {"status": "unreadable"}
     return {
         "locked": locked,
+        "supported": True,
         "path": str(path),
         "metadata": metadata,
         "diagnostic": "stale locks are reported but never broken",

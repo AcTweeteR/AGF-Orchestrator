@@ -19,7 +19,7 @@ def test_inbox_contains_attention_items_only(tmp_path):
     (root / "x").write_text("x")
     subprocess.run(["git", "-C", str(root), "add", "x"], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-m", "i"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(root), "remote", "add", "origin", str(origin)], check=True)
+    subprocess.run(["git", "-C", str(root), "remote", "add", "origin", origin.as_uri()], check=True)
     state = tmp_path / "state"
     ProjectRegistry(state).add("alpha", root)
     manager = SessionManager(state)

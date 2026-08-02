@@ -61,6 +61,7 @@ for _status in ACTIVE_STATUSES:
 @dataclass(frozen=True)
 class SessionEvent:
     event_id: str
+    operation_id: str
     timestamp: str
     session_id: str
     event_type: str

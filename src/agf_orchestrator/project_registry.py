@@ -5,17 +5,70 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .locking import project_lock
 from .project_models import Project, ProjectPolicy, ProjectStatus, project_from_dict
+from .session_models import TERMINAL_STATUSES
+from .session_store import SessionStore
 
 
 class ProjectRegistryError(RuntimeError):
     pass
+
+
+class RemoteInfo:
+    def __init__(self, normalized: str, host: str, scheme: str):
+        self.normalized = normalized
+        self.host = host
+        self.scheme = scheme
+
+
+_SCP_REMOTE = re.compile(r"^[A-Za-z0-9._-]+@(?P<host>[^:/\s]+):(?P<path>[^\s?]+)$")
+
+
+def parse_remote_url(value: str) -> RemoteInfo:
+    """Parse only supported Git remote forms without retaining credentials."""
+    if (
+        not isinstance(value, str)
+        or not value
+        or any(char.isspace() or ord(char) < 32 for char in value)
+    ):
+        raise ProjectRegistryError("origin has unsupported whitespace or control characters")
+    scp = _SCP_REMOTE.fullmatch(value)
+    if scp:
+        path = scp.group("path")
+        if "/" not in path:
+            raise ProjectRegistryError("origin SCP path is malformed")
+        host = scp.group("host").lower()
+        return RemoteInfo(f"ssh://{value.split('@', 1)[0]}@{host}/{path}", host, "ssh")
+    parsed = urlparse(value)
+    if parsed.scheme not in {"https", "ssh", "git", "file"}:
+        raise ProjectRegistryError("origin scheme is unsupported or missing")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ProjectRegistryError("origin contains credentials or unsupported URL components")
+    if not parsed.hostname:
+        if parsed.scheme != "file":
+            raise ProjectRegistryError("origin host is missing")
+        if not parsed.path.startswith("/"):
+            raise ProjectRegistryError("file origin path must be absolute")
+        canonical = Path(parsed.path).resolve()
+        return RemoteInfo(canonical.as_uri(), "", "file")
+    if parsed.scheme == "file":
+        raise ProjectRegistryError("file origin host is unsupported")
+    if not parsed.path or not parsed.path.startswith("/"):
+        raise ProjectRegistryError("origin path is malformed")
+    host = parsed.hostname.lower()
+    try:
+        port = f":{parsed.port}" if parsed.port else ""
+    except ValueError as exc:
+        raise ProjectRegistryError("origin port is malformed") from exc
+    return RemoteInfo(f"{parsed.scheme}://{host}{port}{parsed.path}", host, parsed.scheme)
 
 
 def _now() -> str:
@@ -74,6 +127,9 @@ class ProjectRegistry:
         self.state_dir = Path(configured).expanduser().resolve()
         self.path = self.state_dir / "projects.json"
 
+    def _lock(self, operation: str):
+        return project_lock(self.state_dir, "registry", operation, timeout=5.0)
+
     def _load(self) -> list[Project]:
         if not self.path.exists():
             return []
@@ -97,9 +153,14 @@ class ProjectRegistry:
         )
 
     def list(self) -> list[Project]:
-        return sorted(self._load(), key=lambda item: (item.name, item.project_id))
+        with self._lock("registry-list"):
+            return sorted(self._load(), key=lambda item: (item.name, item.project_id))
 
     def get(self, name_or_id: str) -> Project:
+        with self._lock("registry-get"):
+            return self._get_unlocked(name_or_id)
+
+    def _get_unlocked(self, name_or_id: str) -> Project:
         matches = [p for p in self._load() if p.name == name_or_id or p.project_id == name_or_id]
         if len(matches) != 1:
             raise ProjectRegistryError("project selection is missing or ambiguous")
@@ -114,12 +175,28 @@ class ProjectRegistry:
         metadata: dict | None = None,
         accept_duplicate_origin: bool = False,
     ) -> Project:
+        with self._lock("registry-add"):
+            return self._add_unlocked(
+                name,
+                repository,
+                policy=policy,
+                metadata=metadata,
+                accept_duplicate_origin=accept_duplicate_origin,
+            )
+
+    def _add_unlocked(
+        self,
+        name: str,
+        repository: str | Path,
+        *,
+        policy: ProjectPolicy | None,
+        metadata: dict | None,
+        accept_duplicate_origin: bool,
+    ) -> Project:
         requested = Path(repository).expanduser()
         root = requested.resolve(strict=True)
         if requested.is_symlink():
-            raise ProjectRegistryError(
-                "symlink or non-canonical repository path is not registrable"
-            )
+            raise ProjectRegistryError("symlink repository path is not registrable")
         if (
             root == self.state_dir
             or self.state_dir in root.parents
@@ -137,15 +214,10 @@ class ProjectRegistry:
         origin = _git(root, "config", "--get", "remote.origin.url")
         if not origin:
             raise ProjectRegistryError("origin remote is required")
-        parsed = urlparse(origin)
-        if parsed.username or parsed.password:
-            raise ProjectRegistryError("origin must not contain embedded credentials")
-        if parsed.scheme not in {"https", "ssh", "git", "file", ""}:
-            raise ProjectRegistryError("unsupported origin scheme")
+        remote = parse_remote_url(origin)
         selected_policy = policy or ProjectPolicy()
         if selected_policy.allowed_remote_hosts:
-            host = parsed.hostname or ""
-            if host not in selected_policy.allowed_remote_hosts:
+            if remote.host not in selected_policy.allowed_remote_hosts:
                 raise ProjectRegistryError("origin host is not allowed by project policy")
         head = _git(root, "rev-parse", "HEAD")
         projects = self._load()
@@ -153,7 +225,7 @@ class ProjectRegistry:
             old = Path(existing.repository_root)
             if old == root or old in root.parents or root in old.parents:
                 raise ProjectRegistryError("repository duplicates or nests a registered project")
-            if existing.origin_url == origin and not accept_duplicate_origin:
+            if existing.origin_url == remote.normalized and not accept_duplicate_origin:
                 raise ProjectRegistryError("origin is already registered by another project")
         project_id = "project-" + hashlib.sha256(str(root).encode()).hexdigest()[:16]
         if any(p.name == name or p.project_id == project_id for p in projects):
@@ -163,7 +235,7 @@ class ProjectRegistry:
             project_id,
             name,
             str(root),
-            origin,
+            remote.normalized,
             branch,
             head,
             timestamp,
@@ -176,40 +248,70 @@ class ProjectRegistry:
         return project
 
     def verify(self, name_or_id: str) -> Project:
-        project = self.get(name_or_id)
+        with self._lock("registry-verify"):
+            project = self._get_unlocked(name_or_id)
+            return self._verify_unlocked(project)
+
+    def _verify_unlocked(self, project: Project) -> Project:
         root = Path(project.repository_root)
         try:
             origin = _git(root, "config", "--get", "remote.origin.url")
             head = _git(root, "rev-parse", "HEAD")
             branch = _git(root, "branch", "--show-current")
         except ProjectRegistryError as exc:
-            return self._mark(project, ProjectStatus.STALE, str(exc))
-        if (
-            origin != project.origin_url
-            or branch != project.default_branch
-            or head != project.current_head_sha
-        ):
-            return self._mark(project, ProjectStatus.STALE, "repository identity or HEAD changed")
-        return self._mark(project, ProjectStatus.ACTIVE, None, verified_at=_now())
+            return self._mark_unlocked(project, ProjectStatus.STALE, str(exc))
+        try:
+            normalized = parse_remote_url(origin).normalized
+        except ProjectRegistryError as exc:
+            return self._mark_unlocked(project, ProjectStatus.STALE, str(exc))
+        if normalized != project.origin_url:
+            return self._mark_unlocked(project, ProjectStatus.STALE, "repository origin changed")
+        if not branch:
+            return self._mark_unlocked(project, ProjectStatus.STALE, "repository is detached")
+        if branch != project.default_branch:
+            return self._mark_unlocked(
+                project, ProjectStatus.STALE, "registered branch identity changed"
+            )
+        if head != project.current_head_sha:
+            return self._mark_unlocked(
+                project,
+                ProjectStatus.ACTIVE,
+                "observed HEAD advanced",
+                verified_at=_now(),
+                new_head=head,
+            )
+        return self._mark_unlocked(project, ProjectStatus.ACTIVE, None, verified_at=_now())
 
-    def _mark(
+    def _mark_unlocked(
         self,
         project: Project,
         status: ProjectStatus,
         reason: str | None,
         *,
         verified_at: str | None = None,
+        new_head: str | None = None,
     ) -> Project:
         metadata = dict(project.metadata)
         if reason:
             metadata["last_verification_reason"] = reason
+        observed = list(metadata.get("verification_history", []))
+        if reason or new_head is not None:
+            observed.append(
+                {
+                    "previous_sha": project.current_head_sha,
+                    "new_sha": new_head or project.current_head_sha,
+                    "verified_at": verified_at or _now(),
+                    "reason": reason or "verification",
+                }
+            )
+        metadata["verification_history"] = observed[-5:]
         updated = Project(
             project.project_id,
             project.name,
             project.repository_root,
             project.origin_url,
             project.default_branch,
-            project.current_head_sha,
+            new_head or project.current_head_sha,
             project.registered_at,
             verified_at or project.verified_at,
             status,
@@ -221,23 +323,34 @@ class ProjectRegistry:
         return updated
 
     def remove(self, name_or_id: str) -> None:
-        project = self.get(name_or_id)
-        self._save([p for p in self._load() if p.project_id != project.project_id])
+        with self._lock("registry-remove"):
+            project = self._get_unlocked(name_or_id)
+            sessions = [
+                s
+                for s in SessionStore(self.state_dir).list()
+                if s.project_id == project.project_id and s.status not in TERMINAL_STATUSES
+            ]
+            if sessions:
+                ids = ", ".join(s.session_id for s in sessions[:10])
+                suffix = "..." if len(sessions) > 10 else ""
+                raise ProjectRegistryError(f"project has active sessions: {ids}{suffix}")
+            self._save([p for p in self._load() if p.project_id != project.project_id])
 
     def set_status(self, name_or_id: str, status: ProjectStatus) -> Project:
-        project = self.get(name_or_id)
-        updated = Project(
-            project.project_id,
-            project.name,
-            project.repository_root,
-            project.origin_url,
-            project.default_branch,
-            project.current_head_sha,
-            project.registered_at,
-            project.verified_at,
-            status,
-            project.policy,
-            project.metadata,
-        )
-        self._save([updated if p.project_id == project.project_id else p for p in self._load()])
-        return updated
+        with self._lock("registry-status"):
+            project = self._get_unlocked(name_or_id)
+            updated = Project(
+                project.project_id,
+                project.name,
+                project.repository_root,
+                project.origin_url,
+                project.default_branch,
+                project.current_head_sha,
+                project.registered_at,
+                project.verified_at,
+                status,
+                project.policy,
+                project.metadata,
+            )
+            self._save([updated if p.project_id == project.project_id else p for p in self._load()])
+            return updated

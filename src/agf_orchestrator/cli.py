@@ -93,6 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
         item.add_argument("--session", required=True)
         item.add_argument("--json", action="store_true")
     resume = session_commands.choices["resume"]
+    resume.add_argument("--project", help="registered project name or ID")
     resume.add_argument("--execute", action="store_true")
     resume.add_argument("--confirm-execution", action="store_true")
     resume.add_argument("--confirm-delivery", action="store_true")
@@ -173,6 +174,7 @@ def run_session(args: argparse.Namespace) -> int:
         elif args.session_command == "resume":
             session = manager.resume(
                 args.session,
+                project_name=args.project,
                 execute=args.execute,
                 confirm_execution=args.confirm_execution,
                 confirm_delivery=args.confirm_delivery,
