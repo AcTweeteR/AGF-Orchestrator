@@ -46,6 +46,8 @@ agf-orchestrator plan \
 
 The command performs repository preflight, never modifies the target repository, and returns `HUMAN_REQUIRED` for ambiguous goals. Use `--allow-dirty` only when the caller explicitly accepts planning against a dirty working tree. The runtime currently uses a deterministic local adapter; no remote model or provider API is called.
 
+Preflight requires a resolvable named branch, an `origin` remote, and a resolvable `HEAD`. Missing repository context is an explicit non-zero error. When `--allow-dirty` is used, the plan preserves `clean: false` and records the dirty-state risk and required evidence.
+
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing changes. Governance concerns are recorded as architecture decision records where appropriate.

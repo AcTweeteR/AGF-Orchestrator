@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 from .director import Director
@@ -28,8 +30,27 @@ def _write_plan(plan, output: str, repository_root: str) -> None:
     root = Path(repository_root).resolve()
     if target == root or root in target.parents:
         raise ValueError("output must not be written inside the target repository")
+    serialized = json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary.write(serialized)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        os.replace(temporary_path, target)
+    except OSError:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def run_plan(args: argparse.Namespace) -> int:

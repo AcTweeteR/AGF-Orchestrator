@@ -35,6 +35,10 @@ def collect_repository(path: str | Path, *, allow_dirty: bool = False) -> Reposi
     requested = Path(path).expanduser().resolve()
     root = Path(_git(requested, "rev-parse", "--show-toplevel")).resolve()
     branch = _git(root, "branch", "--show-current")
+    if not branch:
+        raise PreflightError(
+            "repository is in detached HEAD; checkout a named branch before planning"
+        )
     origin_result = subprocess.run(
         ["git", "-C", str(root), "config", "--get", "remote.origin.url"],
         capture_output=True,
@@ -44,6 +48,8 @@ def collect_repository(path: str | Path, *, allow_dirty: bool = False) -> Reposi
         detail = origin_result.stderr.strip() or "unable to read origin URL"
         raise PreflightError(f"git config --get remote.origin.url failed: {detail}")
     origin = origin_result.stdout.strip() or None
+    if origin is None:
+        raise PreflightError("origin remote is required; configure origin before planning")
     status = _git(root, "status", "--porcelain")
     clean = not bool(status)
     head_sha = _git(root, "rev-parse", "HEAD")

@@ -13,7 +13,9 @@ def make_plan() -> ExecutionPlan:
         schema_version="1.0",
         plan_id="plan-test",
         created_at="1970-01-01T00:00:00Z",
-        repository=RepositoryContext("/repo", "main", None, True, "abc123"),
+        repository=RepositoryContext(
+            "/repo", "main", "https://example.invalid/repo.git", True, "abc123"
+        ),
         goal="Build a bounded feature",
         scope={"in": ["feature"], "out": ["unrelated work"]},
         assumptions=[],

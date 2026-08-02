@@ -28,10 +28,15 @@ class MockAdapter:
                 "status": "HUMAN_REQUIRED",
             }
         slug = re.sub(r"[^a-z0-9]+", "-", normalized.lower()).strip("-")[:40]
+        risks = ["The task requires independent review before release."]
+        required_evidence = ["task outcome", "validation results", "review report"]
+        if not repository.clean:
+            risks.append("The plan was created from a dirty working tree.")
+            required_evidence.append("uncommitted working-tree status captured at preflight")
         return {
             "scope": {"in": [normalized], "out": ["unrequested scope expansion"]},
             "assumptions": ["The goal is bounded by the supplied repository and policy context."],
-            "risks": ["The task requires independent review before release."],
+            "risks": risks,
             "architecture_impact": {"status": "to_be_assessed", "requires_architect": True},
             "tasks": [
                 {
@@ -50,7 +55,7 @@ class MockAdapter:
             "dependencies": [],
             "parallel_groups": [["task-001"]],
             "required_reviews": ["Reviewer", "Compliance Officer"],
-            "required_evidence": ["task outcome", "validation results", "review report"],
+            "required_evidence": required_evidence,
             "human_intervention": [],
             "status": "READY",
             "slug": slug,

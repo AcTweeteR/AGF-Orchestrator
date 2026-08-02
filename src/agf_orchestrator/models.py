@@ -74,9 +74,14 @@ class ExecutionPlan:
         for name, value in required_strings.items():
             if not isinstance(value, str) or not value.strip():
                 raise PlanValidationError(f"{name} is required")
-        if self.status not in PlanStatus:
+        if not isinstance(self.status, PlanStatus):
             raise PlanValidationError("status is invalid")
-        if not self.repository.root or not self.repository.head_sha:
+        if (
+            not self.repository.root
+            or not self.repository.branch
+            or not self.repository.origin
+            or not self.repository.head_sha
+        ):
             raise PlanValidationError("repository context is incomplete")
         if not isinstance(self.scope, dict) or not isinstance(self.architecture_impact, dict):
             raise PlanValidationError("scope and architecture_impact must be objects")
@@ -87,6 +92,13 @@ class ExecutionPlan:
         task_id_set = set(task_ids)
         for task in self.tasks:
             self._validate_task(task, task_id_set)
+        if self.status is PlanStatus.READY:
+            if not self.tasks:
+                raise PlanValidationError("READY plans require at least one task")
+            if self.human_intervention:
+                raise PlanValidationError(
+                    "READY plans cannot contain unresolved human intervention"
+                )
         for group in self.parallel_groups:
             if not group or not set(group).issubset(task_id_set):
                 raise PlanValidationError("parallel_groups reference unknown or empty tasks")
@@ -112,7 +124,7 @@ class ExecutionPlan:
             raise PlanValidationError("task required fields are incomplete")
         if task.assigned_role != "Implementer":
             raise PlanValidationError("tasks must be assigned to Implementer")
-        if task.status not in PlanStatus:
+        if not isinstance(task.status, PlanStatus):
             raise PlanValidationError(f"invalid status for task {task.task_id}")
         if not task.acceptance_criteria or not task.validation_commands:
             raise PlanValidationError(f"task {task.task_id} needs criteria and validation")
@@ -152,8 +164,15 @@ def plan_from_dict(payload: dict[str, Any]) -> ExecutionPlan:
     missing = sorted(required - payload.keys())
     if missing:
         raise PlanValidationError(f"missing plan fields: {', '.join(missing)}")
-    repository = RepositoryContext(**payload["repository"])
-    tasks = [Task(**{**item, "status": PlanStatus(item["status"])}) for item in payload["tasks"]]
+    try:
+        repository = RepositoryContext(**payload["repository"])
+        tasks = [
+            Task(**{**item, "status": PlanStatus(item["status"])})
+            for item in payload["tasks"]
+        ]
+        status = PlanStatus(payload["status"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PlanValidationError(f"invalid plan structure: {exc}") from exc
     plan = ExecutionPlan(
         schema_version=payload["schema_version"],
         plan_id=payload["plan_id"],
@@ -170,7 +189,7 @@ def plan_from_dict(payload: dict[str, Any]) -> ExecutionPlan:
         required_reviews=payload["required_reviews"],
         required_evidence=payload["required_evidence"],
         human_intervention=payload["human_intervention"],
-        status=PlanStatus(payload["status"]),
+        status=status,
     )
     plan.validate()
     return plan

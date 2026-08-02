@@ -22,6 +22,15 @@ class Director:
         draft = self.adapter.build_plan_inputs(goal, repository)
         plan_id = self._plan_id(goal, repository)
         tasks = [Task(**{**item, "status": PlanStatus(item["status"])}) for item in draft["tasks"]]
+        risks = list(draft["risks"])
+        required_evidence = list(draft["required_evidence"])
+        if not repository.clean:
+            dirty_risk = "The plan was created from a dirty working tree."
+            dirty_evidence = "uncommitted working-tree status captured at preflight"
+            if dirty_risk not in risks:
+                risks.append(dirty_risk)
+            if dirty_evidence not in required_evidence:
+                required_evidence.append(dirty_evidence)
         plan = ExecutionPlan(
             schema_version="1.0",
             plan_id=plan_id,
@@ -30,13 +39,13 @@ class Director:
             goal=" ".join(goal.split()),
             scope=draft["scope"],
             assumptions=draft["assumptions"],
-            risks=draft["risks"],
+            risks=risks,
             architecture_impact=draft["architecture_impact"],
             tasks=tasks,
             dependencies=draft["dependencies"],
             parallel_groups=draft["parallel_groups"],
             required_reviews=draft["required_reviews"],
-            required_evidence=draft["required_evidence"],
+            required_evidence=required_evidence,
             human_intervention=draft["human_intervention"],
             status=PlanStatus(draft["status"]),
         )
