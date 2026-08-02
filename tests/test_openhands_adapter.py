@@ -81,8 +81,9 @@ def test_timeout_and_secret_environment_filter(monkeypatch, tmp_path):
     assert result.timed_out is True
     assert "OPENHANDS_API_KEY" not in captured["env"]
     assert "TOKEN_SHOULD_NOT_PASS" not in captured["env"]
-    assert captured["command"][:4] == [
+    assert captured["command"][:5] == [
         "openhands",
+        "--override-with-envs",
         "--headless",
         "--json",
         "--exit-without-confirmation",
@@ -101,6 +102,7 @@ def test_openhands_requires_explicit_opt_in_without_invocation(monkeypatch, tmp_
     assert result.human_required is True
     assert result.transport_error == "OPENHANDS_LLM_ENV_NOT_AUTHORIZED"
     assert "secret-value" not in result.command_summary
+    assert "--override-with-envs" not in result.command_summary
     assert "secret-value" not in result.stderr_summary
 
 
@@ -125,6 +127,7 @@ def test_openhands_forwards_only_authorized_llm_environment(monkeypatch, tmp_pat
     monkeypatch.setenv("PASSWORD", "not-forwarded")
 
     def fake_run(command, **kwargs):
+        captured["command"] = command
         captured["env"] = kwargs["env"]
         return subprocess.CompletedProcess(
             command, 0, f"Authorization: Bearer {key}; key={key}", ""
@@ -132,6 +135,15 @@ def test_openhands_forwards_only_authorized_llm_environment(monkeypatch, tmp_pat
 
     monkeypatch.setattr(openhands_module.subprocess, "run", fake_run)
     result = OpenHandsAdapter(allow_llm_env=True).execute("instruction", str(tmp_path))
+    assert captured["command"] == [
+        "openhands",
+        "--override-with-envs",
+        "--headless",
+        "--json",
+        "--exit-without-confirmation",
+        "--task",
+        "instruction",
+    ]
     assert captured["env"]["LLM_API_KEY"] == key
     assert captured["env"]["LLM_MODEL"] == "gemini/gemini-2.5-flash"
     assert captured["env"]["LLM_BASE_URL"] == "https://generativelanguage.googleapis.com"

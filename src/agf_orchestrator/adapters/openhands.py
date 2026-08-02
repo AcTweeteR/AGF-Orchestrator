@@ -214,16 +214,23 @@ class OpenHandsAdapter:
         sandbox: str = "workspace-write",
     ) -> CodexProcessResult:
         del sandbox  # OpenHands owns its headless sandbox configuration.
-        command = [
-            self.executable,
-            "--headless",
-            "--json",
-            "--exit-without-confirmation",
-            "--task",
-            instruction,
-        ]
+        command = [self.executable]
+        if self.allow_llm_env:
+            command.append("--override-with-envs")
+        command.extend(
+            [
+                "--headless",
+                "--json",
+                "--exit-without-confirmation",
+                "--task",
+                instruction,
+            ]
+        )
+        override_summary = " --override-with-envs" if self.allow_llm_env else ""
         summary = (
-            "openhands --headless --json --exit-without-confirmation --task <task-instruction>"
+            "openhands"
+            f"{override_summary} --headless --json --exit-without-confirmation "
+            "--task <task-instruction>"
         )
         environment = {
             key: os.environ[key]
