@@ -4,7 +4,7 @@ from agf_orchestrator.adapters.codex import CodexAdapter, CodexInvocationProfile
 from agf_orchestrator.delivery import DeliveryPipeline, _patch_policy
 from agf_orchestrator.git_delivery import DraftPRCreator, GitDeliveryError
 from agf_orchestrator.models import ExecutionPlan, PlanStatus, RepositoryContext, Task
-from agf_orchestrator.review_models import ReviewReport, ReviewStatus
+from agf_orchestrator.review_models import ReviewFinding, ReviewReport, ReviewStatus
 from agf_orchestrator.reviewer import DeterministicReviewer
 
 
@@ -103,6 +103,19 @@ class RejectingReviewer:
         return ReviewReport("rejecting", ReviewStatus.REJECT, [], [], ["reject"])
 
 
+def blocker_report(name="blocker"):
+    return ReviewReport(
+        name,
+        ReviewStatus.REQUEST_CHANGES,
+        [ReviewFinding(
+            "REV-001", "CORRECTNESS", "blocker", "wrong value", ["allowed.txt"],
+            "patch evidence", "write after",
+        )],
+        [],
+        ["wrong value"],
+    )
+
+
 def test_reviewer_rejection_blocks_delivery(tmp_path):
     root = setup_repo(tmp_path)
     report = DeliveryPipeline(
@@ -125,7 +138,12 @@ class CorrectOnRetryReviewer:
             return ReviewReport(
                 self.name, ReviewStatus.REQUEST_CHANGES, [], [], ["improve evidence"]
             )
-        return DeterministicReviewer().review(*args)
+        report = DeterministicReviewer().review(*args)
+        return ReviewReport(
+            report.reviewer, report.status, report.findings, report.evidence,
+            report.blocking_issues, "REV-001 resolved", report.checks_performed,
+            report.residual_risks,
+        )
 
 
 def test_correction_succeeds_on_first_retry(tmp_path):
@@ -168,3 +186,56 @@ def test_failed_pr_creation_retains_pushed_branch(tmp_path):
 
 def test_no_merge_action_exists_in_delivery_pipeline():
     assert not hasattr(DeliveryPipeline, "merge")
+
+
+class NeverCalledReviewer:
+    name = "semantic-never-called"
+
+    def __init__(self):
+        self.calls = 0
+
+    def review(self, *args):
+        self.calls += 1
+        return ReviewReport(self.name, ReviewStatus.APPROVE, [], [], [])
+
+
+class DeterministicBlocker:
+    name = "deterministic-blocker"
+
+    def review(self, *args):
+        return blocker_report(self.name)
+
+
+def test_deterministic_blocker_prevents_codex_review(tmp_path):
+    root = setup_repo(tmp_path)
+    semantic = NeverCalledReviewer()
+    report = DeliveryPipeline(
+        adapter=fake_adapter(tmp_path), reviewer=semantic,
+        deterministic_reviewer=DeterministicBlocker(),
+        pr_creator=DraftPRCreator(simulate=True), artifact_dir=tmp_path / "artifacts",
+    ).deliver(plan_for(root), "task-001", str(root), execute=True)
+    assert semantic.calls == 0
+    assert report.review_status == ReviewStatus.REQUEST_CHANGES
+
+
+class RepeatingFindingReviewer:
+    name = "repeating"
+
+    def review(self, *args):
+        report = blocker_report(self.name)
+        return ReviewReport(
+            report.reviewer, report.status, report.findings, report.evidence,
+            report.blocking_issues, "REV-001 still open", report.checks_performed,
+            report.residual_risks,
+        )
+
+
+def test_repeated_unchanged_finding_stops_with_human_required(tmp_path):
+    root = setup_repo(tmp_path)
+    report = DeliveryPipeline(
+        adapter=fake_adapter(tmp_path), reviewer=RepeatingFindingReviewer(),
+        pr_creator=DraftPRCreator(simulate=True), artifact_dir=tmp_path / "artifacts",
+    ).deliver(plan_for(root), "task-001", str(root), execute=True)
+    assert report.status == "HUMAN_REQUIRED"
+    assert "non-convergence" in report.blocking_issues[0]
+    assert report.correction_rounds == 1

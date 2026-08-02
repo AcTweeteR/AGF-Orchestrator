@@ -28,7 +28,7 @@ from .git_delivery import DraftPRCreator, GitDelivery, GitDeliveryError, sanitiz
 from .models import ExecutionPlan, Task
 from .preflight import PreflightError, collect_repository
 from .review_models import ComplianceStatus, DeliveryReport, ReviewFinding, ReviewStatus
-from .reviewer import DeterministicReviewer, Reviewer
+from .reviewer import CodexReviewerAdapter, DeterministicReviewer, Reviewer
 
 MAX_CORRECTION_ROUNDS = 2
 
@@ -58,8 +58,12 @@ def _atomic_write_text(target: Path, content: str) -> None:
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=target.parent,
-            prefix=f".{target.name}.", suffix=".tmp", delete=False,
+            mode="w",
+            encoding="utf-8",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
         ) as handle:
             handle.write(content)
             handle.flush()
@@ -108,7 +112,10 @@ def _capture_patch(
 ) -> PatchArtifact:
     patch_result = subprocess.run(
         ["git", "-C", worktree, "diff", "--binary", "--full-index", base_sha, "--"],
-        check=True, capture_output=True, text=True, shell=False,
+        check=True,
+        capture_output=True,
+        text=True,
+        shell=False,
     )
     patch = patch_result.stdout
     blockers = _patch_policy(patch, changed, allowed)
@@ -195,20 +202,51 @@ def _run_attempt(
     return Attempt(status, changed, validation_results, evidence, blockers, None, caller_clean)
 
 
-def _correction_request(findings: list[ReviewFinding], task: Task) -> str:
-    accepted = [finding for finding in findings if finding.accepted]
+def _correction_request(
+    findings: list[ReviewFinding], task: Task, current_patch: str = ""
+) -> str:
+    accepted = [
+        finding
+        for finding in findings
+        if finding.accepted and finding.severity in {"blocker", "major"}
+    ]
     lines = [
         "Correct only the following accepted review findings:",
         *[
-            f"- {item.code}: {item.message}; affected paths={item.affected_paths}"
+            f"- ID={item.finding_id}; defect={item.message}; affected paths={item.affected_paths}; "
+            f"evidence={item.evidence}; required change={item.required_change}"
             for item in accepted
         ],
+        f"Unchanged task objective: {task.objective}",
         f"Expected correction must preserve acceptance criteria: {task.acceptance_criteria}",
         f"Allowed paths remain unchanged: {task.allowed_paths}",
         f"Approved validations remain unchanged: {task.validation_commands}",
+        f"Current unified patch:\n{current_patch}",
         "Do not perform unrelated refactoring or expand scope.",
     ]
     return "\n".join(lines)
+
+
+def _finding_fingerprint(finding: ReviewFinding) -> str:
+    normalized = "|".join(
+        [
+            finding.category.lower().strip(),
+            ",".join(sorted(path.lower().strip() for path in finding.affected_paths)),
+            " ".join(finding.required_change.lower().split()),
+        ]
+    )
+    return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+def _previous_findings_resolved(review, previous: list[ReviewFinding]) -> bool:
+    if not previous:
+        return True
+    text = " ".join([review.summary, *(review.checks_performed or [])]).lower()
+    return all(
+        finding.finding_id.lower() in text
+        and any(marker in text for marker in ("resolved", "still open", "open"))
+        for finding in previous
+    )
 
 
 def _delivery_id(plan_id: str, task_id: str) -> str:
@@ -225,13 +263,19 @@ class DeliveryPipeline:
         *,
         adapter: CodexAdapter | None = None,
         reviewer: Reviewer | None = None,
+        deterministic_reviewer: DeterministicReviewer | None = None,
         compliance: ComplianceChecker | None = None,
         pr_creator: DraftPRCreator | None = None,
         artifact_dir: str | Path | None = None,
         validation_timeout: float = 60.0,
     ):
         self.adapter = adapter or CodexAdapter()
-        self.reviewer = reviewer or DeterministicReviewer()
+        self.deterministic_reviewer = deterministic_reviewer or (
+            reviewer if isinstance(reviewer, DeterministicReviewer) else DeterministicReviewer()
+        )
+        self.reviewer = None if isinstance(reviewer, DeterministicReviewer) else reviewer
+        if self.reviewer is None and reviewer is None:
+            self.reviewer = CodexReviewerAdapter(self.adapter)
         self.compliance = compliance or ComplianceChecker()
         self.pr_creator = pr_creator or DraftPRCreator()
         self.artifact_dir = Path(artifact_dir or tempfile.gettempdir())
@@ -246,9 +290,26 @@ class DeliveryPipeline:
         branch = sanitize_branch_name(plan.plan_id, task_id)
         if not execute:
             return DeliveryReport(
-                delivery_id, plan.plan_id, task_id, repository, base_sha, branch, "",
-                "DRY_RUN", "NOT_RUN", [], 0, "NOT_RUN", [], [], None, "NOT_REQUESTED", None,
-                "DRY_RUN", [], ["dry-run: no model, patch, branch, commit, push, or PR mutation"],
+                delivery_id,
+                plan.plan_id,
+                task_id,
+                repository,
+                base_sha,
+                branch,
+                "",
+                "DRY_RUN",
+                "NOT_RUN",
+                [],
+                0,
+                "NOT_RUN",
+                [],
+                [],
+                None,
+                "NOT_REQUESTED",
+                None,
+                "DRY_RUN",
+                [],
+                ["dry-run: no model, patch, branch, commit, push, or PR mutation"],
             )
         try:
             context = collect_repository(repository)
@@ -257,12 +318,22 @@ class DeliveryPipeline:
             if not context.clean:
                 raise ExecutionValidationError("caller repository must be clean before delivery")
             review = None
+            compliance = None
             attempt = None
             correction_rounds = 0
-            for round_number in range(MAX_CORRECTION_ROUNDS + 1):
+            previous_findings: list[ReviewFinding] = []
+            previous_patch_sha: str | None = None
+            previous_patch = ""
+            for _round_number in range(MAX_CORRECTION_ROUNDS + 1):
                 attempt = _run_attempt(
-                    plan, task, repository, self.adapter, self.artifact_dir,
-                    None if review is None else _correction_request(review.findings, task),
+                    plan,
+                    task,
+                    repository,
+                    self.adapter,
+                    self.artifact_dir,
+                    None if review is None else _correction_request(
+                        review.findings, task, previous_patch
+                    ),
                     self.validation_timeout,
                 )
                 if (
@@ -272,15 +343,47 @@ class DeliveryPipeline:
                     raise ExecutionValidationError(
                         "; ".join(attempt.blocking_issues) or "execution failed"
                     )
-                review = self.reviewer.review(
+                deterministic = self.deterministic_reviewer.review(
                     plan,
                     task,
                     attempt.changed_files,
                     attempt.patch.patch,
                     attempt.validation_results,
+                    previous_findings,
                 )
+                if deterministic.status is not ReviewStatus.APPROVE:
+                    review = deterministic
+                elif self.reviewer is None:
+                    review = deterministic
+                else:
+                    review = self.reviewer.review(
+                        plan,
+                        task,
+                        attempt.changed_files,
+                        attempt.patch.patch,
+                        attempt.validation_results,
+                        previous_findings,
+                    )
+                if not _previous_findings_resolved(review, previous_findings):
+                    raise ExecutionValidationError(
+                        "review did not mark every previous finding resolved or still open"
+                    )
                 if review.status is ReviewStatus.APPROVE:
                     break
+                unresolved = [
+                    finding
+                    for finding in review.findings
+                    if finding.severity in {"blocker", "major"}
+                ]
+                if previous_patch_sha == attempt.patch.sha256 and set(
+                    _finding_fingerprint(item) for item in unresolved
+                ) & set(_finding_fingerprint(item) for item in previous_findings):
+                    raise ExecutionValidationError(
+                        "review non-convergence: unchanged unresolved finding"
+                    )
+                previous_findings = unresolved
+                previous_patch_sha = attempt.patch.sha256
+                previous_patch = attempt.patch.patch
                 correction_rounds += 1
                 if (
                     review.status is not ReviewStatus.REQUEST_CHANGES
@@ -289,13 +392,23 @@ class DeliveryPipeline:
                     raise ExecutionValidationError("review did not approve within correction limit")
             assert attempt is not None and review is not None and attempt.patch is not None
             compliance = self.compliance.check(
-                plan, task, review, attempt.changed_files, attempt.validation_results,
-                attempt.evidence, attempt.caller_clean, base_sha,
+                plan,
+                task,
+                review,
+                attempt.changed_files,
+                attempt.validation_results,
+                attempt.evidence,
+                attempt.caller_clean,
+                base_sha,
             )
             if compliance.status is not ComplianceStatus.PASS:
                 raise ExecutionValidationError("; ".join(compliance.blocking_issues))
             git_result = GitDelivery().deliver(
-                repository, base_sha, branch, attempt.patch.path, task,
+                repository,
+                base_sha,
+                branch,
+                attempt.patch.path,
+                task,
                 expected_patch_sha256=attempt.patch.sha256,
                 validation_timeout=self.validation_timeout,
             )
@@ -303,51 +416,101 @@ class DeliveryPipeline:
                 plan, task, attempt, review, compliance, correction_rounds, git_result
             )
             try:
-                pr_url = self.pr_creator.create(
-                    repository, branch, f"AGF: {task.title}", body
-                )
+                pr_url = self.pr_creator.create(repository, branch, f"AGF: {task.title}", body)
             except GitDeliveryError as exc:
                 return DeliveryReport(
-                    delivery_id, plan.plan_id, task_id, repository, base_sha, branch,
-                    attempt.patch.sha256, attempt.execution_status.value, review.status.value,
-                    [finding.__dict__ for finding in review.findings], correction_rounds,
+                    delivery_id,
+                    plan.plan_id,
+                    task_id,
+                    repository,
+                    base_sha,
+                    branch,
+                    attempt.patch.sha256,
+                    attempt.execution_status.value,
+                    review.status.value,
+                    [finding.to_dict() for finding in review.findings],
+                    correction_rounds,
                     compliance.status.value,
                     git_result.changed_files,
                     git_result.validation_results,
-                    git_result.commit_sha, git_result.push_status, None, "HUMAN_REQUIRED",
-                    [str(exc)], attempt.evidence + compliance.evidence,
+                    git_result.commit_sha,
+                    git_result.push_status,
+                    None,
+                    "HUMAN_REQUIRED",
+                    [str(exc)],
+                    attempt.evidence + compliance.evidence,
                 )
             return DeliveryReport(
-                delivery_id, plan.plan_id, task_id, repository, base_sha, branch,
-                attempt.patch.sha256, attempt.execution_status.value, review.status.value,
-                [finding.__dict__ for finding in review.findings], correction_rounds,
-                compliance.status.value, git_result.changed_files, git_result.validation_results,
-                git_result.commit_sha, git_result.push_status, pr_url, "COMPLETED", [],
+                delivery_id,
+                plan.plan_id,
+                task_id,
+                repository,
+                base_sha,
+                branch,
+                attempt.patch.sha256,
+                attempt.execution_status.value,
+                review.status.value,
+                [finding.to_dict() for finding in review.findings],
+                correction_rounds,
+                compliance.status.value,
+                git_result.changed_files,
+                git_result.validation_results,
+                git_result.commit_sha,
+                git_result.push_status,
+                pr_url,
+                "COMPLETED",
+                [],
                 attempt.evidence + compliance.evidence,
             )
         except (ExecutionValidationError, PreflightError, GitDeliveryError, OSError) as exc:
+            report_review_status = review.status.value if review is not None else "NOT_APPROVED"
+            report_findings = [finding.to_dict() for finding in review.findings] if review else []
+            report_execution_status = attempt.execution_status.value if attempt else "FAILED"
+            report_changed = attempt.changed_files if attempt else []
+            report_validation = attempt.validation_results if attempt else []
             return DeliveryReport(
-                delivery_id, plan.plan_id, task_id, repository, base_sha, branch, "",
-                "FAILED", "NOT_APPROVED", [], 0, "FAIL", [], [], None, "NOT_REQUESTED", None,
-                "HUMAN_REQUIRED" if "human" in str(exc).lower() else "BLOCKED",
-                [redact_secrets(str(exc))], [],
+                delivery_id,
+                plan.plan_id,
+                task_id,
+                repository,
+                base_sha,
+                branch,
+                "",
+                report_execution_status,
+                report_review_status,
+                report_findings,
+                correction_rounds,
+                compliance.status.value if compliance else "FAIL",
+                report_changed,
+                report_validation,
+                None,
+                "NOT_REQUESTED",
+                None,
+                "HUMAN_REQUIRED"
+                if "human" in str(exc).lower() or "non-convergence" in str(exc)
+                else "BLOCKED",
+                [redact_secrets(str(exc))],
+                attempt.evidence if attempt else [],
             )
 
     @staticmethod
     def _pr_body(plan, task, attempt, review, compliance, rounds, git_result) -> str:
-        return "\n".join([
-            f"## Objective\n\n{task.objective}",
-            f"## Plan and task\n\n- Plan ID: `{plan.plan_id}`\n- Task ID: `{task.task_id}`",
-            f"## Allowed paths\n\n{task.allowed_paths}",
-            f"## Files changed\n\n{git_result.changed_files}",
-            f"## Reviewer\n\n- Result: `{review.status.value}`\n- Findings: `{review.findings}`",
-            f"## Compliance\n\n- Result: `{compliance.status.value}`",
-            f"## Validation\n\n{git_result.validation_results}",
-            f"## Evidence\n\n{attempt.evidence}",
-            f"## Correction rounds\n\n{rounds}",
-            "## Limitations\n\nMerge requires human or later release-manager "
-            "authorization. AGF does not merge PRs.",
-        ])
+        return "\n".join(
+            [
+                f"## Objective\n\n{task.objective}",
+                f"## Plan and task\n\n- Plan ID: `{plan.plan_id}`\n- Task ID: `{task.task_id}`",
+                f"## Allowed paths\n\n{task.allowed_paths}",
+                f"## Files changed\n\n{git_result.changed_files}",
+                f"## Reviewer\n\n- Result: `{review.status.value}`\n"
+                f"- Findings: `{review.findings}`",
+                f"## Compliance\n\n- Result: `{compliance.status.value}`",
+                f"## Validation\n\n{git_result.validation_results}",
+                f"## Evidence\n\n{attempt.evidence}",
+                f"## Correction rounds\n\n{rounds}",
+                "## Limitations\n\nMerge requires human or later release-manager "
+                "authorization. AGF does not merge PRs.",
+            ]
+        )
 
 
 def load_delivery_plan(path: str | Path) -> ExecutionPlan:

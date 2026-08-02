@@ -22,11 +22,22 @@ class ComplianceStatus(StrEnum):
 
 @dataclass(frozen=True)
 class ReviewFinding:
-    code: str
+    finding_id: str
+    category: str
     severity: str
     message: str
     affected_paths: list[str]
+    evidence: str
+    required_change: str
     accepted: bool = True
+
+    @property
+    def code(self) -> str:
+        """Backward-compatible alias for the structured finding identifier."""
+        return self.finding_id
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -36,6 +47,9 @@ class ReviewReport:
     findings: list[ReviewFinding]
     evidence: list[str]
     blocking_issues: list[str]
+    summary: str = ""
+    checks_performed: list[str] | None = None
+    residual_risks: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
