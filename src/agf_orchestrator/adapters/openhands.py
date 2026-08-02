@@ -302,6 +302,10 @@ def parse_openhands_output(stdout: str, stderr: str = "") -> OpenHandsInterpreta
     stderr_kinds, stderr_fingerprints, stderr_error = _stream_metadata(stderr)
     stdout_has_events = bool(stdout_kinds)
     stderr_has_events = bool(stderr_kinds)
+    if stderr_error in {OPENHANDS_JSON_INVALID, OPENHANDS_JSON_TRUNCATED}:
+        return OpenHandsInterpretation(OPENHANDS_STDERR_EVENT_STREAM_INVALID, True, None)
+    if stdout_error in {OPENHANDS_JSON_INVALID, OPENHANDS_JSON_TRUNCATED}:
+        return OpenHandsInterpretation(stdout_error, True, None)
     if stdout_has_events and stderr_has_events:
         if stdout_fingerprints != stderr_fingerprints:
             return OpenHandsInterpretation(OPENHANDS_STRUCTURED_OUTPUT_CONFLICT, True, None)
@@ -309,8 +313,6 @@ def parse_openhands_output(stdout: str, stderr: str = "") -> OpenHandsInterpreta
     if stdout_has_events:
         return replace(stdout_result, transport="stdout")
     if stderr_has_events:
-        if stderr_error in {OPENHANDS_JSON_INVALID, OPENHANDS_JSON_TRUNCATED}:
-            return OpenHandsInterpretation(OPENHANDS_STDERR_EVENT_STREAM_INVALID, True, None)
         return replace(stderr_result, transport="stderr")
     error = stdout_error or stderr_error
     if error in {OPENHANDS_JSON_INVALID, OPENHANDS_JSON_TRUNCATED}:
