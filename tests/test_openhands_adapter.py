@@ -1,5 +1,6 @@
 import subprocess
 
+import pytest
 from test_delivery import plan_for, setup_repo
 
 from agf_orchestrator.adapters import openhands as openhands_module
@@ -25,24 +26,34 @@ def test_instruction_contains_exact_safety_context(tmp_path):
     assert "HUMAN_REQUIRED" in instruction
 
 
-def test_fake_openhands_cli_success_and_exact_workspace(tmp_path):
+def test_fake_openhands_cli_success_and_exact_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
     fake = tmp_path / "fake-openhands"
     fake.write_text("#!/bin/sh\nprintf 'cwd=%s\\n' \"$PWD\"\nprintf 'fake output\\n'\n")
     fake.chmod(0o755)
-    result = OpenHandsAdapter(executable=str(fake), timeout=2).execute("instruction", str(tmp_path))
+    result = OpenHandsAdapter(
+        executable=str(fake), timeout=2, allow_llm_env=True
+    ).execute("instruction", str(tmp_path))
     assert result.exit_code == 0
     assert f"cwd={tmp_path}" in result.stdout_summary
     assert "fake output" in result.stdout_summary
 
 
-def test_fake_openhands_cli_failure_and_missing_binary_are_safe(tmp_path):
+def test_fake_openhands_cli_failure_and_missing_binary_are_safe(tmp_path, monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
     fake = tmp_path / "fake-openhands"
     fake.write_text("#!/bin/sh\nprintf 'TOKEN=ghp_12345678901234567890\\n'\nexit 7\n")
     fake.chmod(0o755)
-    failed = OpenHandsAdapter(executable=str(fake), timeout=2).execute("instruction", str(tmp_path))
+    failed = OpenHandsAdapter(
+        executable=str(fake), timeout=2, allow_llm_env=True
+    ).execute("instruction", str(tmp_path))
     assert failed.exit_code == 7
     assert "ghp_12345678901234567890" not in failed.stdout_summary
-    missing = OpenHandsAdapter(executable=str(tmp_path / "missing")).execute(
+    missing = OpenHandsAdapter(
+        executable=str(tmp_path / "missing"), allow_llm_env=True
+    ).execute(
         "instruction", str(tmp_path)
     )
     assert missing.human_required is True
@@ -59,8 +70,12 @@ def test_timeout_and_secret_environment_filter(monkeypatch, tmp_path):
 
     monkeypatch.setenv("OPENHANDS_API_KEY", "do-not-forward")
     monkeypatch.setenv("TOKEN_SHOULD_NOT_PASS", "secret")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
     monkeypatch.setattr(openhands_module.subprocess, "run", fake_run)
-    result = OpenHandsAdapter(executable="openhands", timeout=1).execute(
+    result = OpenHandsAdapter(
+        executable="openhands", timeout=1, allow_llm_env=True
+    ).execute(
         "instruction", str(tmp_path)
     )
     assert result.timed_out is True
@@ -72,6 +87,69 @@ def test_timeout_and_secret_environment_filter(monkeypatch, tmp_path):
         "--json",
         "--exit-without-confirmation",
     ]
+
+
+def test_openhands_requires_explicit_opt_in_without_invocation(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_API_KEY", "secret-value")
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+    monkeypatch.setattr(
+        openhands_module.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("invoked"),
+    )
+    result = OpenHandsAdapter().execute("instruction", str(tmp_path))
+    assert result.human_required is True
+    assert result.transport_error == "OPENHANDS_LLM_ENV_NOT_AUTHORIZED"
+    assert "secret-value" not in result.command_summary
+    assert "secret-value" not in result.stderr_summary
+
+
+def test_openhands_opt_in_requires_key_and_model(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+    missing_key = OpenHandsAdapter(allow_llm_env=True).execute("instruction", str(tmp_path))
+    assert missing_key.transport_error == "OPENHANDS_LLM_API_KEY_MISSING"
+    monkeypatch.delenv("LLM_MODEL")
+    monkeypatch.setenv("LLM_API_KEY", "secret-value")
+    missing_model = OpenHandsAdapter(allow_llm_env=True).execute("instruction", str(tmp_path))
+    assert missing_model.transport_error == "OPENHANDS_LLM_MODEL_MISSING"
+
+
+def test_openhands_forwards_only_authorized_llm_environment(monkeypatch, tmp_path):
+    captured = {}
+    key = "secret-value"
+    monkeypatch.setenv("LLM_API_KEY", key)
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+    monkeypatch.setenv("LLM_BASE_URL", "https://generativelanguage.googleapis.com")
+    monkeypatch.setenv("TOKEN", "not-forwarded")
+    monkeypatch.setenv("SECRET", "not-forwarded")
+    monkeypatch.setenv("PASSWORD", "not-forwarded")
+
+    def fake_run(command, **kwargs):
+        captured["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(
+            command, 0, f"Authorization: Bearer {key}; key={key}", ""
+        )
+
+    monkeypatch.setattr(openhands_module.subprocess, "run", fake_run)
+    result = OpenHandsAdapter(allow_llm_env=True).execute("instruction", str(tmp_path))
+    assert captured["env"]["LLM_API_KEY"] == key
+    assert captured["env"]["LLM_MODEL"] == "gemini/gemini-2.5-flash"
+    assert captured["env"]["LLM_BASE_URL"] == "https://generativelanguage.googleapis.com"
+    for name in ("TOKEN", "SECRET", "PASSWORD", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        assert name not in captured["env"]
+    assert key not in result.stdout_summary
+    assert key not in result.stderr_summary
+
+
+def test_openhands_rejects_invalid_model_and_base_url(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_API_KEY", "secret-value")
+    monkeypatch.setenv("LLM_MODEL", "bad\nmodel")
+    invalid_model = OpenHandsAdapter(allow_llm_env=True).execute("instruction", str(tmp_path))
+    assert invalid_model.transport_error == "OPENHANDS_LLM_MODEL_INVALID"
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+    monkeypatch.setenv("LLM_BASE_URL", "http://remote.invalid")
+    invalid_url = OpenHandsAdapter(allow_llm_env=True).execute("instruction", str(tmp_path))
+    assert invalid_url.transport_error == "OPENHANDS_LLM_BASE_URL_INVALID"
 
 
 def test_json_terminal_success_and_failure_are_interpreted():

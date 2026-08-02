@@ -44,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     execute.add_argument("--repository", help="target Git repository")
     execute.add_argument("--project", help="registered project name or ID")
     execute.add_argument("--adapter", choices=["codex", "openhands"], default="codex")
+    execute.add_argument("--allow-openhands-llm-env", action="store_true")
     execute.add_argument("--dry-run", action="store_true", help="explicitly request dry-run")
     execute.add_argument("--execute", action="store_true", help="allow live execution")
     execute.add_argument(
@@ -59,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     deliver.add_argument("--repository")
     deliver.add_argument("--project", help="registered project name or ID")
     deliver.add_argument("--adapter", choices=["codex", "openhands"], default="codex")
+    deliver.add_argument("--allow-openhands-llm-env", action="store_true")
     deliver.add_argument("--output", required=True)
     deliver.add_argument("--execute", action="store_true")
     deliver.add_argument("--confirm-execution", action="store_true")
@@ -308,6 +310,9 @@ def run_plan(args: argparse.Namespace) -> int:
 
 
 def run_execute(args: argparse.Namespace) -> int:
+    if args.allow_openhands_llm_env and args.adapter != "openhands":
+        print("ERROR: --allow-openhands-llm-env requires --adapter openhands", file=sys.stderr)
+        return 2
     if args.execute != args.confirm_execution:
         print("ERROR: --execute and --confirm-execution must be supplied together", file=sys.stderr)
         return 2
@@ -327,7 +332,11 @@ def run_execute(args: argparse.Namespace) -> int:
                     "execution report must not be written inside the target repository"
                 )
         adapter = (
-            OpenHandsAdapter(executable=args.openhands_path, timeout=args.timeout)
+            OpenHandsAdapter(
+                executable=args.openhands_path,
+                timeout=args.timeout,
+                allow_llm_env=args.allow_openhands_llm_env,
+            )
             if args.adapter == "openhands"
             else CodexAdapter(executable=args.codex_path, timeout=args.timeout)
         )
@@ -357,6 +366,9 @@ def run_execute(args: argparse.Namespace) -> int:
 
 
 def run_deliver(args: argparse.Namespace) -> int:
+    if args.allow_openhands_llm_env and args.adapter != "openhands":
+        print("ERROR: --allow-openhands-llm-env requires --adapter openhands", file=sys.stderr)
+        return 2
     live_flags = (args.execute, args.confirm_execution, args.confirm_delivery)
     if any(live_flags) and not all(live_flags):
         print(
@@ -380,7 +392,11 @@ def run_deliver(args: argparse.Namespace) -> int:
                 "delivery report must not be written inside the target repository"
             )
         adapter = (
-            OpenHandsAdapter(executable=args.openhands_path, timeout=args.timeout)
+            OpenHandsAdapter(
+                executable=args.openhands_path,
+                timeout=args.timeout,
+                allow_llm_env=args.allow_openhands_llm_env,
+            )
             if args.adapter == "openhands"
             else CodexAdapter(executable=args.codex_path, timeout=args.timeout)
         )

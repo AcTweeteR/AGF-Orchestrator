@@ -11,6 +11,8 @@ from pathlib import Path
 
 SECRET_PATTERNS = (
     re.compile(r"(?i)(api[_-]?key|token|secret|password|authorization)(\s*[:=]\s*)([^\s,;]+)"),
+    re.compile(r"(?i)(authorization\s*:\s*bearer\s+)([^\s,;]+)"),
+    re.compile(r"(?i)((?:key|api[_-]?key|token)=)([^&\s]+)"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{12,}\b"),
 )
@@ -20,9 +22,14 @@ SAFE_ENV_KEYS = {
 }
 
 
-def redact_secrets(value: str, *, limit: int = 4000) -> str:
+def redact_secrets(
+    value: str, *, limit: int = 4000, additional_secrets: tuple[str, ...] = ()
+) -> str:
     """Redact common secret-shaped values and cap report size."""
     redacted = value
+    for secret in additional_secrets:
+        if secret:
+            redacted = redacted.replace(secret, "[REDACTED]")
     for pattern in SECRET_PATTERNS:
         if pattern.groups:
             redacted = pattern.sub(

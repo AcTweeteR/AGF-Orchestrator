@@ -141,3 +141,14 @@ def test_cli_invalid_plan_is_nonzero_without_report(tmp_path):
     result = run_cli(repo, plan, "--output", str(output))
     assert result.returncode != 0
     assert not output.exists()
+
+
+def test_cli_execute_rejects_openhands_env_opt_in_for_codex(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    plan = tmp_path / "plan.json"
+    write_plan(repo, plan)
+    result = run_cli(repo, plan, "--allow-openhands-llm-env")
+    assert result.returncode != 0
+    assert "requires --adapter openhands" in result.stderr

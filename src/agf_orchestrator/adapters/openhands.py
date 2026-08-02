@@ -13,6 +13,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .codex import CodexProcessResult, _as_text, redact_secrets
 
@@ -31,6 +32,53 @@ OPENHANDS_CONFIGURATION = re.compile(
     r"(missing|required|invalid).{0,40}(model|provider|api key|configuration)|"
     r"(model|provider).{0,40}(missing|required|not configured))"
 )
+OPENHANDS_LLM_ENV_KEYS = ("LLM_API_KEY", "LLM_MODEL", "LLM_BASE_URL")
+OPENHANDS_LLM_ENV_NOT_AUTHORIZED = "OPENHANDS_LLM_ENV_NOT_AUTHORIZED"
+OPENHANDS_LLM_API_KEY_MISSING = "OPENHANDS_LLM_API_KEY_MISSING"
+OPENHANDS_LLM_MODEL_MISSING = "OPENHANDS_LLM_MODEL_MISSING"
+OPENHANDS_LLM_MODEL_INVALID = "OPENHANDS_LLM_MODEL_INVALID"
+OPENHANDS_LLM_BASE_URL_INVALID = "OPENHANDS_LLM_BASE_URL_INVALID"
+_MAX_MODEL_LENGTH = 200
+
+
+def _configuration_error(code: str, summary: str) -> CodexProcessResult:
+    return CodexProcessResult(
+        summary,
+        None,
+        "",
+        code,
+        human_required=True,
+        transport_error=code,
+    )
+
+
+def _validate_llm_environment(
+    environment: dict[str, str], *, authorized: bool
+) -> tuple[str | None, tuple[str, ...]]:
+    if not authorized:
+        return OPENHANDS_LLM_ENV_NOT_AUTHORIZED, ()
+    api_key = environment.get("LLM_API_KEY", "")
+    model = environment.get("LLM_MODEL", "")
+    base_url = environment.get("LLM_BASE_URL", "")
+    if not api_key:
+        return OPENHANDS_LLM_API_KEY_MISSING, ()
+    if not model:
+        return OPENHANDS_LLM_MODEL_MISSING, (api_key,)
+    if (
+        len(model) > _MAX_MODEL_LENGTH
+        or not model.isprintable()
+    ):
+        return OPENHANDS_LLM_MODEL_INVALID, (api_key,)
+    if base_url:
+        parsed = urlparse(base_url)
+        local = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        if (
+            any(ord(char) < 32 or ord(char) == 127 for char in base_url)
+            or (parsed.scheme != "https" and not local)
+            or not parsed.netloc
+        ):
+            return OPENHANDS_LLM_BASE_URL_INVALID, (api_key,)
+    return None, (api_key,)
 
 
 @dataclass(frozen=True)
@@ -111,9 +159,16 @@ class OpenHandsAdapter:
 
     name = "openhands"
 
-    def __init__(self, executable: str = "openhands", timeout: float = 300.0):
+    def __init__(
+        self,
+        executable: str = "openhands",
+        timeout: float = 300.0,
+        *,
+        allow_llm_env: bool = False,
+    ):
         self.executable = executable
         self.timeout = timeout
+        self.allow_llm_env = allow_llm_env
 
     def build_instruction(
         self,
@@ -188,6 +243,16 @@ class OpenHandsAdapter:
             )
             if key in os.environ
         }
+        llm_environment = {
+            key: os.environ[key] for key in OPENHANDS_LLM_ENV_KEYS if key in os.environ
+        }
+        code, secrets = _validate_llm_environment(
+            llm_environment, authorized=self.allow_llm_env
+        )
+        if code:
+            return _configuration_error(code, summary)
+        if self.allow_llm_env:
+            environment.update(llm_environment)
         try:
             completed = subprocess.run(
                 command,
@@ -202,8 +267,8 @@ class OpenHandsAdapter:
             return CodexProcessResult(
                 summary,
                 None,
-                redact_secrets(_as_text(exc.stdout)),
-                redact_secrets(_as_text(exc.stderr)),
+                redact_secrets(_as_text(exc.stdout), additional_secrets=secrets),
+                redact_secrets(_as_text(exc.stderr), additional_secrets=secrets),
                 timed_out=True,
             )
         except OSError as exc:
@@ -211,7 +276,7 @@ class OpenHandsAdapter:
                 summary,
                 None,
                 "",
-                redact_secrets(str(exc)),
+                redact_secrets(str(exc), additional_secrets=secrets),
                 human_required=True,
                 transport_error="OPENHANDS_PROCESS_FAILED",
             )
@@ -219,10 +284,10 @@ class OpenHandsAdapter:
         return CodexProcessResult(
             summary,
             completed.returncode,
-            redact_secrets(completed.stdout),
-            redact_secrets(completed.stderr),
+            redact_secrets(completed.stdout, additional_secrets=secrets),
+            redact_secrets(completed.stderr, additional_secrets=secrets),
             human_required=interpretation.human_required,
-            final_message=redact_secrets(interpretation.final_message)
+            final_message=redact_secrets(interpretation.final_message, additional_secrets=secrets)
             if interpretation.final_message
             else None,
             transport_error=interpretation.status_code,
