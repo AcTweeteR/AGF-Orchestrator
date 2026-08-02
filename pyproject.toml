@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agf-orchestrator"
+version = "0.1.0"
+description = "Vendor-neutral orchestration contracts and Director runtime for AGF-Orchestrator"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+agf-orchestrator = "agf_orchestrator.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

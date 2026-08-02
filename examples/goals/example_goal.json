@@ -1,0 +1,8 @@
+{
+  "goal": "Add a deterministic health summary for the project repository",
+  "scope": {
+    "in": ["health summary behavior", "tests for the behavior"],
+    "out": ["unrequested refactors", "release publication"]
+  },
+  "success_condition": "The health summary is validated and independently reviewed."
+}

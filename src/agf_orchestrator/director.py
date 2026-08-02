@@ -1,0 +1,52 @@
+"""Director orchestration for deterministic execution-plan generation."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+
+from .adapters.base import DirectorAdapter
+from .adapters.mock import MockAdapter
+from .models import ExecutionPlan, PlanStatus, RepositoryContext, Task
+
+DETERMINISTIC_CREATED_AT = "1970-01-01T00:00:00Z"
+
+
+class Director:
+    """Turn a goal and preflight context into a validated machine-readable plan."""
+
+    def __init__(self, adapter: DirectorAdapter | None = None) -> None:
+        self.adapter = adapter or MockAdapter()
+
+    def create_plan(self, goal: str, repository: RepositoryContext) -> ExecutionPlan:
+        draft = self.adapter.build_plan_inputs(goal, repository)
+        plan_id = self._plan_id(goal, repository)
+        tasks = [Task(**{**item, "status": PlanStatus(item["status"])}) for item in draft["tasks"]]
+        plan = ExecutionPlan(
+            schema_version="1.0",
+            plan_id=plan_id,
+            created_at=DETERMINISTIC_CREATED_AT,
+            repository=repository,
+            goal=" ".join(goal.split()),
+            scope=draft["scope"],
+            assumptions=draft["assumptions"],
+            risks=draft["risks"],
+            architecture_impact=draft["architecture_impact"],
+            tasks=tasks,
+            dependencies=draft["dependencies"],
+            parallel_groups=draft["parallel_groups"],
+            required_reviews=draft["required_reviews"],
+            required_evidence=draft["required_evidence"],
+            human_intervention=draft["human_intervention"],
+            status=PlanStatus(draft["status"]),
+        )
+        plan.validate()
+        return plan
+
+    @staticmethod
+    def _plan_id(goal: str, repository: RepositoryContext) -> str:
+        source = json.dumps(
+            {"goal": " ".join(goal.split()), "root": repository.root, "head": repository.head_sha},
+            sort_keys=True,
+        ).encode()
+        return f"plan-{hashlib.sha256(source).hexdigest()[:16]}"
