@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,19 +40,23 @@ class CodexInvocationProfile:
     global_options_before_exec: bool = True
 
     def build_command(
-        self, executable: str, instruction: str, *, sandbox: str = "workspace-write"
+        self, executable: str, instruction: str, *, sandbox: str = "workspace-write",
+        final_message_path: str | None = None,
     ) -> list[str]:
         if not self.global_options_before_exec:
             raise ValueError("unsupported Codex invocation profile")
-        return [
+        command = [
             executable,
             "-c",
             'approval_policy="never"',
             "-s",
             sandbox,
-            "exec",
-            instruction,
         ]
+        command.extend(["exec"])
+        if final_message_path is not None:
+            command.extend(["--output-last-message", final_message_path])
+        command.append(instruction)
+        return command
 
 
 @dataclass(frozen=True)
@@ -62,6 +67,8 @@ class CodexProcessResult:
     stderr_summary: str
     timed_out: bool = False
     human_required: bool = False
+    final_message: str | None = None
+    transport_error: str | None = None
 
 
 def _safe_environment() -> dict[str, str]:
@@ -158,7 +165,17 @@ class CodexAdapter:
                 "Codex invocation syntax could not be verified from parser help",
                 human_required=True,
             )
-        command = profile.build_command(self.executable, instruction, sandbox=sandbox)
+        final_message_file = tempfile.NamedTemporaryFile(
+            prefix="agf-codex-final-", suffix=".txt", delete=False
+        )
+        final_message_path = final_message_file.name
+        final_message_file.close()
+        command = profile.build_command(
+            self.executable,
+            instruction,
+            sandbox=sandbox,
+            final_message_path=final_message_path,
+        )
         summary = (
             f'codex -c approval_policy="never" -s {sandbox} '
             "exec <task-instruction>"
@@ -176,15 +193,41 @@ class CodexAdapter:
         except subprocess.TimeoutExpired as exc:
             stdout = redact_secrets(_as_text(exc.stdout))
             stderr = redact_secrets(_as_text(exc.stderr))
-            return CodexProcessResult(summary, None, stdout, stderr, timed_out=True)
+            return CodexProcessResult(
+                summary, None, stdout, stderr, timed_out=True,
+                final_message=self._read_final_message(final_message_path),
+            )
         except OSError as exc:
-            return CodexProcessResult(summary, None, "", redact_secrets(str(exc)))
+            self._remove_final_message(final_message_path)
+            return CodexProcessResult(
+                summary, None, "", redact_secrets(str(exc)),
+                transport_error="CODEX_PROCESS_FAILED",
+            )
+        final_message = self._read_final_message(final_message_path)
         return CodexProcessResult(
             summary,
             completed.returncode,
             redact_secrets(completed.stdout),
             redact_secrets(completed.stderr),
+            final_message=final_message,
+            transport_error=(
+                None if final_message is not None else "FINAL_MESSAGE_MISSING"
+            ),
         )
+
+    @staticmethod
+    def _remove_final_message(path: str) -> None:
+        Path(path).unlink(missing_ok=True)
+
+    @classmethod
+    def _read_final_message(cls, path: str) -> str | None:
+        try:
+            value = Path(path).read_text(encoding="utf-8")
+        except OSError:
+            value = None
+        finally:
+            cls._remove_final_message(path)
+        return redact_secrets(value) if value is not None else None
 
 
 def _as_text(value: bytes | str | None) -> str:

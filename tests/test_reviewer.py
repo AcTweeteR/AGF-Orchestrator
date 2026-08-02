@@ -96,13 +96,14 @@ def test_optional_minor_finding_does_not_block_approval():
 
 
 class StubCodex:
-    def __init__(self, output):
+    def __init__(self, output, final_message=None):
         self.output = output
+        self.final_message = final_message if final_message is not None else output
         self.instruction = ""
 
     def execute(self, instruction, repository, *, sandbox):
         self.instruction = instruction
-        return CodexProcessResult("review", 0, self.output, "")
+        return CodexProcessResult("review", 0, self.output, "", final_message=self.final_message)
 
 
 def test_codex_reviewer_prompt_contains_exact_review_context_and_redacts_findings():
@@ -115,3 +116,58 @@ def test_codex_reviewer_prompt_contains_exact_review_context_and_redacts_finding
     assert "Acceptance criteria" in stub.instruction
     assert "unified patch" in stub.instruction
     assert report.findings[0].finding_id == "REV-001"
+
+
+def test_status_aliases_normalize_to_canonical_values_and_record_evidence():
+    cases = {
+        "APPROVE": ReviewStatus.APPROVE,
+        "approve": ReviewStatus.APPROVE,
+        "approved": ReviewStatus.APPROVE,
+        "ApPrOvEd": ReviewStatus.APPROVE,
+        "request_changes": ReviewStatus.REQUEST_CHANGES,
+        "requested changes": ReviewStatus.REQUEST_CHANGES,
+        "rejected": ReviewStatus.REJECT,
+        "human required": ReviewStatus.HUMAN_REQUIRED,
+    }
+    for value, expected in cases.items():
+        findings = [finding()] if expected is ReviewStatus.REQUEST_CHANGES else []
+        report = parse_structured_review(structured(value, findings))
+        assert report.status is expected
+        if value != expected.value:
+            assert f"review status normalized: {value} -> {expected.value}" in report.evidence
+
+
+def test_unknown_sentence_and_empty_status_are_rejected():
+    assert (
+        parse_structured_review(structured("approved and safe")).status
+        is ReviewStatus.HUMAN_REQUIRED
+    )
+    assert parse_structured_review(structured("")).status is ReviewStatus.HUMAN_REQUIRED
+    assert parse_structured_review(structured("maybe")).status is ReviewStatus.HUMAN_REQUIRED
+
+
+def test_final_message_artifact_takes_precedence_over_stdout_diagnostics():
+    plan, task = plan_and_task()
+    final = structured("approved")
+    report = CodexReviewerAdapter(StubCodex("not json", final)).review(
+        plan, task, ["allowed.txt"], "patch", ["exit_code=0"], []
+    )
+    assert report.status is ReviewStatus.APPROVE
+
+
+def test_missing_final_message_artifact_has_precise_transport_failure():
+    plan, task = plan_and_task()
+    stub = StubCodex(structured("APPROVE"), final_message=None)
+    stub.final_message = None
+    report = CodexReviewerAdapter(stub).review(
+        plan, task, ["allowed.txt"], "patch", ["exit_code=0"], []
+    )
+    assert report.status is ReviewStatus.HUMAN_REQUIRED
+    assert report.blocking_issues == ["FINAL_MESSAGE_MISSING: final-message artifact missing"]
+
+
+def test_normalized_semantic_rules_still_apply():
+    blocked = parse_structured_review(structured("approved", [finding()]))
+    assert blocked.status is ReviewStatus.HUMAN_REQUIRED
+    not_actionable = parse_structured_review(structured("requested changes"))
+    assert not_actionable.status is ReviewStatus.HUMAN_REQUIRED

@@ -41,10 +41,32 @@ FINDING_FIELDS = {
 SECRET_VALUE = re.compile(
     r"(?i)(api[_-]?key|token|secret|password|authorization)(\s*[:=]\s*)([^\s,;]+)"
 )
+STATUS_ALIASES = {
+    "approve": ReviewStatus.APPROVE,
+    "approved": ReviewStatus.APPROVE,
+    "request_changes": ReviewStatus.REQUEST_CHANGES,
+    "requested_changes": ReviewStatus.REQUEST_CHANGES,
+    "reject": ReviewStatus.REJECT,
+    "rejected": ReviewStatus.REJECT,
+    "human_required": ReviewStatus.HUMAN_REQUIRED,
+    "requires_human": ReviewStatus.HUMAN_REQUIRED,
+}
 
 
 def _redact(value: str) -> str:
     return SECRET_VALUE.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", value)
+
+
+def _normalize_status(value: object) -> tuple[ReviewStatus | None, str | None]:
+    if not isinstance(value, str) or not value.strip():
+        return None, "REVIEW_STATUS_INVALID: review status is invalid"
+    normalized = re.sub(r"[\s-]+", "_", value.strip().casefold())
+    status = STATUS_ALIASES.get(normalized)
+    if status is None:
+        return None, "REVIEW_STATUS_INVALID: review status is invalid"
+    if value != status.value:
+        return status, f"review status normalized: {_redact(value)} -> {status.value}"
+    return status, None
 
 
 def parse_structured_review(output: str, reviewer: str = "codex-reviewer") -> ReviewReport:
@@ -67,11 +89,10 @@ def parse_structured_review(output: str, reviewer: str = "codex-reviewer") -> Re
         return ReviewReport(
             reviewer, ReviewStatus.HUMAN_REQUIRED, [], [], ["review schema_version must be 1.0"]
         )
-    try:
-        status = ReviewStatus(payload["status"])
-    except (KeyError, ValueError, TypeError):
+    status, normalization_evidence = _normalize_status(payload.get("status"))
+    if status is None:
         return ReviewReport(
-            reviewer, ReviewStatus.HUMAN_REQUIRED, [], [], ["review status is invalid"]
+            reviewer, ReviewStatus.HUMAN_REQUIRED, [], [], [normalization_evidence]
         )
     if (
         not isinstance(payload["summary"], str)
@@ -121,7 +142,7 @@ def parse_structured_review(output: str, reviewer: str = "codex-reviewer") -> Re
             ReviewStatus.HUMAN_REQUIRED,
             findings,
             [],
-            ["APPROVE contains blocker or major findings"],
+            ["REVIEW_APPROVAL_BLOCKED: APPROVE contains blocker or major findings"],
         )
     if status is ReviewStatus.REQUEST_CHANGES and not blockers:
         return ReviewReport(
@@ -129,7 +150,10 @@ def parse_structured_review(output: str, reviewer: str = "codex-reviewer") -> Re
             ReviewStatus.HUMAN_REQUIRED,
             findings,
             [],
-            ["REQUEST_CHANGES has no actionable blocker or major finding"],
+            [
+                "REVIEW_CHANGES_NOT_ACTIONABLE: REQUEST_CHANGES has no actionable "
+                "blocker or major finding"
+            ],
         )
     if status is ReviewStatus.HUMAN_REQUIRED and not payload["summary"].strip():
         return ReviewReport(
@@ -137,14 +161,25 @@ def parse_structured_review(output: str, reviewer: str = "codex-reviewer") -> Re
             ReviewStatus.HUMAN_REQUIRED,
             findings,
             [],
-            ["HUMAN_REQUIRED requires a precise summary"],
+            ["HUMAN_REQUIRED_UNRESOLVED: HUMAN_REQUIRED requires a precise summary"],
+        )
+    if status is ReviewStatus.REJECT and not payload["summary"].strip():
+        return ReviewReport(
+            reviewer,
+            ReviewStatus.HUMAN_REQUIRED,
+            findings,
+            [],
+            ["REJECT_REASON_MISSING: REJECT requires a specific blocking reason"],
         )
     return ReviewReport(
         reviewer,
         status,
         findings,
-        [_redact(item) for item in payload["checks_performed"]],
-        [],
+        [
+            *([normalization_evidence] if normalization_evidence else []),
+            *[_redact(item) for item in payload["checks_performed"]],
+        ],
+        [item for item in [normalization_evidence] if item is not None],
         _redact(payload["summary"]),
         [_redact(item) for item in payload["checks_performed"]],
         [_redact(item) for item in payload["residual_risks"]],
@@ -276,7 +311,18 @@ class CodexReviewerAdapter:
                 [],
                 ["Codex reviewer did not complete successfully"],
             )
-        report = parse_structured_review(process.stdout_summary, self.name)
+        if process.transport_error or process.final_message is None:
+            return ReviewReport(
+                self.name,
+                ReviewStatus.HUMAN_REQUIRED,
+                [],
+                [],
+                [
+                    process.transport_error
+                    or "FINAL_MESSAGE_MISSING: final-message artifact missing"
+                ],
+            )
+        report = parse_structured_review(process.final_message, self.name)
         if any(
             path not in task.allowed_paths
             for finding in report.findings
