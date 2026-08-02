@@ -2,7 +2,13 @@
 import subprocess
 
 from agf_orchestrator.adapters import codex as codex_module
-from agf_orchestrator.adapters.codex import SAFE_ENV_KEYS, CodexAdapter, redact_secrets
+from agf_orchestrator.adapters.codex import (
+    SAFE_ENV_KEYS,
+    CodexAdapter,
+    CodexInvocationProfile,
+    discover_invocation_profile,
+    redact_secrets,
+)
 
 
 def test_instruction_is_self_contained():
@@ -35,7 +41,9 @@ def test_fake_executable_captures_output(tmp_path):
     fake = tmp_path / "fake-codex"
     fake.write_text("#!/bin/sh\nprintf 'fake stdout\\n'\nprintf 'fake stderr\\n' >&2\n")
     fake.chmod(0o755)
-    result = CodexAdapter(executable=str(fake), timeout=2).execute("instruction", str(tmp_path))
+    result = CodexAdapter(
+        executable=str(fake), timeout=2, profile=CodexInvocationProfile()
+    ).execute("instruction", str(tmp_path))
     assert result.exit_code == 0
     assert "fake stdout" in result.stdout_summary
     assert "fake stderr" in result.stderr_summary
@@ -50,7 +58,49 @@ def test_safe_environment_allowlist_excludes_secret_variables(monkeypatch, tmp_p
 
     monkeypatch.setenv("TOKEN_SHOULD_NOT_PASS", "secret")
     monkeypatch.setattr(codex_module.subprocess, "run", fake_run)
-    CodexAdapter(executable="codex").execute("instruction", str(tmp_path))
+    CodexAdapter(executable="codex", profile=CodexInvocationProfile()).execute(
+        "instruction", str(tmp_path)
+    )
     assert set(captured["env"]) <= SAFE_ENV_KEYS
     assert "TOKEN_SHOULD_NOT_PASS" not in captured["env"]
     assert "PATH" in captured["env"]
+
+
+def test_discovery_places_global_flags_before_exec(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[-2:] == ["exec", "--help"]:
+            return subprocess.CompletedProcess(
+                command, 0, "Run Codex non-interactively\n--sandbox\n--config", ""
+            )
+        return subprocess.CompletedProcess(command, 0, "exec\n--sandbox\n--config", "")
+
+    monkeypatch.setattr(codex_module.subprocess, "run", fake_run)
+    profile = discover_invocation_profile("codex")
+    assert profile is not None
+    command = profile.build_command("codex", "instruction")
+    assert command.index("-c") < command.index("exec")
+    assert calls == [["codex", "--help"], ["codex", "exec", "--help"]]
+
+
+def test_command_never_emits_unsupported_or_dangerous_flags():
+    command = CodexInvocationProfile().build_command("codex", "instruction")
+    assert command == [
+        "codex", "-c", 'approval_policy="never"', "-s", "workspace-write",
+        "exec", "instruction",
+    ]
+    assert "--dangerously-bypass-approvals-and-sandbox" not in command
+    assert "--ask-for-approval" not in command
+    assert command.index("-c") < command.index("exec")
+
+
+def test_discovery_failure_returns_human_required(monkeypatch, tmp_path):
+    def fail_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 2, "", "unsupported")
+
+    monkeypatch.setattr(codex_module.subprocess, "run", fail_run)
+    result = CodexAdapter(executable="codex").execute("instruction", str(tmp_path))
+    assert result.human_required is True
+    assert result.exit_code is None

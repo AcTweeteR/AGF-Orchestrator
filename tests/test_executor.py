@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agf_orchestrator.adapters.codex import CodexAdapter
+from agf_orchestrator.adapters.codex import CodexAdapter, CodexInvocationProfile
 from agf_orchestrator.execution_models import ExecutionStatus
 from agf_orchestrator.executor import Executor, write_execution_result
 from agf_orchestrator.models import ExecutionPlan, PlanStatus, RepositoryContext, Task
@@ -73,6 +73,19 @@ def test_dry_run_does_not_invoke_fake_executable(tmp_path):
     assert any(item.startswith("gate checked:") for item in result.evidence)
 
 
+def test_unverified_invocation_syntax_requires_human(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    from agf_orchestrator.adapters import codex as codex_module
+
+    monkeypatch.setattr(codex_module, "discover_invocation_profile", lambda executable: None)
+    result = Executor(CodexAdapter(executable="codex")).execute(
+        make_plan(tmp_path), "task-001", str(tmp_path), dry_run=False
+    )
+    assert result.status is ExecutionStatus.HUMAN_REQUIRED
+    assert "syntax could not be verified" in result.blocking_issues[0]
+    assert git(tmp_path, "status", "--porcelain").stdout == ""
+
+
 def test_dry_run_blocks_main_and_missing_allowed_paths(tmp_path):
     init_repo(tmp_path, branch="main")
     plan = make_plan(tmp_path, branch="main")
@@ -90,7 +103,11 @@ def test_dry_run_blocks_main_and_missing_allowed_paths(tmp_path):
 
 def test_fake_codex_success_is_completed_with_scoped_change(tmp_path):
     init_repo(tmp_path)
-    result = Executor(CodexAdapter(str(fake_codex(tmp_path)), timeout=2)).execute(
+    result = Executor(
+        CodexAdapter(
+            str(fake_codex(tmp_path)), timeout=2, profile=CodexInvocationProfile()
+        )
+    ).execute(
         make_plan(tmp_path), "task-001", str(tmp_path), dry_run=False
     )
     assert result.status is ExecutionStatus.COMPLETED
@@ -106,7 +123,7 @@ def test_unauthorized_change_is_rejected(tmp_path):
         tmp_path,
         body="printf 'updated\\n' > allowed.txt\nprintf 'bad\\n' > unauthorized.txt",
     )
-    result = Executor(CodexAdapter(str(fake), timeout=2)).execute(
+    result = Executor(CodexAdapter(str(fake), timeout=2, profile=CodexInvocationProfile())).execute(
         make_plan(tmp_path), "task-001", str(tmp_path), dry_run=False
     )
     assert result.status is ExecutionStatus.FAILED
@@ -116,7 +133,13 @@ def test_unauthorized_change_is_rejected(tmp_path):
 
 def test_fake_codex_failure_is_reported(tmp_path):
     init_repo(tmp_path)
-    result = Executor(CodexAdapter(str(fake_codex(tmp_path, exit_code=7)), timeout=2)).execute(
+    result = Executor(
+        CodexAdapter(
+            str(fake_codex(tmp_path, exit_code=7)),
+            timeout=2,
+            profile=CodexInvocationProfile(),
+        )
+    ).execute(
         make_plan(tmp_path), "task-001", str(tmp_path), dry_run=False
     )
     assert result.status is ExecutionStatus.FAILED
@@ -126,7 +149,9 @@ def test_fake_codex_failure_is_reported(tmp_path):
 def test_timeout_is_reported(tmp_path):
     init_repo(tmp_path)
     fake = fake_codex(tmp_path, body="sleep 1")
-    result = Executor(CodexAdapter(str(fake), timeout=0.01)).execute(
+    result = Executor(
+        CodexAdapter(str(fake), timeout=0.01, profile=CodexInvocationProfile())
+    ).execute(
         make_plan(tmp_path), "task-001", str(tmp_path), dry_run=False
     )
     assert result.status is ExecutionStatus.FAILED
@@ -137,7 +162,11 @@ def test_timeout_is_reported(tmp_path):
 def test_failed_validation_prevents_completed(tmp_path):
     init_repo(tmp_path)
     task = replace(make_plan(tmp_path).tasks[0], validation_commands=["false"])
-    result = Executor(CodexAdapter(str(fake_codex(tmp_path)), timeout=2)).execute(
+    result = Executor(
+        CodexAdapter(
+            str(fake_codex(tmp_path)), timeout=2, profile=CodexInvocationProfile()
+        )
+    ).execute(
         make_plan(tmp_path, task=task), "task-001", str(tmp_path), dry_run=False
     )
     assert result.status is ExecutionStatus.FAILED
@@ -156,7 +185,10 @@ def test_validation_command_timeout_is_reported(tmp_path):
     init_repo(tmp_path)
     task = replace(make_plan(tmp_path).tasks[0], validation_commands=["sleep 1"])
     result = Executor(
-        CodexAdapter(str(fake_codex(tmp_path)), timeout=2), validation_timeout=0.01
+        CodexAdapter(
+            str(fake_codex(tmp_path)), timeout=2, profile=CodexInvocationProfile()
+        ),
+        validation_timeout=0.01,
     ).execute(make_plan(tmp_path, task=task), "task-001", str(tmp_path), dry_run=False)
     assert result.status is ExecutionStatus.FAILED
     assert any("timed out" in issue for issue in result.blocking_issues)
@@ -282,7 +314,11 @@ def test_temporary_worktree_removed_after_success(tmp_path, monkeypatch):
         return path
 
     monkeypatch.setattr(executor_module, "_create_worktree", capture)
-    result = Executor(CodexAdapter(str(fake_codex(tmp_path)), timeout=2)).execute(
+    result = Executor(
+        CodexAdapter(
+            str(fake_codex(tmp_path)), timeout=2, profile=CodexInvocationProfile()
+        )
+    ).execute(
         make_plan(tmp_path), "task-001", str(tmp_path), dry_run=False
     )
     assert result.status is ExecutionStatus.COMPLETED
@@ -302,7 +338,13 @@ def test_temporary_worktree_removed_after_failure(tmp_path, monkeypatch):
         return path
 
     monkeypatch.setattr(executor_module, "_create_worktree", capture)
-    result = Executor(CodexAdapter(str(fake_codex(tmp_path, exit_code=9)), timeout=2)).execute(
+    result = Executor(
+        CodexAdapter(
+            str(fake_codex(tmp_path, exit_code=9)),
+            timeout=2,
+            profile=CodexInvocationProfile(),
+        )
+    ).execute(
         make_plan(tmp_path), "task-001", str(tmp_path), dry_run=False
     )
     assert result.status is ExecutionStatus.FAILED
@@ -320,7 +362,11 @@ def test_cleanup_failure_is_reported(tmp_path, monkeypatch):
         return False
 
     monkeypatch.setattr(executor_module, "_remove_worktree", report_failure)
-    result = Executor(CodexAdapter(str(fake_codex(tmp_path)), timeout=2)).execute(
+    result = Executor(
+        CodexAdapter(
+            str(fake_codex(tmp_path)), timeout=2, profile=CodexInvocationProfile()
+        )
+    ).execute(
         make_plan(tmp_path), "task-001", str(tmp_path), dry_run=False
     )
     assert result.status is ExecutionStatus.FAILED

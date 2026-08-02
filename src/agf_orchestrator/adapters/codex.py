@@ -33,12 +33,68 @@ def redact_secrets(value: str, *, limit: int = 4000) -> str:
 
 
 @dataclass(frozen=True)
+class CodexInvocationProfile:
+    """Parser-verified placement for the installed Codex CLI options."""
+
+    global_options_before_exec: bool = True
+
+    def build_command(self, executable: str, instruction: str) -> list[str]:
+        if not self.global_options_before_exec:
+            raise ValueError("unsupported Codex invocation profile")
+        return [
+            executable,
+            "-c",
+            'approval_policy="never"',
+            "-s",
+            "workspace-write",
+            "exec",
+            instruction,
+        ]
+
+
+@dataclass(frozen=True)
 class CodexProcessResult:
     command_summary: str
     exit_code: int | None
     stdout_summary: str
     stderr_summary: str
     timed_out: bool = False
+    human_required: bool = False
+
+
+def _safe_environment() -> dict[str, str]:
+    return {key: os.environ[key] for key in SAFE_ENV_KEYS if key in os.environ}
+
+
+def discover_invocation_profile(
+    executable: str, *, timeout: float = 10.0
+) -> CodexInvocationProfile | None:
+    """Verify option placement from this executable's own parser help."""
+    environment = _safe_environment()
+    try:
+        root_help = subprocess.run(
+            [executable, "--help"], capture_output=True, text=True,
+            timeout=timeout, shell=False, env=environment,
+        )
+        exec_help = subprocess.run(
+            [executable, "exec", "--help"], capture_output=True, text=True,
+            timeout=timeout, shell=False, env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if root_help.returncode != 0 or exec_help.returncode != 0:
+        return None
+    root_output = f"{root_help.stdout}\n{root_help.stderr}"
+    exec_output = f"{exec_help.stdout}\n{exec_help.stderr}"
+    if (
+        "--sandbox" not in root_output
+        or "--config" not in root_output
+        or "exec" not in root_output
+        or "--config" not in exec_output
+        or "--sandbox" not in exec_output
+    ):
+        return None
+    return CodexInvocationProfile()
 
 
 class CodexAdapter:
@@ -46,9 +102,15 @@ class CodexAdapter:
 
     name = "codex"
 
-    def __init__(self, executable: str = "codex", timeout: float = 300.0) -> None:
+    def __init__(
+        self,
+        executable: str = "codex",
+        timeout: float = 300.0,
+        profile: CodexInvocationProfile | None = None,
+    ) -> None:
         self.executable = executable
         self.timeout = timeout
+        self.profile = profile
 
     def build_instruction(
         self,
@@ -81,16 +143,18 @@ class CodexAdapter:
         return "\n".join(lines)
 
     def execute(self, instruction: str, repository: str) -> CodexProcessResult:
-        command = [
-            self.executable,
-            "exec",
-            "--sandbox",
-            "workspace-write",
-            "--ask-for-approval",
-            "never",
-            instruction,
-        ]
-        summary = "codex exec --sandbox workspace-write --ask-for-approval never <task-instruction>"
+        profile = self.profile or discover_invocation_profile(self.executable)
+        if profile is None:
+            return CodexProcessResult(
+                "codex invocation syntax could not be verified", None, "",
+                "Codex invocation syntax could not be verified from parser help",
+                human_required=True,
+            )
+        command = profile.build_command(self.executable, instruction)
+        summary = (
+            'codex -c approval_policy="never" -s workspace-write '
+            "exec <task-instruction>"
+        )
         try:
             completed = subprocess.run(
                 command,
@@ -99,7 +163,7 @@ class CodexAdapter:
                 text=True,
                 timeout=self.timeout,
                 shell=False,
-                env={key: os.environ[key] for key in SAFE_ENV_KEYS if key in os.environ},
+                env=_safe_environment(),
             )
         except subprocess.TimeoutExpired as exc:
             stdout = redact_secrets(_as_text(exc.stdout))

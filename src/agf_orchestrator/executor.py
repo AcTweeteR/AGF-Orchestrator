@@ -331,7 +331,10 @@ class Executor:
             evidence.append("Codex invoked: yes")
             after = _status_lines(worktree)
             changed = _changed_paths(before, after)
-            if process.timed_out or process.exit_code != 0:
+            if process.human_required:
+                status = ExecutionStatus.HUMAN_REQUIRED
+                blockers.append("Codex invocation syntax could not be verified")
+            elif process.timed_out or process.exit_code != 0:
                 blockers.append("Codex process did not complete successfully")
                 evidence.append("process exit code preserved")
                 if process.timed_out:
