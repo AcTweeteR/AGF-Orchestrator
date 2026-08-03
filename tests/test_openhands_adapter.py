@@ -163,6 +163,25 @@ def test_sdk_failure_and_interaction_are_not_success(monkeypatch, tmp_path):
         assert result.final_message == "bounded"
 
 
+def test_sdk_agent_error_event_is_bounded_and_sanitized(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_API_KEY", "secret-value")
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+    state_event, message_event, error_event = _sdk_event_classes()
+    error = error_event()
+    error.message = "provider API_KEY=secret-value failed"
+    fake_conversation = _fake_sdk(
+        monkeypatch, [error, state_event("error")],
+        (state_event, message_event, error_event), final_state="error",
+    )
+    result = OpenHandsSDKAdapter(timeout=2, allow_llm_env=True).execute(
+        "instruction", str(tmp_path)
+    )
+    assert result.transport_error == "OPENHANDS_PROVIDER_ERROR"
+    assert "secret-value" not in result.stderr_summary
+    assert len(result.stderr_summary) <= 500
+    assert fake_conversation.last.closed is True
+
+
 def test_sdk_missing_and_conflicting_terminal_events_block(monkeypatch, tmp_path):
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
