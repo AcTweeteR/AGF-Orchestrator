@@ -354,21 +354,34 @@ class Executor:
             process = self.adapter.execute(instruction, worktree)
             evidence.append(f"{invocation_label}: yes")
             if self.adapter.name == "openhands":
-                interpretation = parse_openhands_output(
-                    process.stdout_summary, process.stderr_summary
-                )
-                evidence.extend(
-                    [
-                        f"OpenHands JSON objects parsed: {interpretation.object_count}",
-                        "OpenHands terminal event found: "
-                        f"{'yes' if interpretation.terminal_event_found else 'no'}",
-                        "OpenHands terminal execution_status: "
-                        f"{interpretation.terminal_execution_status or 'none'}",
-                        f"OpenHands selected transport: {interpretation.transport or 'none'}",
-                        "OpenHands final agent message present: "
-                        f"{'yes' if interpretation.final_agent_message_present else 'no'}",
-                    ]
-                )
+                if getattr(self.adapter, "uses_typed_events", False):
+                    evidence.extend(
+                        [
+                            "OpenHands selected transport: sdk-callback",
+                            "OpenHands terminal event found: "
+                            f"{'yes' if process.transport_error is None else 'no'}",
+                            "OpenHands terminal execution_status: "
+                            f"{'finished' if process.transport_error is None else 'none'}",
+                            "OpenHands final agent message present: "
+                            f"{'yes' if process.final_message else 'no'}",
+                        ]
+                    )
+                else:
+                    interpretation = parse_openhands_output(
+                        process.stdout_summary, process.stderr_summary
+                    )
+                    evidence.extend(
+                        [
+                            f"OpenHands JSON objects parsed: {interpretation.object_count}",
+                            "OpenHands terminal event found: "
+                            f"{'yes' if interpretation.terminal_event_found else 'no'}",
+                            "OpenHands terminal execution_status: "
+                            f"{interpretation.terminal_execution_status or 'none'}",
+                            f"OpenHands selected transport: {interpretation.transport or 'none'}",
+                            "OpenHands final agent message present: "
+                            f"{'yes' if interpretation.final_agent_message_present else 'no'}",
+                        ]
+                    )
             after = _status_lines(worktree)
             changed = _changed_paths(before, after)
             if process.human_required:
@@ -392,6 +405,10 @@ class Executor:
                     "OPENHANDS_STRUCTURED_OUTPUT_MISSING",
                     "OPENHANDS_STRUCTURED_OUTPUT_CONFLICT",
                     "OPENHANDS_STDERR_EVENT_STREAM_INVALID",
+                    "OPENHANDS_MACHINE_INTERFACE_UNAVAILABLE",
+                    "OPENHANDS_SDK_INITIALIZATION_FAILED",
+                    "OPENHANDS_EVENT_STREAM_MISSING",
+                    "OPENHANDS_EVENT_STREAM_CONFLICT",
                 }:
                     status = ExecutionStatus.HUMAN_REQUIRED
                 else:

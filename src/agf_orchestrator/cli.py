@@ -11,7 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .adapters.codex import CodexAdapter
-from .adapters.openhands import OpenHandsAdapter
+from .adapters.openhands import OpenHandsSDKAdapter
 from .compliance import ComplianceChecker
 from .delivery import DeliveryPipeline, write_delivery_report
 from .director import Director
@@ -332,7 +332,7 @@ def run_execute(args: argparse.Namespace) -> int:
                     "execution report must not be written inside the target repository"
                 )
         adapter = (
-            OpenHandsAdapter(
+            OpenHandsSDKAdapter(
                 executable=args.openhands_path,
                 timeout=args.timeout,
                 allow_llm_env=args.allow_openhands_llm_env,
@@ -392,7 +392,7 @@ def run_deliver(args: argparse.Namespace) -> int:
                 "delivery report must not be written inside the target repository"
             )
         adapter = (
-            OpenHandsAdapter(
+            OpenHandsSDKAdapter(
                 executable=args.openhands_path,
                 timeout=args.timeout,
                 allow_llm_env=args.allow_openhands_llm_env,

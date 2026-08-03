@@ -10,7 +10,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+import shutil
 import subprocess
+import sys
+import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlparse
@@ -38,6 +42,10 @@ OPENHANDS_JSON_TRUNCATED = "OPENHANDS_JSON_TRUNCATED"
 OPENHANDS_JSON_INVALID = "OPENHANDS_JSON_INVALID"
 OPENHANDS_NO_TERMINAL_STATE = "OPENHANDS_NO_TERMINAL_STATE"
 OPENHANDS_CONTRADICTORY_TERMINAL_STATE = "OPENHANDS_CONTRADICTORY_TERMINAL_STATE"
+OPENHANDS_MACHINE_INTERFACE_UNAVAILABLE = "OPENHANDS_MACHINE_INTERFACE_UNAVAILABLE"
+OPENHANDS_SDK_INITIALIZATION_FAILED = "OPENHANDS_SDK_INITIALIZATION_FAILED"
+OPENHANDS_EVENT_STREAM_MISSING = "OPENHANDS_EVENT_STREAM_MISSING"
+OPENHANDS_EVENT_STREAM_CONFLICT = "OPENHANDS_EVENT_STREAM_CONFLICT"
 _MAX_OPENHANDS_OUTPUT = 1_000_000
 _MAX_OPENHANDS_OBJECTS = 1_000
 OPENHANDS_EVENT_KINDS = {
@@ -469,3 +477,225 @@ class OpenHandsAdapter:
             else None,
             transport_error=interpretation.status_code,
         )
+
+
+class OpenHandsSDKAdapter(OpenHandsAdapter):
+    """Execute through OpenHands' typed SDK event callback.
+
+    The SDK is imported lazily because AGF remains installable without the
+    optional OpenHands distribution. Conversation persistence is disabled so
+    complete transcripts are not written by the adapter.
+    """
+
+    uses_typed_events = True
+
+    def execute(
+        self,
+        instruction: str,
+        repository: str,
+        *,
+        sandbox: str = "workspace-write",
+    ) -> CodexProcessResult:
+        del sandbox
+        summary = "openhands-sdk callbacks=<typed events> task=<task-instruction>"
+        llm_environment = {
+            key: os.environ[key] for key in OPENHANDS_LLM_ENV_KEYS if key in os.environ
+        }
+        code, secrets = _validate_llm_environment(
+            llm_environment, authorized=self.allow_llm_env
+        )
+        if code:
+            return _configuration_error(code, summary)
+
+        try:
+            self._load_sdk_modules()
+            from openhands.sdk import LLM, Conversation
+            from openhands.sdk.event import (
+                AgentErrorEvent,
+                ConversationStateUpdateEvent,
+                MessageEvent,
+            )
+            from openhands_cli.utils import get_default_cli_agent
+        except (ImportError, ModuleNotFoundError):
+            return CodexProcessResult(
+                summary,
+                None,
+                "",
+                "",
+                human_required=True,
+                transport_error=OPENHANDS_MACHINE_INTERFACE_UNAVAILABLE,
+            )
+
+        states: list[str] = []
+        final_message: str | None = None
+        event_count = 0
+
+        def on_event(event: object) -> None:
+            nonlocal final_message, event_count
+            event_count += 1
+            if isinstance(event, ConversationStateUpdateEvent):
+                value = event.value.value if hasattr(event.value, "value") else event.value
+                if event.key == OPENHANDS_FULL_STATE_KEY and isinstance(value, dict):
+                    value = value.get(OPENHANDS_EXECUTION_STATUS_KEY)
+                if event.key == OPENHANDS_EXECUTION_STATUS_KEY or (
+                    event.key == OPENHANDS_FULL_STATE_KEY and value is not None
+                ):
+                    if isinstance(value, str):
+                        states.append(_normalized_state(value) or "")
+                return
+            if isinstance(event, MessageEvent) and event.source == "agent":
+                content = getattr(event, "llm_message", None)
+                parts = getattr(content, "content", []) if content is not None else []
+                text = "".join(
+                    getattr(part, "text", "")
+                    for part in parts
+                    if isinstance(getattr(part, "text", None), str)
+                ).strip()
+                if text:
+                    final_message = text[-4000:]
+            if isinstance(event, AgentErrorEvent):
+                states.append("error")
+
+        try:
+            llm = LLM(
+                model=llm_environment["LLM_MODEL"],
+                api_key=llm_environment["LLM_API_KEY"],
+                base_url=llm_environment.get("LLM_BASE_URL") or None,
+                usage_id="agent",
+            )
+            agent = get_default_cli_agent(llm)
+            conversation = Conversation(
+                agent=agent,
+                workspace=repository,
+                persistence_dir=None,
+                callbacks=[on_event],
+                visualizer=None,
+                delete_on_close=True,
+            )
+        except Exception as exc:
+            return CodexProcessResult(
+                summary,
+                None,
+                "",
+                redact_secrets(type(exc).__name__, additional_secrets=secrets),
+                human_required=True,
+                transport_error=OPENHANDS_SDK_INITIALIZATION_FAILED,
+            )
+
+        error: Exception | None = None
+        completed = threading.Event()
+
+        def run_conversation() -> None:
+            nonlocal error
+            try:
+                conversation.send_message(instruction)
+                conversation.run()
+            except Exception as exc:
+                error = exc
+            finally:
+                completed.set()
+
+        worker = threading.Thread(target=run_conversation, daemon=True)
+        worker.start()
+        if not completed.wait(self.timeout):
+            try:
+                conversation.pause()
+                conversation.close()
+            except Exception:
+                pass
+            return CodexProcessResult(
+                summary,
+                None,
+                "",
+                "",
+                timed_out=True,
+                human_required=True,
+                transport_error="OPENHANDS_TIMEOUT",
+            )
+        try:
+            conversation.close()
+        except Exception:
+            pass
+        if error is not None:
+            return CodexProcessResult(
+                summary,
+                None,
+                "",
+                redact_secrets(type(error).__name__, additional_secrets=secrets),
+                human_required=True,
+                transport_error="OPENHANDS_TASK_FAILED",
+            )
+        if not states:
+            return CodexProcessResult(
+                summary,
+                0,
+                f"SDK typed events captured: {event_count}",
+                "",
+                human_required=True,
+                final_message=redact_secrets(final_message, additional_secrets=secrets)
+                if final_message
+                else None,
+                transport_error=(
+                    OPENHANDS_EVENT_STREAM_MISSING
+                    if event_count == 0
+                    else OPENHANDS_NO_TERMINAL_STATE
+                ),
+            )
+        categories = {
+            "success" if state in OPENHANDS_SUCCESS_STATES else
+            "failure" if state in OPENHANDS_FAILURE_STATES else
+            "interaction" for state in states
+        }
+        if len(categories) > 1:
+            status_code = OPENHANDS_EVENT_STREAM_CONFLICT
+            human_required = True
+        elif states[-1] in OPENHANDS_SUCCESS_STATES:
+            status_code = None
+            human_required = False
+        elif states[-1] in OPENHANDS_INTERACTION_STATES:
+            status_code = "OPENHANDS_INTERACTION_REQUIRED"
+            human_required = True
+        else:
+            status_code = "OPENHANDS_TASK_FAILED"
+            human_required = False
+        return CodexProcessResult(
+            summary,
+            0,
+            f"SDK typed events captured: {event_count}",
+            "",
+            human_required=human_required,
+            final_message=redact_secrets(final_message, additional_secrets=secrets)
+            if final_message
+            else None,
+            transport_error=status_code,
+        )
+
+    def _load_sdk_modules(self) -> None:
+        """Make the SDK from the configured OpenHands executable importable."""
+        previous_banner_setting = os.environ.get("OPENHANDS_SUPPRESS_BANNER")
+        os.environ["OPENHANDS_SUPPRESS_BANNER"] = "1"
+        try:
+            import openhands.sdk  # noqa: F401
+        except ModuleNotFoundError:
+            pass
+        finally:
+            if previous_banner_setting is None:
+                os.environ.pop("OPENHANDS_SUPPRESS_BANNER", None)
+            else:
+                os.environ["OPENHANDS_SUPPRESS_BANNER"] = previous_banner_setting
+        if "openhands.sdk" in sys.modules:
+            return
+        executable = shutil.which(self.executable) or self.executable
+        try:
+            first_line = Path(executable).read_text(encoding="utf-8").splitlines()[0]
+            if first_line.startswith("#!"):
+                interpreter = shlex.split(first_line[2:].strip())[0]
+            else:
+                interpreter = ""
+        except (OSError, IndexError, ValueError):
+            interpreter = ""
+        if interpreter:
+            root = Path(interpreter).parent.parent / "lib"
+            for site_packages in root.glob("python*/site-packages"):
+                if str(site_packages) not in sys.path:
+                    sys.path.insert(0, str(site_packages))

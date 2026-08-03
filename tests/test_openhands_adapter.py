@@ -6,7 +6,11 @@ from test_delivery import plan_for, setup_repo
 
 from agf_orchestrator.adapters import openhands as openhands_module
 from agf_orchestrator.adapters.codex import CodexProcessResult
-from agf_orchestrator.adapters.openhands import OpenHandsAdapter, parse_openhands_output
+from agf_orchestrator.adapters.openhands import (
+    OpenHandsAdapter,
+    OpenHandsSDKAdapter,
+    parse_openhands_output,
+)
 from agf_orchestrator.executor import Executor
 
 OBSERVED_AGENT_MESSAGE = (
@@ -35,6 +39,168 @@ def test_instruction_contains_exact_safety_context(tmp_path):
     assert "message.txt" in instruction
     assert "Do not commit, push, create a PR, merge, or release" in instruction
     assert "HUMAN_REQUIRED" in instruction
+
+
+def _fake_sdk(monkeypatch, events, event_types, *, delay=0):
+    import sys
+    import time
+    import types
+
+    sdk = types.ModuleType("openhands.sdk")
+    sdk_event = types.ModuleType("openhands.sdk.event")
+    openhands = types.ModuleType("openhands")
+    cli_utils = types.ModuleType("openhands_cli.utils")
+    openhands_cli = types.ModuleType("openhands_cli")
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeAgent:
+        pass
+
+    class FakeConversation:
+        last = None
+
+        def __init__(self, *, callbacks, workspace, **kwargs):
+            self.callback = callbacks[0]
+            self.workspace = workspace
+            self.closed = False
+            FakeConversation.last = self
+
+        def send_message(self, instruction):
+            self.instruction = instruction
+
+        def run(self):
+            if delay:
+                time.sleep(delay)
+            for event in events:
+                self.callback(event)
+
+        def pause(self):
+            self.paused = True
+
+        def close(self):
+            self.closed = True
+
+    sdk.LLM = FakeLLM
+    sdk.Conversation = FakeConversation
+    cli_utils.get_default_cli_agent = lambda llm: FakeAgent()
+    state_type, message_type, error_type = event_types
+    sdk_event.ConversationStateUpdateEvent = state_type
+    sdk_event.MessageEvent = message_type
+    sdk_event.AgentErrorEvent = error_type
+    sdk.sdk = sdk
+    openhands.sdk = sdk
+    openhands_cli.utils = cli_utils
+    monkeypatch.setitem(sys.modules, "openhands", openhands)
+    monkeypatch.setitem(sys.modules, "openhands.sdk", sdk)
+    monkeypatch.setitem(sys.modules, "openhands.sdk.event", sdk_event)
+    monkeypatch.setitem(sys.modules, "openhands_cli", openhands_cli)
+    monkeypatch.setitem(sys.modules, "openhands_cli.utils", cli_utils)
+    return FakeConversation
+
+
+def _sdk_event_classes():
+    class StateEvent:
+        def __init__(self, value):
+            self.key = "execution_status"
+            self.value = value
+
+    class MessageEvent:
+        source = "agent"
+
+        def __init__(self, text):
+            self.llm_message = type(
+                "Message", (), {"content": [type("Text", (), {"text": text})()]}
+            )()
+
+    class ErrorEvent:
+        pass
+
+    return StateEvent, MessageEvent, ErrorEvent
+
+
+def test_sdk_typed_finished_event_succeeds(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+    state_event, message_event, error_event = _sdk_event_classes()
+    _fake_sdk(
+        monkeypatch,
+        [message_event("done"), state_event("finished")],
+        (state_event, message_event, error_event),
+    )
+    result = OpenHandsSDKAdapter(timeout=2, allow_llm_env=True).execute(
+        "instruction", str(tmp_path)
+    )
+    assert result.exit_code == 0
+    assert result.transport_error is None
+    assert result.final_message == "done"
+
+
+def test_sdk_failure_and_interaction_are_not_success(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+    state_event, message_event, error_event = _sdk_event_classes()
+    for state, expected, human_required in (
+        ("error", "OPENHANDS_TASK_FAILED", False),
+        ("waiting_for_confirmation", "OPENHANDS_INTERACTION_REQUIRED", True),
+    ):
+        _fake_sdk(
+            monkeypatch,
+            [message_event("bounded"), state_event(state)],
+            (state_event, message_event, error_event),
+        )
+        result = OpenHandsSDKAdapter(timeout=2, allow_llm_env=True).execute(
+            "instruction", str(tmp_path)
+        )
+        assert result.transport_error == expected
+        assert result.human_required is human_required
+        assert result.final_message == "bounded"
+
+
+def test_sdk_missing_and_conflicting_terminal_events_block(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+    state_event, message_event, error_event = _sdk_event_classes()
+    _fake_sdk(
+        monkeypatch,
+        [message_event("no terminal")],
+        (state_event, message_event, error_event),
+    )
+    missing = OpenHandsSDKAdapter(timeout=2, allow_llm_env=True).execute(
+        "instruction", str(tmp_path)
+    )
+    assert missing.transport_error == "OPENHANDS_NO_TERMINAL_STATE"
+    assert missing.human_required is True
+    _fake_sdk(
+        monkeypatch,
+        [state_event("finished"), state_event("error")],
+        (state_event, message_event, error_event),
+    )
+    conflict = OpenHandsSDKAdapter(timeout=2, allow_llm_env=True).execute(
+        "instruction", str(tmp_path)
+    )
+    assert conflict.transport_error == "OPENHANDS_EVENT_STREAM_CONFLICT"
+
+
+def test_sdk_timeout_workspace_and_secret_redaction(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_API_KEY", "secret-value")
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+    state_event, message_event, error_event = _sdk_event_classes()
+    fake_conversation = _fake_sdk(
+        monkeypatch,
+        [message_event("secret-value"), state_event("finished")],
+        (state_event, message_event, error_event),
+        delay=0.05,
+    )
+    result = OpenHandsSDKAdapter(timeout=0.001, allow_llm_env=True).execute(
+        "instruction", str(tmp_path)
+    )
+    assert result.timed_out is True
+    assert fake_conversation.last.workspace == str(tmp_path)
+    assert "secret-value" not in result.stdout_summary
+    assert "secret-value" not in result.stderr_summary
 
 
 def test_fake_openhands_cli_success_and_exact_workspace(tmp_path, monkeypatch):
