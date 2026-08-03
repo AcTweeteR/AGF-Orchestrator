@@ -139,7 +139,9 @@ def _run_attempt(
     correction: str | None,
     validation_timeout: float,
 ) -> Attempt:
-    context, allowed_paths, gate_evidence = _validate_gates(plan, task, repository)
+    context, allowed_paths, gate_evidence = _validate_gates(
+        plan, task, repository, allow_default_branch=True
+    )
     worktree: str | None = None
     process: CodexProcessResult | None = None
     changed: list[str] = []
@@ -348,16 +350,17 @@ class DeliveryPipeline:
                 [],
                 ["dry-run: no model, patch, branch, commit, push, or PR mutation"],
             )
+        review = None
+        compliance = None
+        attempt = None
+        correction_rounds = 0
         try:
             context = collect_repository(repository)
             if context.root != plan.repository.root or context.head_sha != base_sha:
                 raise ExecutionValidationError("repository context or base SHA does not match plan")
             if not context.clean:
                 raise ExecutionValidationError("caller repository must be clean before delivery")
-            review = None
-            compliance = None
-            attempt = None
-            correction_rounds = 0
+            GitDelivery().validate_target(repository, base_sha, branch)
             previous_findings: list[ReviewFinding] = []
             previous_patch_sha: str | None = None
             previous_patch = ""
