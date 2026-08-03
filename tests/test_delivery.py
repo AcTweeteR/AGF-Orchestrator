@@ -314,6 +314,123 @@ def test_correction_succeeds_on_first_retry(tmp_path):
     assert reviewer.calls == 2
 
 
+class TwoRoundReviewer:
+    name = "two-round-reviewer"
+
+    def __init__(self):
+        self.calls = 0
+
+    def review(self, *args):
+        self.calls += 1
+        if self.calls == 1:
+            return blocker_report("first blocker")
+        if self.calls == 2:
+            report = blocker_report("second blocker")
+            return ReviewReport(
+                report.reviewer, report.status, report.findings, report.evidence,
+                report.blocking_issues, "REV-001 resolved", report.checks_performed,
+                report.residual_risks,
+            )
+        return ReviewReport(
+            self.name, ReviewStatus.APPROVE, [], [], [], "REV-001 resolved", [], []
+        )
+
+
+def round_adapter(tmp_path):
+    counter = tmp_path / "round-counter"
+    fake = tmp_path / "fake-round-codex"
+    fake.write_text(
+        f"#!/bin/sh\n"
+        f"n=$(cat '{counter}' 2>/dev/null || printf 0)\n"
+        f"n=$((n + 1))\nprintf 'after\\n' > allowed.txt\n"
+        f"i=0\nwhile [ $i -lt $n ]; do printf '\\n' >> allowed.txt; i=$((i + 1)); done\n"
+        f"printf '%s' \"$n\" > '{counter}'\n"
+    )
+    fake.chmod(0o755)
+    return CodexAdapter(str(fake), timeout=2, profile=CodexInvocationProfile())
+
+
+def test_two_correction_rounds_are_allowed_and_approval_proceeds(tmp_path):
+    root = setup_repo(tmp_path)
+    reviewer = TwoRoundReviewer()
+    report = DeliveryPipeline(
+        adapter=round_adapter(tmp_path), reviewer=reviewer,
+        pr_creator=DraftPRCreator(simulate=True), artifact_dir=tmp_path / "artifacts",
+        max_correction_rounds=2,
+    ).deliver(plan_for(root), "task-001", str(root), execute=True)
+    assert report.status == "COMPLETED"
+    assert report.correction_rounds == 2
+    assert reviewer.calls == 3
+    assert report.compliance_status == "PASS"
+    assert git(root, "status", "--porcelain").stdout == ""
+
+
+class RepeatingRequestReviewer:
+    name = "repeating-request-reviewer"
+
+    def __init__(self):
+        self.calls = 0
+
+    def review(self, *args):
+        self.calls += 1
+        report = blocker_report(f"round {self.calls}")
+        summary = " ".join("REV-001 resolved" for _ in range(max(0, self.calls - 1)))
+        return ReviewReport(
+            self.name, report.status, report.findings, report.evidence,
+            report.blocking_issues, summary, [], [],
+        )
+
+
+def test_correction_limit_exhausts_after_two_completed_rounds(tmp_path):
+    root = setup_repo(tmp_path)
+    reviewer = RepeatingRequestReviewer()
+    report = DeliveryPipeline(
+        adapter=round_adapter(tmp_path), reviewer=reviewer,
+        pr_creator=DraftPRCreator(simulate=True), max_correction_rounds=2,
+    ).deliver(plan_for(root), "task-001", str(root), execute=True)
+    assert report.status == "BLOCKED"
+    assert report.correction_rounds == 2
+    assert reviewer.calls == 3
+    assert "correction limit exhausted" in report.blocking_issues[0]
+
+
+class HumanRequiredReviewer:
+    name = "human-required-reviewer"
+
+    def __init__(self, issue):
+        self.issue = issue
+        self.calls = 0
+
+    def review(self, *args):
+        self.calls += 1
+        return ReviewReport(self.name, ReviewStatus.HUMAN_REQUIRED, [], [], [self.issue])
+
+
+def test_human_required_judgment_stops_without_consuming_correction_round(tmp_path):
+    root = setup_repo(tmp_path)
+    reviewer = HumanRequiredReviewer("human judgment required")
+    report = DeliveryPipeline(
+        adapter=fake_adapter(tmp_path), reviewer=reviewer,
+        pr_creator=DraftPRCreator(simulate=True), max_correction_rounds=2,
+    ).deliver(plan_for(root), "task-001", str(root), execute=True)
+    assert report.status == "HUMAN_REQUIRED"
+    assert report.correction_rounds == 0
+    assert reviewer.calls == 1
+    assert "human judgment" in report.blocking_issues[0]
+
+
+def test_transport_human_required_is_not_treated_as_judgment_or_correction(tmp_path):
+    root = setup_repo(tmp_path)
+    reviewer = HumanRequiredReviewer("CODEX_REVIEW_TRANSPORT_UNVERIFIED: transport uncertain")
+    report = DeliveryPipeline(
+        adapter=fake_adapter(tmp_path), reviewer=reviewer,
+        pr_creator=DraftPRCreator(simulate=True), max_correction_rounds=2,
+    ).deliver(plan_for(root), "task-001", str(root), execute=True)
+    assert report.status == "HUMAN_REQUIRED"
+    assert report.correction_rounds == 0
+    assert "CODEX_REVIEW_TRANSPORT_UNVERIFIED" in report.blocking_issues[0]
+
+
 def test_correction_limit_requires_human(tmp_path):
     root = setup_repo(tmp_path)
     report = DeliveryPipeline(

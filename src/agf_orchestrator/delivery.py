@@ -412,12 +412,20 @@ class DeliveryPipeline:
                         attempt.validation_results,
                         previous_findings,
                     )
+                if review.status is ReviewStatus.APPROVE:
+                    break
+                if review.status is ReviewStatus.HUMAN_REQUIRED:
+                    reason = "; ".join(review.blocking_issues) or "human judgment is required"
+                    raise ExecutionValidationError(f"review requires human judgment: {reason}")
+                if review.status is ReviewStatus.REJECT:
+                    reason = "; ".join(review.blocking_issues) or "review rejected the change"
+                    raise ExecutionValidationError(f"review rejected the change: {reason}")
+                if review.status is not ReviewStatus.REQUEST_CHANGES:
+                    raise ExecutionValidationError("review returned an unsupported decision")
                 if not _previous_findings_resolved(review, previous_findings):
                     raise ExecutionValidationError(
                         "review did not mark every previous finding resolved or still open"
                     )
-                if review.status is ReviewStatus.APPROVE:
-                    break
                 unresolved = [
                     finding
                     for finding in review.findings
@@ -432,12 +440,12 @@ class DeliveryPipeline:
                 previous_findings = unresolved
                 previous_patch_sha = attempt.patch.sha256
                 previous_patch = attempt.patch.patch
+                if correction_rounds >= self.max_correction_rounds:
+                    raise ExecutionValidationError(
+                        "review correction limit exhausted after "
+                        f"{correction_rounds} completed correction rounds"
+                    )
                 correction_rounds += 1
-                if (
-                    review.status is not ReviewStatus.REQUEST_CHANGES
-                    or correction_rounds > self.max_correction_rounds
-                ):
-                    raise ExecutionValidationError("review did not approve within correction limit")
             assert attempt is not None and review is not None and attempt.patch is not None
             compliance = self.compliance.check(
                 plan,
