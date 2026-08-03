@@ -103,7 +103,10 @@ class StubCodex:
 
     def execute(self, instruction, repository, *, sandbox):
         self.instruction = instruction
-        return CodexProcessResult("review", 0, self.output, "", final_message=self.final_message)
+        return CodexProcessResult(
+            "review", 0, self.output, "", final_message=self.final_message,
+            invocation_verified=True,
+        )
 
 
 def test_codex_reviewer_prompt_contains_exact_review_context_and_redacts_findings():
@@ -166,6 +169,29 @@ def test_missing_final_message_artifact_has_precise_transport_failure():
     assert report.blocking_issues == ["FINAL_MESSAGE_MISSING: final-message artifact missing"]
 
 
+def test_unverified_transport_is_not_accepted_even_with_final_message():
+    plan, task = plan_and_task()
+    stub = StubCodex(structured("APPROVE"))
+    original = stub.execute
+
+    def unverified(instruction, repository, *, sandbox):
+        result = original(instruction, repository, sandbox=sandbox)
+        return CodexProcessResult(
+            result.command_summary, result.exit_code, result.stdout_summary,
+            result.stderr_summary, final_message=result.final_message,
+            invocation_verified=False,
+        )
+
+    stub.execute = unverified
+    report = CodexReviewerAdapter(stub).review(
+        plan, task, ["allowed.txt"], "patch", ["exit_code=0"], []
+    )
+    assert report.status is ReviewStatus.HUMAN_REQUIRED
+    assert report.blocking_issues == [
+        "CODEX_REVIEW_TRANSPORT_UNVERIFIED: invocation not verified"
+    ]
+
+
 def test_normalized_semantic_rules_still_apply():
     blocked = parse_structured_review(structured("approved", [finding()]))
     assert blocked.status is ReviewStatus.HUMAN_REQUIRED
@@ -226,7 +252,8 @@ class SequenceCodex:
     def execute(self, instruction, repository, *, sandbox):
         self.calls.append(instruction)
         return CodexProcessResult(
-            "review", 0, "", "", final_message=self.outputs.pop(0)
+            "review", 0, "", "", final_message=self.outputs.pop(0),
+            invocation_verified=True,
         )
 
 

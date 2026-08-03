@@ -81,7 +81,14 @@ def plan_for(root):
 def fake_adapter(tmp_path, body=None):
     body = body or "printf 'after\\n' > allowed.txt"
     fake = tmp_path / "fake-codex"
-    fake.write_text(f"#!/bin/sh\n{body}\n")
+    fake.write_text(
+        "#!/bin/sh\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  if [ \"$1\" = \"--output-last-message\" ]; then "
+        "printf 'completed\\n' > \"$2\"; shift 2; else shift; fi\n"
+        "done\n"
+        f"{body}\n"
+    )
     fake.chmod(0o755)
     return CodexAdapter(str(fake), timeout=2, profile=CodexInvocationProfile())
 
@@ -345,6 +352,10 @@ def round_adapter(tmp_path):
         f"n=$((n + 1))\nprintf 'after\\n' > allowed.txt\n"
         f"i=0\nwhile [ $i -lt $n ]; do printf '\\n' >> allowed.txt; i=$((i + 1)); done\n"
         f"printf '%s' \"$n\" > '{counter}'\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  if [ \"$1\" = \"--output-last-message\" ]; then "
+        "printf 'completed\\n' > \"$2\"; shift 2; else shift; fi\n"
+        "done\n"
     )
     fake.chmod(0o755)
     return CodexAdapter(str(fake), timeout=2, profile=CodexInvocationProfile())
