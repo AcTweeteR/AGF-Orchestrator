@@ -337,6 +337,23 @@ def test_sdk_duplicate_finished_observations_are_consistent(monkeypatch, tmp_pat
     assert "authoritative terminal callbacks: 2" in result.stdout_summary
 
 
+def test_sdk_irrelevant_error_named_event_does_not_conflict(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+    state_event, message_event, error_event = _sdk_event_classes()
+    _fake_sdk(
+        monkeypatch,
+        [error_event(), state_event("running")],
+        (state_event, message_event, error_event),
+        final_state="finished",
+    )
+    result = OpenHandsSDKAdapter(timeout=2, allow_llm_env=True).execute(
+        "instruction", str(tmp_path)
+    )
+    assert result.transport_error is None
+    assert "conflicting terminal callbacks: 0" in result.stdout_summary
+
+
 def test_fake_openhands_cli_success_and_exact_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
