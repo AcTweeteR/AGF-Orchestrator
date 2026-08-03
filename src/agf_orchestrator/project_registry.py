@@ -5,15 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import subprocess
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlparse
 
 from .locking import project_lock
 from .project_models import Project, ProjectPolicy, ProjectStatus, project_from_dict
+from .remote_identity import RemoteIdentityError, RemoteInfo, canonical_remote_identity
+from .remote_identity import parse_remote_url as _parse_remote_url
 from .session_models import TERMINAL_STATUSES
 from .session_store import SessionStore
 
@@ -22,53 +22,19 @@ class ProjectRegistryError(RuntimeError):
     pass
 
 
-class RemoteInfo:
-    def __init__(self, normalized: str, host: str, scheme: str):
-        self.normalized = normalized
-        self.host = host
-        self.scheme = scheme
-
-
-_SCP_REMOTE = re.compile(r"^[A-Za-z0-9._-]+@(?P<host>[^:/\s]+):(?P<path>[^\s?]+)$")
+def _canonical(value: str) -> str:
+    try:
+        return canonical_remote_identity(value)
+    except RemoteIdentityError as exc:
+        raise ProjectRegistryError(str(exc)) from exc
 
 
 def parse_remote_url(value: str) -> RemoteInfo:
-    """Parse only supported Git remote forms without retaining credentials."""
-    if (
-        not isinstance(value, str)
-        or not value
-        or any(char.isspace() or ord(char) < 32 for char in value)
-    ):
-        raise ProjectRegistryError("origin has unsupported whitespace or control characters")
-    scp = _SCP_REMOTE.fullmatch(value)
-    if scp:
-        path = scp.group("path")
-        if "/" not in path:
-            raise ProjectRegistryError("origin SCP path is malformed")
-        host = scp.group("host").lower()
-        return RemoteInfo(f"ssh://{value.split('@', 1)[0]}@{host}/{path}", host, "ssh")
-    parsed = urlparse(value)
-    if parsed.scheme not in {"https", "ssh", "git", "file"}:
-        raise ProjectRegistryError("origin scheme is unsupported or missing")
-    if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ProjectRegistryError("origin contains credentials or unsupported URL components")
-    if not parsed.hostname:
-        if parsed.scheme != "file":
-            raise ProjectRegistryError("origin host is missing")
-        if not parsed.path.startswith("/"):
-            raise ProjectRegistryError("file origin path must be absolute")
-        canonical = Path(parsed.path).resolve()
-        return RemoteInfo(canonical.as_uri(), "", "file")
-    if parsed.scheme == "file":
-        raise ProjectRegistryError("file origin host is unsupported")
-    if not parsed.path or not parsed.path.startswith("/"):
-        raise ProjectRegistryError("origin path is malformed")
-    host = parsed.hostname.lower()
+    """Compatibility wrapper exposing canonical remote parsing to callers."""
     try:
-        port = f":{parsed.port}" if parsed.port else ""
-    except ValueError as exc:
-        raise ProjectRegistryError("origin port is malformed") from exc
-    return RemoteInfo(f"{parsed.scheme}://{host}{port}{parsed.path}", host, parsed.scheme)
+        return _parse_remote_url(value)
+    except RemoteIdentityError as exc:
+        raise ProjectRegistryError(str(exc)) from exc
 
 
 def _now() -> str:
@@ -225,7 +191,7 @@ class ProjectRegistry:
             old = Path(existing.repository_root)
             if old == root or old in root.parents or root in old.parents:
                 raise ProjectRegistryError("repository duplicates or nests a registered project")
-            if existing.origin_url == remote.normalized and not accept_duplicate_origin:
+            if _canonical(existing.origin_url) == remote.identity and not accept_duplicate_origin:
                 raise ProjectRegistryError("origin is already registered by another project")
         project_id = "project-" + hashlib.sha256(str(root).encode()).hexdigest()[:16]
         if any(p.name == name or p.project_id == project_id for p in projects):
@@ -261,10 +227,14 @@ class ProjectRegistry:
         except ProjectRegistryError as exc:
             return self._mark_unlocked(project, ProjectStatus.STALE, str(exc))
         try:
-            normalized = parse_remote_url(origin).normalized
+            normalized = _canonical(origin)
         except ProjectRegistryError as exc:
             return self._mark_unlocked(project, ProjectStatus.STALE, str(exc))
-        if normalized != project.origin_url:
+        try:
+            stored_identity = _canonical(project.origin_url)
+        except ProjectRegistryError as exc:
+            return self._mark_unlocked(project, ProjectStatus.STALE, str(exc))
+        if normalized != stored_identity:
             return self._mark_unlocked(project, ProjectStatus.STALE, "repository origin changed")
         if not branch:
             return self._mark_unlocked(project, ProjectStatus.STALE, "repository is detached")

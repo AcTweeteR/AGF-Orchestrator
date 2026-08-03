@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any
 
+from .remote_identity import RemoteIdentityError, canonical_remote_identity
+
 
 class PlanStatus(StrEnum):
     READY = "READY"
@@ -83,6 +85,10 @@ class ExecutionPlan:
             or not self.repository.head_sha
         ):
             raise PlanValidationError("repository context is incomplete")
+        try:
+            canonical_remote_identity(self.repository.origin)
+        except RemoteIdentityError as exc:
+            raise PlanValidationError("repository origin is invalid") from exc
         if not isinstance(self.scope, dict) or not isinstance(self.architecture_impact, dict):
             raise PlanValidationError("scope and architecture_impact must be objects")
 

@@ -117,6 +117,22 @@ def test_fake_codex_success_is_completed_with_scoped_change(tmp_path):
     assert git(tmp_path, "status", "--porcelain").stdout == ""
 
 
+def test_https_plan_origin_executes_against_equivalent_ssh_live_origin(tmp_path):
+    init_repo(tmp_path)
+    git(tmp_path, "remote", "set-url", "origin", "git@github.com:example/repo.git")
+    plan = make_plan(tmp_path)
+    plan = replace(
+        plan,
+        repository=replace(plan.repository, origin="https://github.com/example/repo.git"),
+    )
+    result = Executor(
+        CodexAdapter(str(fake_codex(tmp_path)), timeout=2, profile=CodexInvocationProfile())
+    ).execute(plan, "task-001", str(tmp_path), dry_run=False)
+    assert result.status is ExecutionStatus.COMPLETED
+    assert result.files_changed == ["allowed.txt"]
+    assert git(tmp_path, "status", "--porcelain").stdout == ""
+
+
 def test_unauthorized_change_is_rejected(tmp_path):
     init_repo(tmp_path)
     fake = fake_codex(
