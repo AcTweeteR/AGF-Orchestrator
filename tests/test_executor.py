@@ -57,7 +57,14 @@ def fake_codex(
             "printf 'updated\\n' > allowed.txt"
         )
     fake = tmp_path.parent / f"fake-codex-{tmp_path.name}"
-    fake.write_text(f"#!/bin/sh\n{body}\nexit {exit_code}\n")
+    fake.write_text(
+        "#!/bin/sh\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  if [ \"$1\" = \"--output-last-message\" ]; then "
+        "printf 'completed\\n' > \"$2\"; shift 2; else shift; fi\n"
+        "done\n"
+        f"{body}\nexit {exit_code}\n"
+    )
     fake.chmod(0o755)
     return fake
 
@@ -82,7 +89,7 @@ def test_unverified_invocation_syntax_requires_human(monkeypatch, tmp_path):
         make_plan(tmp_path), "task-001", str(tmp_path), dry_run=False
     )
     assert result.status is ExecutionStatus.HUMAN_REQUIRED
-    assert "syntax could not be verified" in result.blocking_issues[0]
+    assert result.blocking_issues[0] == "CODEX_PROCESS_NOT_STARTED"
     assert git(tmp_path, "status", "--porcelain").stdout == ""
 
 

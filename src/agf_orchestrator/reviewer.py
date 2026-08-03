@@ -268,6 +268,10 @@ class CodexReviewerAdapter:
         )
 
     def _process_report(self, process):
+        if process.transport_error:
+            return _invalid(self.name, process.transport_error)
+        if getattr(process, "invocation_verified", True) is False:
+            return _invalid(self.name, "CODEX_REVIEW_TRANSPORT_UNVERIFIED: invocation not verified")
         if process.human_required:
             return _invalid(self.name, "CODEX_REVIEW_TRANSPORT_UNVERIFIED: invocation not verified")
         if process.timed_out:
@@ -279,7 +283,12 @@ class CodexReviewerAdapter:
                 self.name,
                 process.transport_error or "FINAL_MESSAGE_MISSING: final-message artifact missing",
             )
-        return parse_structured_review(process.final_message, self.name)
+        report = parse_structured_review(process.final_message, self.name)
+        if report.status is ReviewStatus.HUMAN_REQUIRED and report.blocking_issues:
+            issue = report.blocking_issues[0]
+            if issue.startswith("REVIEW_JSON_INVALID:"):
+                return _invalid(self.name, "CODEX_REVIEW_JSON_INVALID: response is not valid JSON")
+        return report
 
     def review(self, plan, task, changed_files, patch, validation_results, previous_findings=None):
         instruction = self._instruction(
