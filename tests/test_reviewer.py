@@ -171,3 +171,82 @@ def test_normalized_semantic_rules_still_apply():
     assert blocked.status is ReviewStatus.HUMAN_REQUIRED
     not_actionable = parse_structured_review(structured("requested changes"))
     assert not_actionable.status is ReviewStatus.HUMAN_REQUIRED
+
+
+def strict_json(status="APPROVE", findings=None):
+    return json.dumps({"status": status, "summary": "bounded review", "findings": findings or []})
+
+
+def strict_finding(required_change="replace the value", severity="P1"):
+    return {
+        "severity": severity,
+        "code": "VALUE_WRONG",
+        "path": "allowed.txt",
+        "line": 1,
+        "message": "The value does not satisfy the acceptance criterion.",
+        "required_change": required_change,
+    }
+
+
+def test_strict_review_schema_accepts_approve_and_request_changes():
+    assert parse_structured_review(strict_json()).status is ReviewStatus.APPROVE
+    requested = parse_structured_review(strict_json("REQUEST_CHANGES", [strict_finding()]))
+    assert requested.status is ReviewStatus.REQUEST_CHANGES
+    assert requested.findings[0].code == "VALUE_WRONG"
+
+
+def test_strict_review_rejects_prose_fences_and_unsupported_statuses():
+    assert parse_structured_review(
+        "```json\n" + strict_json() + "\n```"
+    ).status is ReviewStatus.HUMAN_REQUIRED
+    assert parse_structured_review(
+        "commentary\n" + strict_json()
+    ).status is ReviewStatus.HUMAN_REQUIRED
+    assert parse_structured_review(strict_json("PASS")).blocking_issues == [
+        "REVIEW_STATUS_INVALID: status is invalid"
+    ]
+
+
+def test_strict_review_rules_and_bounded_fields_are_enforced():
+    assert parse_structured_review(
+        strict_json("APPROVE", [strict_finding()])
+    ).status is ReviewStatus.HUMAN_REQUIRED
+    assert parse_structured_review(
+        strict_json("REQUEST_CHANGES", [])
+    ).status is ReviewStatus.HUMAN_REQUIRED
+    too_long = strict_json().replace("bounded review", "x" * 2001)
+    assert parse_structured_review(too_long).status is ReviewStatus.HUMAN_REQUIRED
+
+
+class SequenceCodex:
+    def __init__(self, outputs):
+        self.outputs = list(outputs)
+        self.calls = []
+
+    def execute(self, instruction, repository, *, sandbox):
+        self.calls.append(instruction)
+        return CodexProcessResult(
+            "review", 0, "", "", final_message=self.outputs.pop(0)
+        )
+
+
+def test_invalid_first_response_gets_one_schema_repair_retry():
+    plan, task = plan_and_task()
+    adapter = SequenceCodex([strict_json("PASS"), strict_json()])
+    report = CodexReviewerAdapter(adapter).review(
+        plan, task, ["allowed.txt"], "patch", ["exit_code=0"], []
+    )
+    assert report.status is ReviewStatus.APPROVE
+    assert len(adapter.calls) == 2
+    assert "REVIEW_STATUS_INVALID" in adapter.calls[1]
+
+
+def test_second_invalid_response_returns_human_required_without_third_call():
+    plan, task = plan_and_task()
+    adapter = SequenceCodex([strict_json("PASS"), strict_json("okay")])
+    report = CodexReviewerAdapter(adapter).review(
+        plan, task, ["allowed.txt"], "patch", ["exit_code=0"], []
+    )
+    assert report.status is ReviewStatus.HUMAN_REQUIRED
+    assert len(adapter.calls) == 2
+    assert report.blocking_issues == ["REVIEW_STATUS_INVALID: status is invalid"]

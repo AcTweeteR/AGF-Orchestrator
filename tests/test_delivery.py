@@ -246,6 +246,35 @@ def test_reviewer_rejection_blocks_delivery(tmp_path):
     assert git(root, "branch", "--list", "agf/*").stdout == ""
 
 
+def test_openhands_failure_is_primary_and_reviewer_is_not_run(tmp_path):
+    class FailedOpenHands:
+        name = "openhands"
+
+        def build_instruction(self, **kwargs):
+            return "instruction"
+
+        def execute(self, instruction, repository, *, sandbox="workspace-write"):
+            from agf_orchestrator.adapters.codex import CodexProcessResult
+
+            return CodexProcessResult(
+                "openhands-sdk", 0, "bounded evidence", "AgentErrorEvent: provider failed",
+                human_required=True, transport_error="OPENHANDS_PROVIDER_ERROR",
+            )
+
+    root = setup_repo(tmp_path)
+    report = DeliveryPipeline(
+        adapter=FailedOpenHands(), reviewer=DeterministicReviewer(),
+        pr_creator=DraftPRCreator(simulate=True),
+    ).deliver(plan_for(root), "task-001", str(root), execute=True)
+    assert report.status in {"BLOCKED", "HUMAN_REQUIRED"}
+    assert report.execution_status == "HUMAN_REQUIRED"
+    assert report.review_status == "NOT_RUN"
+    assert report.compliance_status == "NOT_RUN"
+    assert report.blocking_issues == ["OPENHANDS_PROVIDER_ERROR"]
+    assert "reviewer invoked: no" in report.evidence
+    assert git(root, "status", "--porcelain").stdout == ""
+
+
 class CorrectOnRetryReviewer:
     name = "correct-on-retry"
 

@@ -43,6 +43,12 @@ OPENHANDS_JSON_TRUNCATED = "OPENHANDS_JSON_TRUNCATED"
 OPENHANDS_JSON_INVALID = "OPENHANDS_JSON_INVALID"
 OPENHANDS_NO_TERMINAL_STATE = "OPENHANDS_NO_TERMINAL_STATE"
 OPENHANDS_TASK_FAILED = "OPENHANDS_TASK_FAILED"
+OPENHANDS_PROVIDER_ERROR = "OPENHANDS_PROVIDER_ERROR"
+OPENHANDS_TOOL_ERROR = "OPENHANDS_TOOL_ERROR"
+OPENHANDS_WORKSPACE_ERROR = "OPENHANDS_WORKSPACE_ERROR"
+OPENHANDS_PROMPT_ERROR = "OPENHANDS_PROMPT_ERROR"
+OPENHANDS_SDK_ERROR = "OPENHANDS_SDK_ERROR"
+OPENHANDS_UNKNOWN_ERROR = "OPENHANDS_UNKNOWN_ERROR"
 OPENHANDS_CONTRADICTORY_TERMINAL_STATE = "OPENHANDS_CONTRADICTORY_TERMINAL_STATE"
 OPENHANDS_MACHINE_INTERFACE_UNAVAILABLE = "OPENHANDS_MACHINE_INTERFACE_UNAVAILABLE"
 OPENHANDS_SDK_INITIALIZATION_FAILED = "OPENHANDS_SDK_INITIALIZATION_FAILED"
@@ -80,6 +86,38 @@ def _configuration_error(code: str, summary: str) -> CodexProcessResult:
         code,
         human_required=True,
         transport_error=code,
+    )
+
+
+def _classify_openhands_error(value: str) -> str:
+    text = value.casefold()
+    if any(item in text for item in ("api", "provider", "quota", "auth", "model")):
+        return OPENHANDS_PROVIDER_ERROR
+    if any(item in text for item in ("tool", "action", "command")):
+        return OPENHANDS_TOOL_ERROR
+    if any(item in text for item in ("permission", "workspace", "path", "directory")):
+        return OPENHANDS_WORKSPACE_ERROR
+    if "prompt" in text or "context length" in text:
+        return OPENHANDS_PROMPT_ERROR
+    if "timeout" in text or "timed out" in text:
+        return "OPENHANDS_TIMEOUT"
+    if any(item in text for item in ("sdk", "conversation")):
+        return OPENHANDS_SDK_ERROR
+    return OPENHANDS_UNKNOWN_ERROR
+
+
+def _bounded_event_error(event: object, secrets: tuple[str, ...]) -> str:
+    details = []
+    for name in ("message", "error", "exception", "reason"):
+        try:
+            value = getattr(event, name, None)
+        except Exception:
+            value = None
+        if isinstance(value, str) and value.strip():
+            details.append(value.strip())
+    detail = ": ".join(details) if details else "AgentErrorEvent emitted"
+    return redact_secrets(
+        f"{type(event).__name__}: {detail}", limit=500, additional_secrets=secrets
     )
 
 
@@ -512,10 +550,8 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
         try:
             self._load_sdk_modules()
             from openhands.sdk import LLM, Conversation
-            from openhands.sdk.event import (
-                ConversationStateUpdateEvent,
-                MessageEvent,
-            )
+            from openhands.sdk import event as sdk_event
+            from openhands.sdk.event import ConversationStateUpdateEvent, MessageEvent
             from openhands_cli.utils import get_default_cli_agent
         except (ImportError, ModuleNotFoundError):
             return CodexProcessResult(
@@ -534,13 +570,14 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
         terminal_callback_count = 0
         unknown_callback_count = 0
         callback_error: Exception | None = None
+        agent_error_summary: str | None = None
         callback_queue_drained = False
         conversation_id_matched = True
 
         def on_event(event: object) -> None:
             nonlocal final_message, event_count, conversation_id_matched
             nonlocal nonterminal_callback_count, terminal_callback_count
-            nonlocal unknown_callback_count
+            nonlocal unknown_callback_count, agent_error_summary
             event_count += 1
             event_conversation_id = getattr(event, "conversation_id", None)
             if event_conversation_id is not None:
@@ -576,6 +613,10 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
                 ).strip()
                 if text:
                     final_message = text[-4000:]
+                return
+            error_event = getattr(sdk_event, "AgentErrorEvent", None)
+            if error_event is not None and isinstance(event, error_event):
+                agent_error_summary = _bounded_event_error(event, secrets)
 
         def safe_event_callback(event: object) -> None:
             nonlocal callback_error
@@ -722,6 +763,14 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
                     status_code = "OPENHANDS_UNKNOWN_EXECUTION_STATUS"
                     human_required = True
                     completion_source = "none"
+            report_agent_error = agent_error_summary and (
+                final_state_value in OPENHANDS_FAILURE_STATES
+                or any(state in OPENHANDS_FAILURE_STATES for state in states)
+                or error is not None
+            )
+            if report_agent_error:
+                status_code = _classify_openhands_error(agent_error_summary)
+                human_required = True
             evidence = (
                 f"SDK typed events captured: {event_count}; "
                 f"OpenHands completion source: {completion_source}; "
@@ -739,9 +788,12 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
                 summary,
                 None if timed_out else 0,
                 evidence,
-                redact_secrets(type(error).__name__, additional_secrets=secrets)
-                if error is not None
-                else "",
+                redact_secrets(
+                    report_agent_error and agent_error_summary
+                    or (f"{type(error).__name__}: {error}" if error is not None else ""),
+                    limit=500,
+                    additional_secrets=secrets,
+                ),
                 human_required=human_required or error is not None,
                 timed_out=timed_out,
                 final_message=redact_secrets(final_message, additional_secrets=secrets)

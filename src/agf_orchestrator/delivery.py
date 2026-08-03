@@ -206,7 +206,12 @@ def _run_attempt(
         unauthorized = [path for path in changed if path not in allowed_paths]
         if process.human_required:
             status = ExecutionStatus.HUMAN_REQUIRED
-            blockers.append("Codex invocation could not be verified")
+            if process.transport_error and adapter.name == "openhands":
+                blockers.append(process.transport_error)
+            else:
+                blockers.append("Codex invocation could not be verified")
+            if adapter.name == "openhands":
+                evidence.append("reviewer invoked: no")
         elif process.timed_out or process.exit_code != 0:
             blockers.append("Codex process did not complete successfully")
         elif unauthorized:
@@ -356,7 +361,10 @@ class DeliveryPipeline:
         correction_rounds = 0
         try:
             context = collect_repository(repository)
-            if context.root != plan.repository.root or context.head_sha != base_sha:
+            if (
+                Path(context.root).resolve() != Path(plan.repository.root).resolve()
+                or context.head_sha != base_sha
+            ):
                 raise ExecutionValidationError("repository context or base SHA does not match plan")
             if not context.clean:
                 raise ExecutionValidationError("caller repository must be clean before delivery")
@@ -503,7 +511,14 @@ class DeliveryPipeline:
                 attempt.evidence + compliance.evidence,
             )
         except (ExecutionValidationError, PreflightError, GitDeliveryError, OSError) as exc:
-            report_review_status = review.status.value if review is not None else "NOT_APPROVED"
+            implementation_failed = (
+                attempt is not None
+                and attempt.execution_status is not ExecutionStatus.COMPLETED
+            )
+            report_review_status = (
+                "NOT_RUN" if implementation_failed else review.status.value
+                if review is not None else "NOT_APPROVED"
+            )
             report_findings = [finding.to_dict() for finding in review.findings] if review else []
             report_execution_status = attempt.execution_status.value if attempt else "FAILED"
             report_changed = attempt.changed_files if attempt else []
@@ -520,7 +535,9 @@ class DeliveryPipeline:
                 report_review_status,
                 report_findings,
                 correction_rounds,
-                compliance.status.value if compliance else "FAIL",
+                "NOT_RUN"
+                if implementation_failed
+                else compliance.status.value if compliance else "FAIL",
                 report_changed,
                 report_validation,
                 None,
