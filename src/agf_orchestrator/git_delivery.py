@@ -77,17 +77,8 @@ class GitDelivery:
     def __init__(self, *, push: bool = True):
         self.push = push
 
-    def deliver(
-        self,
-        repository: str,
-        base_sha: str,
-        branch: str,
-        patch_path: str,
-        task: Task,
-        *,
-        expected_patch_sha256: str | None = None,
-        validation_timeout: float = 60.0,
-    ) -> GitDeliveryResult:
+    def validate_target(self, repository: str, base_sha: str, branch: str) -> None:
+        """Validate the delivery target before any agent execution occurs."""
         if branch in {"main", "master"} or branch.startswith(("main/", "master/")):
             raise GitDeliveryError("delivery cannot modify main or master")
         local = _git(repository, "show-ref", "--verify", f"refs/heads/{branch}", check=False)
@@ -101,6 +92,19 @@ class GitDelivery:
             raise GitDeliveryError("base SHA drifted before delivery")
         if _status_lines(repository):
             raise GitDeliveryError("caller repository is not clean before delivery")
+
+    def deliver(
+        self,
+        repository: str,
+        base_sha: str,
+        branch: str,
+        patch_path: str,
+        task: Task,
+        *,
+        expected_patch_sha256: str | None = None,
+        validation_timeout: float = 60.0,
+    ) -> GitDeliveryResult:
+        self.validate_target(repository, base_sha, branch)
         patch_bytes = Path(patch_path).read_bytes()
         if (
             expected_patch_sha256

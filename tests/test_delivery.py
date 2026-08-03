@@ -1,4 +1,5 @@
 import subprocess
+from dataclasses import replace
 
 from agf_orchestrator.adapters.codex import CodexAdapter, CodexInvocationProfile
 from agf_orchestrator.delivery import DeliveryPipeline, _patch_policy
@@ -17,12 +18,12 @@ def git(path, *args, check=True):
     )
 
 
-def setup_repo(tmp_path):
+def setup_repo(tmp_path, branch="feature"):
     bare = tmp_path / "origin.git"
     root = tmp_path / "repo"
     subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True, text=True)
     root.mkdir()
-    git(root, "init", "-b", "feature")
+    git(root, "init", "-b", branch)
     git(root, "config", "user.email", "test@example.com")
     git(root, "config", "user.name", "Test")
     (root / "allowed.txt").write_text("before\n")
@@ -33,6 +34,7 @@ def setup_repo(tmp_path):
 
 
 def plan_for(root):
+    branch = git(root, "branch", "--show-current").stdout.strip()
     task = Task(
         "task-001",
         "Update allowed",
@@ -54,7 +56,7 @@ def plan_for(root):
         "1970-01-01T00:00:00Z",
         RepositoryContext(
             str(root),
-            "feature",
+            branch,
             (root.parent / "origin.git").as_uri(),
             True,
             git(root, "rev-parse", "HEAD").stdout.strip(),
@@ -112,6 +114,91 @@ def test_successful_pipeline_reviews_complies_pushes_and_simulates_pr(tmp_path):
     assert report.pr_url.startswith("local://draft-pr/")
     assert git(root, "status", "--porcelain").stdout == ""
     assert git(root, "branch", "--show-current").stdout.strip() == "feature"
+
+
+def test_delivery_from_main_uses_isolated_non_default_branch_and_is_idempotent(tmp_path):
+    root = setup_repo(tmp_path, branch="main")
+    plan = plan_for(root)
+    adapter = fake_adapter(tmp_path)
+    report = DeliveryPipeline(
+        adapter=adapter,
+        reviewer=DeterministicReviewer(),
+        pr_creator=DraftPRCreator(simulate=True),
+        artifact_dir=tmp_path / "artifacts",
+    ).deliver(plan, "task-001", str(root), execute=True)
+    assert report.status == "COMPLETED"
+    assert report.delivery_branch.startswith("agf/")
+    assert report.delivery_branch not in {"main", "master"}
+    assert git(root, "branch", "--show-current").stdout.strip() == "main"
+    assert git(root, "status", "--porcelain").stdout == ""
+    assert git(root, "show-ref", "--verify", f"refs/heads/{report.delivery_branch}").returncode == 0
+    assert git(
+        root, "show-ref", "--verify", f"refs/remotes/origin/{report.delivery_branch}"
+    ).returncode == 0
+
+    second = DeliveryPipeline(
+        adapter=adapter,
+        reviewer=DeterministicReviewer(),
+        pr_creator=DraftPRCreator(simulate=True),
+        artifact_dir=tmp_path / "artifacts-second",
+    ).deliver(plan, "task-001", str(root), execute=True)
+    assert second.status in {"BLOCKED", "HUMAN_REQUIRED"}
+    assert any("already exists" in issue for issue in second.blocking_issues)
+    assert git(root, "branch", "--show-current").stdout.strip() == "main"
+    assert git(root, "status", "--porcelain").stdout == ""
+
+
+def test_delivery_from_dirty_main_is_blocked_before_adapter(tmp_path):
+    root = setup_repo(tmp_path, branch="main")
+    (root / "allowed.txt").write_text("dirty\n")
+    report = DeliveryPipeline(
+        adapter=fake_adapter(tmp_path),
+        reviewer=DeterministicReviewer(),
+        pr_creator=DraftPRCreator(simulate=True),
+    ).deliver(plan_for(root), "task-001", str(root), execute=True)
+    assert report.status == "BLOCKED"
+    assert "clean" in report.blocking_issues[0]
+    assert git(root, "branch", "--show-current").stdout.strip() == "main"
+
+
+def test_delivery_base_and_origin_drift_block_before_adapter(tmp_path):
+    root = setup_repo(tmp_path, branch="main")
+    plan = plan_for(root)
+    (root / "allowed.txt").write_text("drift\n")
+    git(root, "add", "allowed.txt")
+    git(root, "commit", "-m", "drift")
+    drift_report = DeliveryPipeline(adapter=fake_adapter(tmp_path)).deliver(
+        plan, "task-001", str(root), execute=True
+    )
+    assert drift_report.status == "BLOCKED"
+    assert "base SHA" in drift_report.blocking_issues[0]
+
+    root2 = setup_repo(tmp_path / "origin-drift", branch="main")
+    plan2 = plan_for(root2)
+    mismatched = replace(
+        plan2,
+        repository=replace(plan2.repository, origin="file:///unexpected/origin.git"),
+    )
+    origin_report = DeliveryPipeline(adapter=fake_adapter(tmp_path)).deliver(
+        mismatched, "task-001", str(root2), execute=True
+    )
+    assert origin_report.status == "BLOCKED"
+    assert "origin" in origin_report.blocking_issues[0]
+
+
+def test_existing_delivery_branch_blocks_before_model_or_pr(tmp_path):
+    root = setup_repo(tmp_path, branch="main")
+    plan = plan_for(root)
+    branch = "agf/plan-delivery/task-001"
+    git(root, "branch", branch)
+    report = DeliveryPipeline(
+        adapter=fake_adapter(tmp_path),
+        reviewer=DeterministicReviewer(),
+        pr_creator=DraftPRCreator(simulate=True),
+    ).deliver(plan, "task-001", str(root), execute=True)
+    assert report.status == "BLOCKED"
+    assert "already exists" in report.blocking_issues[0]
+    assert git(root, "branch", "--show-current").stdout.strip() == "main"
 
 
 def test_patch_policy_rejects_binary_submodule_and_rename():

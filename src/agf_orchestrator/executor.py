@@ -135,7 +135,13 @@ def _validate_commands(commands: list[str]) -> list[str]:
     return parsed
 
 
-def _validate_gates(plan: ExecutionPlan, task: Task, repository: str):
+def _validate_gates(
+    plan: ExecutionPlan,
+    task: Task,
+    repository: str,
+    *,
+    allow_default_branch: bool = False,
+):
     evidence: list[str] = []
 
     def checked(name: str) -> None:
@@ -158,9 +164,13 @@ def _validate_gates(plan: ExecutionPlan, task: Task, repository: str):
     checked("repository identity")
     if Path(context.root).resolve() != Path(plan.repository.root).resolve():
         raise GateFailure("repository does not match the plan repository context", evidence)
+    if context.origin != plan.repository.origin:
+        raise GateFailure("repository origin does not match the plan", evidence)
     checked("named non-default branch")
-    if context.branch in {"main", "master"}:
+    if context.branch in {"main", "master"} and not allow_default_branch:
         raise GateFailure("live execution is blocked on main or master", evidence)
+    if context.branch in {"main", "master"} and allow_default_branch:
+        checked("controlled delivery from default branch")
     checked("clean repository")
     checked("origin present")
     checked("HEAD resolvable")
