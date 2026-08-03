@@ -69,3 +69,14 @@ def test_cli_live_delivery_requires_all_confirmation_flags(tmp_path):
     result = run_cli(repo, plan, output, "--execute", "--confirm-execution")
     assert result.returncode != 0
     assert not output.exists()
+
+
+def test_cli_rejects_openhands_env_opt_in_for_codex(tmp_path):
+    repo = setup_repo(tmp_path)
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps(plan_for(repo).to_dict()))
+    output = tmp_path / "delivery.json"
+    result = run_cli(repo, plan, output, "--allow-openhands-llm-env")
+    assert result.returncode != 0
+    assert "requires --adapter openhands" in result.stderr
+    assert not output.exists()

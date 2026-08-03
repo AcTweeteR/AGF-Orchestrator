@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from .adapters.codex import CodexAdapter, CodexProcessResult, redact_secrets
+from .adapters.openhands import parse_openhands_output
 from .execution_models import ExecutionResult, ExecutionStatus
 from .models import ExecutionPlan, PlanStatus, Task, plan_from_dict
 from .preflight import PreflightError, collect_repository
@@ -297,18 +298,33 @@ class Executor:
                 plan, task.task_id, repository, started, execution_id, str(exc), []
             )
 
+        invocation_label = f"adapter invoked: {self.adapter.name}"
         if dry_run:
             evidence = [
                 *gate_evidence,
-                "Codex invoked: no",
+                f"{invocation_label}: no",
                 "task validation commands executed: no",
                 "caller repository changes applied: no",
                 "cleanup: not applicable (dry-run)",
             ]
             return ExecutionResult(
-                execution_id, plan.plan_id, task.task_id, self.adapter.name, started, _now(),
-                context.root, context.branch, "dry-run: Codex was not invoked", None,
-                ExecutionStatus.DRY_RUN, [], task.validation_commands, "", "", evidence, [],
+                execution_id,
+                plan.plan_id,
+                task.task_id,
+                self.adapter.name,
+                started,
+                _now(),
+                context.root,
+                context.branch,
+                f"dry-run: {self.adapter.name} was not invoked",
+                None,
+                ExecutionStatus.DRY_RUN,
+                [],
+                task.validation_commands,
+                "",
+                "",
+                evidence,
+                [],
             )
 
         worktree: str | None = None
@@ -316,7 +332,7 @@ class Executor:
         changed: list[str] = []
         evidence = [
             *gate_evidence,
-            "Codex invoked: pending",
+            f"{invocation_label}: pending",
             "caller repository changes applied: no",
         ]
         blockers: list[str] = []
@@ -336,12 +352,72 @@ class Executor:
                 stop_conditions=["scope expansion", "missing context", "architecture uncertainty"],
             )
             process = self.adapter.execute(instruction, worktree)
-            evidence.append("Codex invoked: yes")
+            evidence.append(f"{invocation_label}: yes")
+            if self.adapter.name == "openhands":
+                if getattr(self.adapter, "uses_typed_events", False):
+                    callback_terminal = (
+                        "yes"
+                        if "completion source: callback" in process.stdout_summary
+                        else "no"
+                    )
+                    evidence.extend(
+                        [
+                            process.stdout_summary,
+                            "OpenHands selected transport: sdk-callback",
+                            f"OpenHands terminal event found: {callback_terminal}",
+                            "OpenHands terminal execution_status: "
+                            f"{'finished' if process.transport_error is None else 'none'}",
+                            "OpenHands final agent message present: "
+                            f"{'yes' if process.final_message else 'no'}",
+                        ]
+                    )
+                else:
+                    interpretation = parse_openhands_output(
+                        process.stdout_summary, process.stderr_summary
+                    )
+                    evidence.extend(
+                        [
+                            f"OpenHands JSON objects parsed: {interpretation.object_count}",
+                            "OpenHands terminal event found: "
+                            f"{'yes' if interpretation.terminal_event_found else 'no'}",
+                            "OpenHands terminal execution_status: "
+                            f"{interpretation.terminal_execution_status or 'none'}",
+                            f"OpenHands selected transport: {interpretation.transport or 'none'}",
+                            "OpenHands final agent message present: "
+                            f"{'yes' if interpretation.final_agent_message_present else 'no'}",
+                        ]
+                    )
             after = _status_lines(worktree)
             changed = _changed_paths(before, after)
             if process.human_required:
                 status = ExecutionStatus.HUMAN_REQUIRED
-                blockers.append("Codex invocation syntax could not be verified")
+                blockers.append(
+                    process.transport_error
+                    or (
+                        "Codex invocation syntax could not be verified"
+                        if self.adapter.name == "codex"
+                        else "adapter invocation could not be verified"
+                    )
+                )
+            elif process.transport_error and self.adapter.name == "openhands":
+                blockers.append(process.transport_error)
+                if process.transport_error in {
+                    "OPENHANDS_CONFIGURATION_REQUIRED",
+                    "OPENHANDS_INTERACTION_REQUIRED",
+                    "OPENHANDS_CONTRADICTORY_TERMINAL_STATE",
+                    "OPENHANDS_NO_TERMINAL_STATE",
+                    "OPENHANDS_JSON_INVALID",
+                    "OPENHANDS_STRUCTURED_OUTPUT_MISSING",
+                    "OPENHANDS_STRUCTURED_OUTPUT_CONFLICT",
+                    "OPENHANDS_STDERR_EVENT_STREAM_INVALID",
+                    "OPENHANDS_MACHINE_INTERFACE_UNAVAILABLE",
+                    "OPENHANDS_SDK_INITIALIZATION_FAILED",
+                    "OPENHANDS_EVENT_STREAM_MISSING",
+                    "OPENHANDS_EVENT_STREAM_CONFLICT",
+                }:
+                    status = ExecutionStatus.HUMAN_REQUIRED
+                else:
+                    status = ExecutionStatus.FAILED
             elif process.timed_out or process.exit_code != 0:
                 blockers.append("Codex process did not complete successfully")
                 evidence.append("process exit code preserved")
@@ -349,6 +425,8 @@ class Executor:
                     evidence.append("Codex timeout reached")
             elif not changed:
                 blockers.append("Codex produced no changed files")
+                if self.adapter.name == "openhands":
+                    blockers[-1] = "OPENHANDS_NO_CHANGES"
             else:
                 unauthorized = [path for path in changed if not _path_allowed(path, allowed_paths)]
                 evidence.append("changed-file scope checked")
@@ -380,8 +458,7 @@ class Executor:
             except (OSError, subprocess.CalledProcessError) as exc:
                 caller_clean = False
                 blockers.append(
-                    "caller repository status could not be verified: "
-                    f"{redact_secrets(str(exc))}"
+                    f"caller repository status could not be verified: {redact_secrets(str(exc))}"
                 )
             evidence.append(f"caller repository clean: {'yes' if caller_clean else 'no'}")
             if not caller_clean:
@@ -391,8 +468,18 @@ class Executor:
         if process is None:
             process = CodexProcessResult("codex not invoked", None, "", "")
         return self._result(
-            plan, task, context.root, context.branch, started, execution_id, process,
-            status, changed, task.validation_commands, evidence, blockers,
+            plan,
+            task,
+            context.root,
+            context.branch,
+            started,
+            execution_id,
+            process,
+            status,
+            changed,
+            task.validation_commands,
+            evidence,
+            blockers,
         )
 
     def _blocked(
@@ -407,9 +494,23 @@ class Executor:
         status=ExecutionStatus.BLOCKED,
     ):
         return ExecutionResult(
-            execution_id, plan.plan_id, task_id, self.adapter.name, started, _now(),
-            repository, plan.repository.branch, "not invoked", None, status,
-            [], [], "", "", evidence, [reason],
+            execution_id,
+            plan.plan_id,
+            task_id,
+            self.adapter.name,
+            started,
+            _now(),
+            repository,
+            plan.repository.branch,
+            "not invoked",
+            None,
+            status,
+            [],
+            [],
+            "",
+            "",
+            evidence,
+            [reason],
         )
 
     def _result(
@@ -428,8 +529,17 @@ class Executor:
         blockers,
     ):
         return ExecutionResult(
-            execution_id, plan.plan_id, task.task_id, self.adapter.name, started, _now(),
-            repository, branch, process.command_summary, process.exit_code, status,
+            execution_id,
+            plan.plan_id,
+            task.task_id,
+            self.adapter.name,
+            started,
+            _now(),
+            repository,
+            branch,
+            process.command_summary,
+            process.exit_code,
+            status,
             changed,
             validations,
             process.stdout_summary,
@@ -442,8 +552,7 @@ class Executor:
 def _path_allowed(path: str, allowed_paths: list[str]) -> bool:
     candidate = PurePosixPath(path.replace("\\", "/"))
     return any(
-        candidate == PurePosixPath(allowed)
-        or PurePosixPath(allowed) in candidate.parents
+        candidate == PurePosixPath(allowed) or PurePosixPath(allowed) in candidate.parents
         for allowed in allowed_paths
     )
 
@@ -456,8 +565,12 @@ def write_execution_result(result: ExecutionResult, output: str | Path) -> None:
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=target.parent,
-            prefix=f".{target.name}.", suffix=".tmp", delete=False,
+            mode="w",
+            encoding="utf-8",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
         ) as temporary:
             temporary.write(serialized)
             temporary.flush()

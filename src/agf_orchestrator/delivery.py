@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .adapters.codex import CodexAdapter, CodexProcessResult, redact_secrets
+from .adapters.openhands import parse_openhands_output
 from .compliance import ComplianceChecker
 from .execution_models import ExecutionStatus
 from .executor import (
@@ -162,7 +163,41 @@ def _run_attempt(
         if correction:
             instruction += "\nCorrection request (accepted findings only):\n" + correction
         process = adapter.execute(instruction, worktree)
-        evidence.append("Codex invoked: yes")
+        evidence.append(f"adapter invoked: {adapter.name}: yes")
+        if adapter.name == "openhands":
+            if getattr(adapter, "uses_typed_events", False):
+                callback_terminal = (
+                    "yes"
+                    if "completion source: callback" in process.stdout_summary
+                    else "no"
+                )
+                evidence.extend(
+                    [
+                        process.stdout_summary,
+                        "OpenHands selected transport: sdk-callback",
+                        f"OpenHands terminal event found: {callback_terminal}",
+                        "OpenHands terminal execution_status: "
+                        f"{'finished' if process.transport_error is None else 'none'}",
+                        "OpenHands final agent message present: "
+                        f"{'yes' if process.final_message else 'no'}",
+                    ]
+                )
+            else:
+                interpretation = parse_openhands_output(
+                    process.stdout_summary, process.stderr_summary
+                )
+                evidence.extend(
+                    [
+                        f"OpenHands JSON objects parsed: {interpretation.object_count}",
+                        "OpenHands terminal event found: "
+                        f"{'yes' if interpretation.terminal_event_found else 'no'}",
+                        "OpenHands terminal execution_status: "
+                        f"{interpretation.terminal_execution_status or 'none'}",
+                        f"OpenHands selected transport: {interpretation.transport or 'none'}",
+                        "OpenHands final agent message present: "
+                        f"{'yes' if interpretation.final_agent_message_present else 'no'}",
+                    ]
+                )
         after = _status_lines(worktree)
         changed = _changed_paths([], after)
         evidence.append("changed-file scope checked")
