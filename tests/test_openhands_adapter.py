@@ -297,6 +297,46 @@ def test_sdk_callback_exception_is_reported_and_conversation_closes(monkeypatch,
     assert fake_conversation.last.closed is True
 
 
+def test_sdk_transitional_states_do_not_conflict_with_finished(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+    state_event, message_event, error_event = _sdk_event_classes()
+    _fake_sdk(
+        monkeypatch,
+        [
+            state_event("idle"),
+            state_event("running"),
+            state_event("stopping"),
+            state_event("finished"),
+        ],
+        (state_event, message_event, error_event),
+        final_state="finished",
+    )
+    result = OpenHandsSDKAdapter(timeout=2, allow_llm_env=True).execute(
+        "instruction", str(tmp_path)
+    )
+    assert result.transport_error is None
+    assert "nonterminal callbacks observed: 3" in result.stdout_summary
+    assert "conflicting terminal callbacks: 0" in result.stdout_summary
+
+
+def test_sdk_duplicate_finished_observations_are_consistent(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+    state_event, message_event, error_event = _sdk_event_classes()
+    _fake_sdk(
+        monkeypatch,
+        [state_event("finished"), state_event("finished")],
+        (state_event, message_event, error_event),
+        final_state="finished",
+    )
+    result = OpenHandsSDKAdapter(timeout=2, allow_llm_env=True).execute(
+        "instruction", str(tmp_path)
+    )
+    assert result.transport_error is None
+    assert "authoritative terminal callbacks: 2" in result.stdout_summary
+
+
 def test_fake_openhands_cli_success_and_exact_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")

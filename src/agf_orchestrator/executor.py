@@ -355,12 +355,16 @@ class Executor:
             evidence.append(f"{invocation_label}: yes")
             if self.adapter.name == "openhands":
                 if getattr(self.adapter, "uses_typed_events", False):
+                    callback_terminal = (
+                        "yes"
+                        if "completion source: callback" in process.stdout_summary
+                        else "no"
+                    )
                     evidence.extend(
                         [
                             process.stdout_summary,
                             "OpenHands selected transport: sdk-callback",
-                            "OpenHands terminal event found: "
-                            f"{'yes' if process.transport_error is None else 'no'}",
+                            f"OpenHands terminal event found: {callback_terminal}",
                             "OpenHands terminal execution_status: "
                             f"{'finished' if process.transport_error is None else 'none'}",
                             "OpenHands final agent message present: "

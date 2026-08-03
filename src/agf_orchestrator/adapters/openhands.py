@@ -32,6 +32,7 @@ OPENHANDS_INTERACTION_STATES = {
     "paused",
     "needs_input",
 }
+OPENHANDS_NONTERMINAL_STATES = {"idle", "running", "starting", "stopping"}
 OPENHANDS_STATE_EVENT = "conversationstateupdateevent"
 OPENHANDS_EXECUTION_STATUS_KEY = "execution_status"
 OPENHANDS_FULL_STATE_KEY = "full_state"
@@ -512,7 +513,6 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
             self._load_sdk_modules()
             from openhands.sdk import LLM, Conversation
             from openhands.sdk.event import (
-                AgentErrorEvent,
                 ConversationStateUpdateEvent,
                 MessageEvent,
             )
@@ -530,12 +530,17 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
         states: list[str] = []
         final_message: str | None = None
         event_count = 0
+        nonterminal_callback_count = 0
+        terminal_callback_count = 0
+        unknown_callback_count = 0
         callback_error: Exception | None = None
         callback_queue_drained = False
         conversation_id_matched = True
 
         def on_event(event: object) -> None:
             nonlocal final_message, event_count, conversation_id_matched
+            nonlocal nonterminal_callback_count, terminal_callback_count
+            nonlocal unknown_callback_count
             event_count += 1
             event_conversation_id = getattr(event, "conversation_id", None)
             if event_conversation_id is not None:
@@ -548,7 +553,18 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
                     event.key == OPENHANDS_FULL_STATE_KEY and value is not None
                 ):
                     if isinstance(value, str):
-                        states.append(_normalized_state(value) or "")
+                        normalized = _normalized_state(value) or ""
+                        states.append(normalized)
+                        if normalized in OPENHANDS_NONTERMINAL_STATES:
+                            nonterminal_callback_count += 1
+                        elif normalized in (
+                            OPENHANDS_SUCCESS_STATES
+                            | OPENHANDS_FAILURE_STATES
+                            | OPENHANDS_INTERACTION_STATES
+                        ):
+                            terminal_callback_count += 1
+                        else:
+                            unknown_callback_count += 1
                 return
             if isinstance(event, MessageEvent) and event.source == "agent":
                 content = getattr(event, "llm_message", None)
@@ -560,8 +576,6 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
                 ).strip()
                 if text:
                     final_message = text[-4000:]
-            if isinstance(event, AgentErrorEvent):
-                states.append("error")
 
         def safe_event_callback(event: object) -> None:
             nonlocal callback_error
@@ -632,42 +646,57 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
                 else "unknown"
             )
             if callback_error is not None:
+                conflicting_terminal_callbacks = 0
                 status_code = "OPENHANDS_CALLBACK_ERROR"
                 human_required = True
                 completion_source = "none"
             elif timed_out:
+                conflicting_terminal_callbacks = 0
                 status_code = "OPENHANDS_TIMEOUT"
                 human_required = True
                 completion_source = "none"
             elif not conversation_id_matched:
+                conflicting_terminal_callbacks = 0
                 status_code = OPENHANDS_EVENT_STREAM_CONFLICT
                 human_required = True
                 completion_source = "none"
             else:
-                categories = {
+                terminal_states = [
+                    state
+                    for state in states
+                    if state
+                    in (
+                        OPENHANDS_SUCCESS_STATES
+                        | OPENHANDS_FAILURE_STATES
+                        | OPENHANDS_INTERACTION_STATES
+                    )
+                ]
+                terminal_categories = {
                     "success" if state in OPENHANDS_SUCCESS_STATES else
                     "failure" if state in OPENHANDS_FAILURE_STATES else
-                    "interaction" for state in states
+                    "interaction" for state in terminal_states
                 }
-                if len(categories) > 1:
+                conflicting_terminal_callbacks = int(len(terminal_categories) > 1)
+                if conflicting_terminal_callbacks:
                     status_code = OPENHANDS_EVENT_STREAM_CONFLICT
                     human_required = True
                     completion_source = "none"
                 elif final_state_value == "finished" and any(
-                    state in OPENHANDS_FAILURE_STATES for state in states
+                    state in OPENHANDS_FAILURE_STATES for state in terminal_states
                 ):
                     status_code = OPENHANDS_EVENT_STREAM_CONFLICT
                     human_required = True
                     completion_source = "none"
-                elif states and states[-1] in OPENHANDS_FAILURE_STATES:
+                    conflicting_terminal_callbacks = 1
+                elif terminal_states and terminal_states[-1] in OPENHANDS_FAILURE_STATES:
                     status_code = OPENHANDS_TASK_FAILED
                     human_required = False
                     completion_source = "callback"
-                elif states and states[-1] in OPENHANDS_INTERACTION_STATES:
+                elif terminal_states and terminal_states[-1] in OPENHANDS_INTERACTION_STATES:
                     status_code = "OPENHANDS_INTERACTION_REQUIRED"
                     human_required = True
                     completion_source = "callback"
-                elif states and states[-1] in OPENHANDS_SUCCESS_STATES:
+                elif terminal_states and terminal_states[-1] in OPENHANDS_SUCCESS_STATES:
                     status_code = None
                     human_required = False
                     completion_source = "callback"
@@ -700,7 +729,11 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
                 f"OpenHands conversation ID matched: "
                 f"{'yes' if conversation_id_matched else 'no'}; "
                 f"OpenHands callback queue drained: "
-                f"{'yes' if callback_queue_drained else 'no'}"
+                f"{'yes' if callback_queue_drained else 'no'}; "
+                f"OpenHands authoritative terminal callbacks: {terminal_callback_count}; "
+                f"OpenHands nonterminal callbacks observed: {nonterminal_callback_count}; "
+                f"OpenHands conflicting terminal callbacks: {conflicting_terminal_callbacks}; "
+                f"OpenHands unknown callbacks observed: {unknown_callback_count}"
             )
             return CodexProcessResult(
                 summary,
