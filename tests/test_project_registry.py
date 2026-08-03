@@ -136,6 +136,64 @@ def test_remote_parser_accepts_scp_and_rejects_scheme_less_values():
         parse_remote_url("relative/path")
 
 
+def test_duplicate_registration_detects_https_and_ssh_identity_forms(tmp_path):
+    root, _ = repo(tmp_path)
+    registry = ProjectRegistry(tmp_path / "state")
+    subprocess.run(
+        ["git", "-C", str(root), "remote", "set-url", "origin", "https://github.com/example/project.git"],
+        check=True,
+    )
+    registry.add("https-project", root)
+    second, _ = repo(tmp_path / "second")
+    subprocess.run(
+        [
+            "git", "-C", str(second), "remote", "set-url", "origin",
+            "git@github.com:example/project.git",
+        ],
+        check=True,
+    )
+    with pytest.raises(ProjectRegistryError, match="origin"):
+        registry.add("ssh-project", second)
+
+
+def test_registered_https_origin_verifies_against_live_ssh_origin(tmp_path):
+    root, _ = repo(tmp_path)
+    registry = ProjectRegistry(tmp_path / "state")
+    subprocess.run(
+        ["git", "-C", str(root), "remote", "set-url", "origin", "https://github.com/example/project.git"],
+        check=True,
+    )
+    project = registry.add("project", root)
+    subprocess.run(
+        [
+            "git", "-C", str(root), "remote", "set-url", "origin",
+            "git@github.com:example/project.git",
+        ],
+        check=True,
+    )
+    verified = registry.verify(project.project_id)
+    assert verified.status is ProjectStatus.ACTIVE
+
+
+def test_registered_ssh_origin_verifies_against_live_https_origin(tmp_path):
+    root, _ = repo(tmp_path)
+    registry = ProjectRegistry(tmp_path / "state")
+    subprocess.run(
+        [
+            "git", "-C", str(root), "remote", "set-url", "origin",
+            "git@github.com:example/project.git",
+        ],
+        check=True,
+    )
+    project = registry.add("project", root)
+    subprocess.run(
+        ["git", "-C", str(root), "remote", "set-url", "origin", "https://github.com/example/project.git"],
+        check=True,
+    )
+    verified = registry.verify(project.project_id)
+    assert verified.status is ProjectStatus.ACTIVE
+
+
 def test_concurrent_additions_preserve_both_projects(tmp_path):
     root_a, _ = repo(tmp_path / "a")
     root_b, _ = repo(tmp_path / "b")

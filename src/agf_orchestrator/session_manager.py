@@ -206,12 +206,15 @@ class SessionManager:
             )
         root = Path(project.repository_root)
         try:
-            origin = parse_remote_url(_git(root, "config", "--get", "remote.origin.url")).normalized
+            origin = parse_remote_url(_git(root, "config", "--get", "remote.origin.url")).identity
             head = _git(root, "rev-parse", "HEAD")
             branch = _git(root, "branch", "--show-current")
         except ProjectRegistryError as exc:
             return self._mark_stale(session, str(exc), "repair repository identity")
-        if origin != project.origin_url or branch != project.default_branch:
+        if (
+            origin != parse_remote_url(project.origin_url).identity
+            or branch != project.default_branch
+        ):
             return self._mark_stale(
                 session,
                 "repository origin or branch changed",
@@ -262,7 +265,9 @@ class SessionManager:
             raise SessionManagerError("plan artifact is invalid") from exc
         if plan.repository.root != project.repository_root:
             raise SessionManagerError("plan repository root does not match registered project")
-        if parse_remote_url(plan.repository.origin).normalized != project.origin_url:
+        if parse_remote_url(plan.repository.origin).identity != parse_remote_url(
+            project.origin_url
+        ).identity:
             raise SessionManagerError("plan origin does not match registered project")
         if plan.repository.head_sha != session.base_sha:
             raise SessionManagerError("plan base SHA does not match session base SHA")

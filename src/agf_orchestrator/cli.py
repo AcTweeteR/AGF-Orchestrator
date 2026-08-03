@@ -23,7 +23,7 @@ from .locking import LockError
 from .models import PlanStatus
 from .preflight import PreflightError, collect_repository
 from .project_models import ProjectPolicy
-from .project_registry import ProjectRegistry, ProjectRegistryError
+from .project_registry import ProjectRegistry, ProjectRegistryError, parse_remote_url
 from .reviewer import CodexReviewerAdapter, DeterministicReviewer
 from .session_manager import SessionManager, SessionManagerError
 from .session_store import SessionStore, SessionStoreError
@@ -160,7 +160,7 @@ def _validate_plan_project(plan, project, repository: Path) -> None:
     context = plan.repository
     if Path(context.root).resolve() != repository:
         raise ProjectRegistryError("plan repository root does not match the registered project")
-    if context.origin != project.origin_url:
+    if parse_remote_url(context.origin).identity != parse_remote_url(project.origin_url).identity:
         raise ProjectRegistryError("plan origin does not match the registered project")
     if context.branch != project.default_branch:
         raise ProjectRegistryError("plan branch does not match the registered project")

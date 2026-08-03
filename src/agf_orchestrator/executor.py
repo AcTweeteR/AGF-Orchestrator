@@ -17,6 +17,7 @@ from .adapters.openhands import parse_openhands_output
 from .execution_models import ExecutionResult, ExecutionStatus
 from .models import ExecutionPlan, PlanStatus, Task, plan_from_dict
 from .preflight import PreflightError, collect_repository
+from .remote_identity import RemoteIdentityError, canonical_remote_identity
 
 CONTROL_SYNTAX = (";", "&&", "||", "|", ">", "<", "`", "$(", "\n")
 SHELL_CONTROL_TOKENS = {";", "&&", "||", "|", ">", "<"}
@@ -164,7 +165,13 @@ def _validate_gates(
     checked("repository identity")
     if Path(context.root).resolve() != Path(plan.repository.root).resolve():
         raise GateFailure("repository does not match the plan repository context", evidence)
-    if context.origin != plan.repository.origin:
+    try:
+        origin_matches = canonical_remote_identity(context.origin) == canonical_remote_identity(
+            plan.repository.origin
+        )
+    except RemoteIdentityError as exc:
+        raise GateFailure("repository origin is invalid", evidence) from exc
+    if not origin_matches:
         raise GateFailure("repository origin does not match the plan", evidence)
     checked("named non-default branch")
     if context.branch in {"main", "master"} and not allow_default_branch:
