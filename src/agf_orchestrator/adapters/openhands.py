@@ -41,6 +41,7 @@ OPENHANDS_STDERR_EVENT_STREAM_INVALID = "OPENHANDS_STDERR_EVENT_STREAM_INVALID"
 OPENHANDS_JSON_TRUNCATED = "OPENHANDS_JSON_TRUNCATED"
 OPENHANDS_JSON_INVALID = "OPENHANDS_JSON_INVALID"
 OPENHANDS_NO_TERMINAL_STATE = "OPENHANDS_NO_TERMINAL_STATE"
+OPENHANDS_TASK_FAILED = "OPENHANDS_TASK_FAILED"
 OPENHANDS_CONTRADICTORY_TERMINAL_STATE = "OPENHANDS_CONTRADICTORY_TERMINAL_STATE"
 OPENHANDS_MACHINE_INTERFACE_UNAVAILABLE = "OPENHANDS_MACHINE_INTERFACE_UNAVAILABLE"
 OPENHANDS_SDK_INITIALIZATION_FAILED = "OPENHANDS_SDK_INITIALIZATION_FAILED"
@@ -529,10 +530,16 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
         states: list[str] = []
         final_message: str | None = None
         event_count = 0
+        callback_error: Exception | None = None
+        callback_queue_drained = False
+        conversation_id_matched = True
 
         def on_event(event: object) -> None:
-            nonlocal final_message, event_count
+            nonlocal final_message, event_count, conversation_id_matched
             event_count += 1
+            event_conversation_id = getattr(event, "conversation_id", None)
+            if event_conversation_id is not None:
+                conversation_id_matched = str(event_conversation_id) == str(conversation.id)
             if isinstance(event, ConversationStateUpdateEvent):
                 value = event.value.value if hasattr(event.value, "value") else event.value
                 if event.key == OPENHANDS_FULL_STATE_KEY and isinstance(value, dict):
@@ -556,6 +563,14 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
             if isinstance(event, AgentErrorEvent):
                 states.append("error")
 
+        def safe_event_callback(event: object) -> None:
+            nonlocal callback_error
+            try:
+                on_event(event)
+            except Exception as exc:
+                callback_error = exc
+                raise
+
         try:
             llm = LLM(
                 model=llm_environment["LLM_MODEL"],
@@ -568,10 +583,11 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
                 agent=agent,
                 workspace=repository,
                 persistence_dir=None,
-                callbacks=[on_event],
+                callbacks=[safe_event_callback],
                 visualizer=None,
                 delete_on_close=True,
             )
+            conversation.state.set_on_state_change(safe_event_callback)
         except Exception as exc:
             return CodexProcessResult(
                 summary,
@@ -586,7 +602,7 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
         completed = threading.Event()
 
         def run_conversation() -> None:
-            nonlocal error
+            nonlocal error, callback_error
             try:
                 conversation.send_message(instruction)
                 conversation.run()
@@ -600,75 +616,113 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
         if not completed.wait(self.timeout):
             try:
                 conversation.pause()
-                conversation.close()
             except Exception:
                 pass
-            return CodexProcessResult(
-                summary,
-                None,
-                "",
-                "",
-                timed_out=True,
-                human_required=True,
-                transport_error="OPENHANDS_TIMEOUT",
-            )
+            timed_out = True
+        else:
+            timed_out = False
+            callback_queue_drained = True
+
         try:
-            conversation.close()
-        except Exception:
-            pass
-        if error is not None:
-            return CodexProcessResult(
-                summary,
-                None,
-                "",
-                redact_secrets(type(error).__name__, additional_secrets=secrets),
-                human_required=True,
-                transport_error="OPENHANDS_TASK_FAILED",
+            final_state = conversation.state.execution_status
+            final_state_value = getattr(final_state, "value", final_state)
+            final_state_value = (
+                _normalized_state(final_state_value) or "unknown"
+                if isinstance(final_state_value, str)
+                else "unknown"
             )
-        if not states:
+            if callback_error is not None:
+                status_code = "OPENHANDS_CALLBACK_ERROR"
+                human_required = True
+                completion_source = "none"
+            elif timed_out:
+                status_code = "OPENHANDS_TIMEOUT"
+                human_required = True
+                completion_source = "none"
+            elif not conversation_id_matched:
+                status_code = OPENHANDS_EVENT_STREAM_CONFLICT
+                human_required = True
+                completion_source = "none"
+            else:
+                categories = {
+                    "success" if state in OPENHANDS_SUCCESS_STATES else
+                    "failure" if state in OPENHANDS_FAILURE_STATES else
+                    "interaction" for state in states
+                }
+                if len(categories) > 1:
+                    status_code = OPENHANDS_EVENT_STREAM_CONFLICT
+                    human_required = True
+                    completion_source = "none"
+                elif final_state_value == "finished" and any(
+                    state in OPENHANDS_FAILURE_STATES for state in states
+                ):
+                    status_code = OPENHANDS_EVENT_STREAM_CONFLICT
+                    human_required = True
+                    completion_source = "none"
+                elif states and states[-1] in OPENHANDS_FAILURE_STATES:
+                    status_code = OPENHANDS_TASK_FAILED
+                    human_required = False
+                    completion_source = "callback"
+                elif states and states[-1] in OPENHANDS_INTERACTION_STATES:
+                    status_code = "OPENHANDS_INTERACTION_REQUIRED"
+                    human_required = True
+                    completion_source = "callback"
+                elif states and states[-1] in OPENHANDS_SUCCESS_STATES:
+                    status_code = None
+                    human_required = False
+                    completion_source = "callback"
+                elif final_state_value == "finished":
+                    status_code = None
+                    human_required = False
+                    completion_source = "final-sdk-state"
+                elif final_state_value in OPENHANDS_FAILURE_STATES:
+                    status_code = OPENHANDS_TASK_FAILED
+                    human_required = False
+                    completion_source = "final-sdk-state"
+                elif final_state_value in OPENHANDS_INTERACTION_STATES:
+                    status_code = "OPENHANDS_INTERACTION_REQUIRED"
+                    human_required = True
+                    completion_source = "final-sdk-state"
+                elif final_state_value in {
+                    "idle", "running", "starting", "stopping"
+                }:
+                    status_code = OPENHANDS_NO_TERMINAL_STATE
+                    human_required = True
+                    completion_source = "none"
+                else:
+                    status_code = "OPENHANDS_UNKNOWN_EXECUTION_STATUS"
+                    human_required = True
+                    completion_source = "none"
+            evidence = (
+                f"SDK typed events captured: {event_count}; "
+                f"OpenHands completion source: {completion_source}; "
+                f"OpenHands final SDK execution_status: {final_state_value}; "
+                f"OpenHands conversation ID matched: "
+                f"{'yes' if conversation_id_matched else 'no'}; "
+                f"OpenHands callback queue drained: "
+                f"{'yes' if callback_queue_drained else 'no'}"
+            )
             return CodexProcessResult(
                 summary,
-                0,
-                f"SDK typed events captured: {event_count}",
-                "",
-                human_required=True,
+                None if timed_out else 0,
+                evidence,
+                redact_secrets(type(error).__name__, additional_secrets=secrets)
+                if error is not None
+                else "",
+                human_required=human_required or error is not None,
+                timed_out=timed_out,
                 final_message=redact_secrets(final_message, additional_secrets=secrets)
                 if final_message
                 else None,
-                transport_error=(
-                    OPENHANDS_EVENT_STREAM_MISSING
-                    if event_count == 0
-                    else OPENHANDS_NO_TERMINAL_STATE
+                transport_error=status_code or (
+                    OPENHANDS_TASK_FAILED if error is not None else None
                 ),
             )
-        categories = {
-            "success" if state in OPENHANDS_SUCCESS_STATES else
-            "failure" if state in OPENHANDS_FAILURE_STATES else
-            "interaction" for state in states
-        }
-        if len(categories) > 1:
-            status_code = OPENHANDS_EVENT_STREAM_CONFLICT
-            human_required = True
-        elif states[-1] in OPENHANDS_SUCCESS_STATES:
-            status_code = None
-            human_required = False
-        elif states[-1] in OPENHANDS_INTERACTION_STATES:
-            status_code = "OPENHANDS_INTERACTION_REQUIRED"
-            human_required = True
-        else:
-            status_code = "OPENHANDS_TASK_FAILED"
-            human_required = False
-        return CodexProcessResult(
-            summary,
-            0,
-            f"SDK typed events captured: {event_count}",
-            "",
-            human_required=human_required,
-            final_message=redact_secrets(final_message, additional_secrets=secrets)
-            if final_message
-            else None,
-            transport_error=status_code,
-        )
+        finally:
+            try:
+                conversation.state.set_on_state_change(None)
+            finally:
+                conversation.close()
 
     def _load_sdk_modules(self) -> None:
         """Make the SDK from the configured OpenHands executable importable."""

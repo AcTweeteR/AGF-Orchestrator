@@ -168,6 +168,7 @@ def _run_attempt(
             if getattr(adapter, "uses_typed_events", False):
                 evidence.extend(
                     [
+                        process.stdout_summary,
                         "OpenHands selected transport: sdk-callback",
                         "OpenHands terminal event found: "
                         f"{'yes' if process.transport_error is None else 'no'}",
