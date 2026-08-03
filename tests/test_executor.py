@@ -59,6 +59,7 @@ def fake_codex(
     fake = tmp_path.parent / f"fake-codex-{tmp_path.name}"
     fake.write_text(
         "#!/bin/sh\n"
+        "if [ \"$1\" = \"--version\" ]; then printf 'codex-test 1.0\\n'; exit 0; fi\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  if [ \"$1\" = \"--output-last-message\" ]; then "
         "printf 'completed\\n' > \"$2\"; shift 2; else shift; fi\n"

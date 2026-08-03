@@ -214,3 +214,41 @@ def test_delivery_rejects_no_human_merge_and_passes_effective_limit(tmp_path, mo
 def test_correction_limit_above_two_is_rejected(tmp_path):
     with pytest.raises(ValueError):
         ProjectPolicy(maximum_correction_rounds=3)
+
+
+def test_delivery_forwards_explicit_codex_path_to_reviewer(tmp_path, monkeypatch):
+    root = make_repo(tmp_path, "codex-path")
+    state = tmp_path / "state"
+    register(state, root, "codex-path")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan_for(root).to_dict()))
+    output = tmp_path / "delivery.json"
+    captured = {}
+
+    class FakeCodex:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class FakePipeline:
+        def __init__(self, **kwargs):
+            captured["reviewer"] = kwargs["reviewer"]
+
+        def deliver(self, *args, **kwargs):
+            return type(
+                "Report", (), {"status": "DRY_RUN", "to_dict": lambda self: {"status": self.status}}
+            )()
+
+    monkeypatch.setattr(cli, "CodexAdapter", FakeCodex)
+    monkeypatch.setattr(cli, "DeliveryPipeline", FakePipeline)
+    assert invoke(
+        monkeypatch,
+        state,
+        [
+            "deliver", "--project", "codex-path", "--plan", str(plan_path),
+            "--task", "task-001", "--repository", str(root),
+            "--adapter", "openhands", "--reviewer", "codex",
+            "--codex-path", "/Applications/ChatGPT.app/Contents/Resources/codex",
+            "--output", str(output),
+        ],
+    ) == 0
+    assert captured["executable"] == "/Applications/ChatGPT.app/Contents/Resources/codex"

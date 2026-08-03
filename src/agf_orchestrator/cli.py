@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     execute.add_argument(
         "--confirm-execution", action="store_true", help="confirm live execution explicitly"
     )
-    execute.add_argument("--codex-path", default="codex", help="Codex executable path")
+    execute.add_argument("--codex-path", default=None, help="Codex executable path")
     execute.add_argument("--openhands-path", default="openhands", help="OpenHands executable path")
     execute.add_argument("--timeout", type=float, default=300.0, help="Codex timeout in seconds")
     execute.add_argument("--output", help="optional report path outside the target repository")
@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     deliver.add_argument("--confirm-delivery", action="store_true")
     deliver.add_argument("--reviewer", choices=["deterministic", "codex"], default="deterministic")
     deliver.add_argument("--simulate-pr", action="store_true")
-    deliver.add_argument("--codex-path", default="codex")
+    deliver.add_argument("--codex-path", default=None)
     deliver.add_argument("--openhands-path", default="openhands")
     deliver.add_argument("--timeout", type=float, default=300.0)
     project = commands.add_parser("project", help="manage explicitly registered projects")
