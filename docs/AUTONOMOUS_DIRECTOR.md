@@ -8,6 +8,10 @@ AGF-Orchestrator. It does not replace the proven plan, execution, review,
 compliance, session, locking, and delivery pipelines. New capabilities are
 introduced behind explicit gates and remain resumable.
 
+Normative authority, lifecycle, risk, merge, recovery, budget, and safety
+rules are defined only in `CONSTITUTION.md`. This document specifies
+components and interfaces; summaries here cannot create a second policy.
+
 ## 1. Target operating model
 
 The User/Owner supplies a master objective and project policy. The
@@ -29,6 +33,12 @@ initial architecture, roadmap, and backlog. Transfer mode moves one tested
 responsibility at a time to AGF. Full autonomy mode lets AGF select and
 continue the next eligible task while independent review, compliance, and
 human escalation remain active.
+
+Architecture ownership is explicit: the User/Owner owns the approved
+architecture baseline and ADR activation. The Architect drafts and evaluates
+decisions; AGF selects only within that baseline. Material conflict,
+architecture drift, or a design outside the baseline escalates to the
+Owner. The Architect never approves its own implementation.
 
 ## 2. System architecture
 
@@ -237,18 +247,16 @@ review confidence, uncertainty, size, rollback difficulty, and incident
 history. Deterministic rules raise risk; reviewer opinion alone cannot lower
 it. Unknown signals are conservative and block when material.
 
+The precedence and protected-path rules in `CONSTITUTION.md` are
+authoritative. This section is descriptive and cannot infer a lower class
+from a local heuristic.
+
 ## 9. Merge and release policy
 
-Automatic merge requires objective traceability, valid plan and scope,
-passing validations, independent `APPROVE`, Compliance `PASS`, green CI,
-no unresolved P0/P1/P2, known remote state, current mergeable branch,
-rollback evidence where relevant, project-policy authorization, permitted
-risk, and an unchanged constitution hash.
-
-No autonomous merge is permitted for constitutional files, objectives,
-risk thresholds, permission or credential policies, human approval rules,
-or merge authorization rules. The existing controlled PR workflow remains
-the bootstrap default until this engine is production-ready.
+This section is an interface to the single active Merge Policy defined by
+the constitution, not an independent policy. The current bootstrap runtime
+remains non-merging; future activation, gates, protected objects, and
+rollback behavior are governed only by that policy's verified hash.
 
 ## 10. Executive decisions and inbox
 
@@ -276,6 +284,10 @@ actor, state transition, input/output hashes, bounded evidence references,
 policy/constitution hashes, timestamps, and result. Raw prompts, complete
 transcripts, and secrets are never persisted.
 
+After interruption, recovery reconciles Git, remote branches, pull
+requests, merges, releases, and declared external effects before retrying.
+An unknown result is never converted into success.
+
 ## 12. Self-hosting and transfer
 
 Bootstrap work is directed by a provisional Director through existing
@@ -288,6 +300,11 @@ isolated candidate, full validation, an atomic or reversible switch, and a
 known-good fallback. Constitution and policy changes cannot be
 self-activated. Bootstrap state records the directing version for each
 operation.
+
+The active, candidate, and known-good versions are distinct. Promotion,
+rollback, and emergency stop belong to the external activation controller
+and User/Owner under the constitutional lifecycle; AGF cannot select or
+activate its own version.
 
 ## 13. Migration and compatibility
 
@@ -340,3 +357,6 @@ medium-risk summaries; high-risk human decisions; restart/resume;
 engineering memory; replan; self-audit; budget limits; cross-project
 isolation; rollback; and requirement-by-requirement completion proof.
 
+`PROJECT_COMPLETE` is emitted by AGF/Director only after the Observer's
+independent final audit passes the constitutional proof set, including
+negative constraints, consistent hashes, and no material uncertainty.

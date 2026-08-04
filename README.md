@@ -71,7 +71,7 @@ Live execution requires both `--execute` and `--confirm-execution`, plus a clean
 
 ## Autonomous delivery pipeline
 
-The delivery workflow defaults to dry-run and requires all three flags for live delivery: `--execute`, `--confirm-execution`, and `--confirm-delivery`. It executes one task in isolation, creates a patch outside the target repository, runs independent review and compliance gates, applies only the approved patch in a fresh delivery worktree, commits and pushes an `agf/<plan-id>/<task-id>` branch, and opens a draft PR. AGF-Orchestrator never merges PRs.
+The delivery workflow defaults to dry-run and requires all three flags for live delivery: `--execute`, `--confirm-execution`, and `--confirm-delivery`. It executes one task in isolation, creates a patch outside the target repository, runs independent review and compliance gates, applies only the approved patch in a fresh delivery worktree, commits and pushes an `agf/<plan-id>/<task-id>` branch, and opens a draft PR. The current bootstrap runtime never merges PRs; any future autonomous merge capability is governed only by the separately activated Merge Policy in the constitutional foundation.
 
 ```text
 agf-orchestrator deliver \

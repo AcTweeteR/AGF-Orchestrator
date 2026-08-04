@@ -12,6 +12,8 @@ and transfer evidence pass.
 - No epic may activate constitutional, policy, credential, or merge-rule
   changes autonomously.
 - A blocked epic checkpoints its exact state and does not claim completion.
+- The active constitution is the sole normative source for authority,
+  activation, risk, merge, recovery, budget, and completion behavior.
 
 ## Dependency graph
 
@@ -48,7 +50,9 @@ Definition of Done.
 
 Acceptance: foundation documents are internally consistent, linked to the
 existing runtime, contain no provider authority, define fail-closed gates,
-and pass link/terminology/diff checks. Human review is required before E1.
+define the root of trust, authority graph, recovery protocol, convergence
+limits, and completion authority, and pass link/terminology/diff checks.
+Human review is required before E1.
 
 ### E1 — Immutable objective engine
 
@@ -87,7 +91,8 @@ deadlock; interruption recovery; idempotent operations.
 
 Acceptance: the scheduler chooses only eligible tasks, never bypasses
 existing gates, resumes from checkpoints without model memory, stops on
-uncertainty, and emits bounded status and inbox events.
+uncertainty, enforces finite progress and resource limits, and emits bounded
+status and inbox events.
 
 ### E5 — Evidence-based risk engine
 
@@ -162,4 +167,3 @@ The first implementation tasks are intentionally small:
 No task is complete until its evidence is stored and the next checkpoint
 is deterministic. The foundation remains pending human review until E0-T1
 is explicitly approved.
-
