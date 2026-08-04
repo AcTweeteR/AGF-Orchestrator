@@ -20,6 +20,9 @@ This repository contains the AGF-Orchestrator v0.1 documentation baseline and it
 - [Agent roles](docs/AGENT_ROLES.md) — defined responsibilities and authority.
 - [Adapter model](docs/ADAPTER_MODEL.md) — provider-neutral agent integration boundary.
 - [Roadmap](docs/ROADMAP.md) — capability maturity levels.
+- [Autonomous Director foundation](docs/AUTONOMOUS_DIRECTOR.md) — target operating model and safety architecture.
+- [Autonomous Director roadmap](docs/AUTONOMOUS_ROADMAP.md) — ordered capability program and gates.
+- [AGF Constitution](docs/CONSTITUTION.md) — immutable governance baseline and amendment protocol.
 - [Architecture decision records](docs/adr/README.md) — durable architectural decisions.
 
 ## Status
