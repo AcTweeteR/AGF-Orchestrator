@@ -226,14 +226,17 @@ production task and requires a bounded implementation plan before work
 begins. Dynamic capability discovery is recorded as E10 and is not
 authorized to bypass the E1–E5 prerequisites.
 
-## Checkpoint after PR #14
+## Checkpoint after PR #15
 
-- Active main SHA: `ac812577cc9d84f362a21006f0816e7d2b52515d`.
-- Completed item: E0-T1, Constitution Foundation v1 documentation.
-- Evidence: PR #14 merged; 241 tests passed; Ruff passed; diff check and
-  Markdown links passed; hostile audit result `FOUNDATION_APPROVED`.
+- Active main SHA: `b8f7700b829ecb3d66c1a37a54b0ec14462abb1e`.
+- Completed items: E0-T1, Constitution Foundation v1 documentation; and
+  the roadmap checkpoint adding E9 Dynamic Capability Discovery.
+- Evidence: PR #14 and PR #15 merged; 241 tests passed; Ruff passed; diff
+  check and Markdown links passed; hostile audit result
+  `FOUNDATION_APPROVED`.
 - Scope: documentation only; no production constitutional enforcement,
-  autonomous implementation, or Epic 1 code was introduced.
+  autonomous implementation, provider discovery, or Epic 1 code was
+  introduced.
 - Next deterministic action: prepare the bounded E0-T2 plan for immutable
   constitution hash/protection checks, subject to the repository's
   documentation-only constraints and owner approval for production code.
