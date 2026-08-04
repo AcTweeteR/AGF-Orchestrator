@@ -28,7 +28,14 @@ from .executor import (
 from .git_delivery import DraftPRCreator, GitDelivery, GitDeliveryError, sanitize_branch_name
 from .models import ExecutionPlan, Task
 from .preflight import PreflightError, collect_repository
-from .review_models import ComplianceStatus, DeliveryReport, ReviewFinding, ReviewStatus
+from .review_models import (
+    ComplianceStatus,
+    DeliveryReport,
+    FindingResolution,
+    ReviewFinding,
+    ReviewStatus,
+    finding_identity,
+)
 from .reviewer import CodexReviewerAdapter, DeterministicReviewer, Reviewer
 
 MAX_CORRECTION_ROUNDS = 2
@@ -268,25 +275,51 @@ def _correction_request(findings: list[ReviewFinding], task: Task, current_patch
 
 
 def _finding_fingerprint(finding: ReviewFinding) -> str:
-    normalized = "|".join(
-        [
-            finding.category.lower().strip(),
-            ",".join(sorted(path.lower().strip() for path in finding.affected_paths)),
-            " ".join(finding.required_change.lower().split()),
-        ]
-    )
-    return hashlib.sha256(normalized.encode()).hexdigest()
+    return finding_identity(finding)
 
 
-def _previous_findings_resolved(review, previous: list[ReviewFinding]) -> bool:
-    if not previous:
-        return True
-    text = " ".join([review.summary, *(review.checks_performed or [])]).lower()
-    return all(
-        finding.finding_id.lower() in text
-        and any(marker in text for marker in ("resolved", "still open", "open"))
-        for finding in previous
-    )
+def _review_resolution_states(
+    review,
+    previous: list[ReviewFinding],
+) -> tuple[dict[str, FindingResolution], list[str]]:
+    """Validate structured finding resolution without relying on reviewer prose."""
+    previous_by_id = {finding_identity(finding): finding for finding in previous}
+    current_by_id = {finding_identity(finding): finding for finding in review.findings}
+    resolved_ids = review.resolved_finding_ids
+    errors: list[str] = []
+    if resolved_ids is not None and len(set(resolved_ids)) != len(resolved_ids):
+        errors.append("review resolved_finding_ids contains duplicates")
+    resolved = set(resolved_ids or [])
+    unknown = sorted(resolved - set(previous_by_id))
+    if unknown:
+        errors.append("review resolved_finding_ids contains an unknown finding")
+
+    states: dict[str, FindingResolution] = {}
+    if review.status is ReviewStatus.APPROVE:
+        expected = set(previous_by_id)
+        if resolved_ids is not None and resolved != expected:
+            errors.append("APPROVE did not resolve every prior finding")
+        states.update({finding_id: FindingResolution.RESOLVED for finding_id in expected})
+        return states, errors
+
+    if review.status is not ReviewStatus.REQUEST_CHANGES:
+        return states, errors
+    if previous and resolved_ids is None:
+        errors.append("REQUEST_CHANGES omitted resolved_finding_ids")
+    for finding_id in previous_by_id:
+        if finding_id in resolved:
+            if finding_id in current_by_id:
+                errors.append("a finding cannot be both resolved and retained")
+            else:
+                states[finding_id] = FindingResolution.RESOLVED
+        elif finding_id in current_by_id:
+            states[finding_id] = FindingResolution.UNCHANGED
+        else:
+            states[finding_id] = FindingResolution.UNVERIFIABLE
+            errors.append("prior finding was omitted without explicit resolution")
+    for finding_id in set(current_by_id) - set(previous_by_id):
+        states[finding_id] = FindingResolution.NEW
+    return states, errors
 
 
 def _delivery_id(plan_id: str, task_id: str) -> str:
@@ -398,6 +431,7 @@ class DeliveryPipeline:
                     attempt.patch.patch,
                     attempt.validation_results,
                     previous_findings,
+                    _round_number,
                 )
                 if deterministic.status is not ReviewStatus.APPROVE:
                     review = deterministic
@@ -411,6 +445,7 @@ class DeliveryPipeline:
                         attempt.patch.patch,
                         attempt.validation_results,
                         previous_findings,
+                        _round_number,
                     )
                 if review.status is ReviewStatus.APPROVE:
                     break
@@ -422,10 +457,9 @@ class DeliveryPipeline:
                     raise ExecutionValidationError(f"review rejected the change: {reason}")
                 if review.status is not ReviewStatus.REQUEST_CHANGES:
                     raise ExecutionValidationError("review returned an unsupported decision")
-                if not _previous_findings_resolved(review, previous_findings):
-                    raise ExecutionValidationError(
-                        "review did not mark every previous finding resolved or still open"
-                    )
+                _, resolution_errors = _review_resolution_states(review, previous_findings)
+                if resolution_errors:
+                    raise ExecutionValidationError("; ".join(resolution_errors))
                 unresolved = [
                     finding
                     for finding in review.findings

@@ -5,7 +5,12 @@ from agf_orchestrator.adapters.codex import CodexAdapter, CodexInvocationProfile
 from agf_orchestrator.delivery import DeliveryPipeline, _patch_policy
 from agf_orchestrator.git_delivery import DraftPRCreator, GitDeliveryError
 from agf_orchestrator.models import ExecutionPlan, PlanStatus, RepositoryContext, Task
-from agf_orchestrator.review_models import ReviewFinding, ReviewReport, ReviewStatus
+from agf_orchestrator.review_models import (
+    ReviewFinding,
+    ReviewReport,
+    ReviewStatus,
+    finding_identity,
+)
 from agf_orchestrator.reviewer import DeterministicReviewer
 
 
@@ -321,6 +326,124 @@ def test_correction_succeeds_on_first_retry(tmp_path):
     assert reviewer.calls == 2
 
 
+class ResolutionCanaryReviewer:
+    name = "resolution-canary"
+
+    def __init__(self):
+        self.calls = 0
+        self.identity_preserved = False
+
+    def review(self, *args):
+        self.calls += 1
+        if self.calls == 1:
+            return ReviewReport(
+                self.name,
+                ReviewStatus.REQUEST_CHANGES,
+                [
+                    ReviewFinding(
+                        "CANARY_LINE_MOVED",
+                        "REVIEW",
+                        "major",
+                        "line-specific defect",
+                        ["allowed.txt"],
+                        "allowed.txt:1",
+                        "write after",
+                    )
+                ],
+                [],
+                [],
+            )
+        previous = args[5]
+        self.identity_preserved = finding_identity(previous[0]) == finding_identity(
+            ReviewFinding(
+                "CANARY_LINE_MOVED",
+                "REVIEW",
+                "major",
+                "line-specific defect",
+                ["allowed.txt"],
+                "allowed.txt:2",
+                "write after",
+            )
+        )
+        return ReviewReport(
+            self.name,
+            ReviewStatus.APPROVE,
+            [],
+            [],
+            [],
+            "resolved",
+            [],
+            [],
+            [finding_identity(previous[0])],
+        )
+
+
+def test_resolution_canary_accepts_line_movement_without_extra_round(tmp_path):
+    root = setup_repo(tmp_path)
+    reviewer = ResolutionCanaryReviewer()
+    report = DeliveryPipeline(
+        adapter=round_adapter(tmp_path),
+        reviewer=reviewer,
+        pr_creator=DraftPRCreator(simulate=True),
+        artifact_dir=tmp_path / "artifacts",
+        max_correction_rounds=2,
+    ).deliver(plan_for(root), "task-001", str(root), execute=True)
+    assert report.status == "COMPLETED"
+    assert report.compliance_status == "PASS"
+    assert report.correction_rounds == 1
+    assert reviewer.calls == 2
+    assert reviewer.identity_preserved is True
+    assert git(root, "status", "--porcelain").stdout == ""
+
+
+class UnresolvedCanaryReviewer(ResolutionCanaryReviewer):
+    name = "unresolved-canary"
+
+    def review(self, *args):
+        self.calls += 1
+        if self.calls == 1:
+            return ReviewReport(
+                self.name,
+                ReviewStatus.REQUEST_CHANGES,
+                [
+                    ReviewFinding(
+                        "CANARY_LINE_MOVED",
+                        "REVIEW",
+                        "major",
+                        "line-specific defect",
+                        ["allowed.txt"],
+                        "allowed.txt:1",
+                        "write after",
+                    )
+                ],
+                [],
+                [],
+            )
+        previous = args[5]
+        return ReviewReport(
+            self.name,
+            ReviewStatus.REQUEST_CHANGES,
+            previous,
+            [],
+            [],
+        )
+
+
+def test_unresolved_prior_finding_blocks_safely(tmp_path):
+    root = setup_repo(tmp_path)
+    reviewer = UnresolvedCanaryReviewer()
+    report = DeliveryPipeline(
+        adapter=round_adapter(tmp_path),
+        reviewer=reviewer,
+        pr_creator=DraftPRCreator(simulate=True),
+        artifact_dir=tmp_path / "artifacts",
+    ).deliver(plan_for(root), "task-001", str(root), execute=True)
+    assert report.status == "BLOCKED"
+    assert "omitted resolved_finding_ids" in report.blocking_issues[0]
+    assert report.correction_rounds == 1
+    assert git(root, "status", "--porcelain").stdout == ""
+
+
 class TwoRoundReviewer:
     name = "two-round-reviewer"
 
@@ -337,9 +460,11 @@ class TwoRoundReviewer:
                 report.reviewer, report.status, report.findings, report.evidence,
                 report.blocking_issues, "REV-001 resolved", report.checks_performed,
                 report.residual_risks,
+                [],
             )
         return ReviewReport(
-            self.name, ReviewStatus.APPROVE, [], [], [], "REV-001 resolved", [], []
+            self.name, ReviewStatus.APPROVE, [], [], [], "REV-001 resolved", [], [],
+            [finding_identity(blocker_report().findings[0])],
         )
 
 
@@ -389,6 +514,7 @@ class RepeatingRequestReviewer:
         return ReviewReport(
             self.name, report.status, report.findings, report.evidence,
             report.blocking_issues, summary, [], [],
+            [] if self.calls > 1 else None,
         )
 
 
@@ -522,6 +648,7 @@ class RepeatingFindingReviewer:
             "REV-001 still open",
             report.checks_performed,
             report.residual_risks,
+            [],
         )
 
 

@@ -2,7 +2,7 @@ import json
 
 from agf_orchestrator.adapters.codex import CodexProcessResult
 from agf_orchestrator.models import ExecutionPlan, PlanStatus, RepositoryContext, Task
-from agf_orchestrator.review_models import ReviewStatus
+from agf_orchestrator.review_models import ReviewFinding, ReviewStatus, finding_identity
 from agf_orchestrator.reviewer import (
     CodexReviewerAdapter,
     DeterministicReviewer,
@@ -112,12 +112,21 @@ class StubCodex:
 def test_codex_reviewer_prompt_contains_exact_review_context_and_redacts_findings():
     plan, task = plan_and_task()
     stub = StubCodex(structured("REQUEST_CHANGES", [finding()]))
+    previous = [
+        ReviewFinding(
+            "REV-001", "CORRECTNESS", "blocker", "specific defect", ["allowed.txt"],
+            "patch line 1", "replace the incorrect value",
+        )
+    ]
     report = CodexReviewerAdapter(stub).review(
-        plan, task, ["allowed.txt"], "unified patch", ["exit_code=0"], []
+        plan, task, ["allowed.txt"], "unified patch", ["exit_code=0"], previous, 1
     )
     assert report.status is ReviewStatus.REQUEST_CHANGES
     assert "Acceptance criteria" in stub.instruction
     assert "unified patch" in stub.instruction
+    assert "Prior finding context (bounded)" in stub.instruction
+    assert finding_identity(previous[0]) in stub.instruction
+    assert "correction_round" in stub.instruction
     assert report.findings[0].finding_id == "REV-001"
 
 

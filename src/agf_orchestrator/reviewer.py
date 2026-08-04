@@ -9,9 +9,10 @@ from typing import Protocol
 
 from .adapters.codex import CodexAdapter
 from .models import ExecutionPlan, Task
-from .review_models import ReviewFinding, ReviewReport, ReviewStatus
+from .review_models import ReviewFinding, ReviewReport, ReviewStatus, finding_identity
 
 REVIEW_FIELDS = {"status", "summary", "findings"}
+REVIEW_FIELDS_WITH_RESOLUTION = REVIEW_FIELDS | {"resolved_finding_ids"}
 FINDING_FIELDS = {"severity", "code", "path", "line", "message", "required_change"}
 LEGACY_REVIEW_FIELDS = {
     "schema_version", "status", "summary", "findings", "checks_performed", "residual_risks"
@@ -30,7 +31,8 @@ REVIEW_SCHEMA = (
     '"summary":"bounded string","findings":[{"severity":"P0 | P1 | P2 | P3",'
     '"code":"BOUNDED_MACHINE_CODE","path":"relative/path/or/null",'
     '"line":integer_or_null,"message":"bounded actionable string",'
-    '"required_change":"bounded string or null"}]}'
+    '"required_change":"bounded string or null"],'
+    '"resolved_finding_ids":["stable_finding_id"]}'
 )
 SECRET_VALUE = re.compile(
     r"(?i)(api[_-]?key|token|secret|password|authorization)(\s*[:=]\s*)([^\s,;]+)"
@@ -103,7 +105,9 @@ def parse_structured_review(output: str, reviewer: str = "codex-reviewer") -> Re
         return _invalid(reviewer, "REVIEW_JSON_INVALID: response is not one JSON object")
     if isinstance(payload, dict) and set(payload) == LEGACY_REVIEW_FIELDS:
         return _parse_legacy_review(payload, reviewer)
-    if not isinstance(payload, dict) or set(payload) != REVIEW_FIELDS:
+    if not isinstance(payload, dict) or (
+        set(payload) != REVIEW_FIELDS and set(payload) != REVIEW_FIELDS_WITH_RESOLUTION
+    ):
         return _invalid(
             reviewer, "REVIEW_SCHEMA_INVALID: top-level fields do not match the contract"
         )
@@ -112,6 +116,20 @@ def parse_structured_review(output: str, reviewer: str = "codex-reviewer") -> Re
         return _invalid(reviewer, "REVIEW_STATUS_INVALID: status is invalid")
     summary = payload["summary"]
     raw_findings = payload["findings"]
+    resolved_finding_ids = payload.get("resolved_finding_ids")
+    if resolved_finding_ids is not None and (
+        not isinstance(resolved_finding_ids, list)
+        or len(resolved_finding_ids) > MAX_REVIEW_FINDINGS
+        or any(
+            not isinstance(item, str) or not item.strip() or len(item) > MAX_REVIEW_CODE
+            for item in resolved_finding_ids
+        )
+        or len(set(resolved_finding_ids)) != len(resolved_finding_ids)
+    ):
+        return _invalid(
+            reviewer,
+            "REVIEW_RESOLUTION_INVALID: resolved_finding_ids is invalid or duplicated",
+        )
     if not isinstance(summary, str) or not summary.strip() or len(summary) > MAX_REVIEW_SUMMARY:
         return _invalid(reviewer, "REVIEW_FIELDS_INVALID: summary is missing or unbounded")
     if not isinstance(raw_findings, list) or len(raw_findings) > MAX_REVIEW_FINDINGS:
@@ -188,6 +206,7 @@ def parse_structured_review(output: str, reviewer: str = "codex-reviewer") -> Re
         _redact(summary),
         [],
         [],
+        resolved_finding_ids,
     )
 
 
@@ -202,6 +221,7 @@ class Reviewer(Protocol):
         patch: str,
         validation_results: list[str],
         previous_findings: list[ReviewFinding] | None = None,
+        correction_round: int = 0,
     ) -> ReviewReport: ...
 
 
@@ -211,7 +231,10 @@ class DeterministicReviewer:
 
     name: str = "deterministic-reviewer"
 
-    def review(self, plan, task, changed_files, patch, validation_results, previous_findings=None):
+    def review(
+        self, plan, task, changed_files, patch, validation_results,
+        previous_findings=None, correction_round=0,
+    ):
         findings: list[ReviewFinding] = []
         unauthorized = sorted(set(changed_files) - set(task.allowed_paths))
         if unauthorized:
@@ -252,7 +275,21 @@ class CodexReviewerAdapter:
     def __init__(self, adapter: CodexAdapter | None = None):
         self.adapter = adapter or CodexAdapter()
 
-    def _instruction(self, plan, task, changed_files, patch, validation_results, previous_findings):
+    def _instruction(
+        self, plan, task, changed_files, patch, validation_results,
+        previous_findings, correction_round,
+    ):
+        prior_context = [
+            {
+                "stable_finding_id": finding_identity(finding),
+                "code": finding.finding_id,
+                "path": finding.affected_paths,
+                "previous_message": finding.message,
+                "required_change": finding.required_change,
+                "correction_round": correction_round,
+            }
+            for finding in (previous_findings or [])
+        ]
         return (
             "Review the supplied AGF patch. Return exactly one JSON object, no Markdown fences, "
             "and no commentary. Use only the canonical status values APPROVE, REQUEST_CHANGES, "
@@ -263,7 +300,7 @@ class CodexReviewerAdapter:
             f"Allowed paths: {task.allowed_paths}\nChanged paths: {changed_files}\n"
             f"Unified patch:\n{patch}\nExact validation results: {validation_results}\n"
             f"Architecture impact: {plan.architecture_impact}\n"
-            f"Previous accepted findings: {previous_findings or []}\n"
+            f"Prior finding context (bounded): {prior_context}\n"
             f"Required JSON schema: {REVIEW_SCHEMA}"
         )
 
@@ -290,12 +327,31 @@ class CodexReviewerAdapter:
                 return _invalid(self.name, "CODEX_REVIEW_JSON_INVALID: response is not valid JSON")
         return report
 
-    def review(self, plan, task, changed_files, patch, validation_results, previous_findings=None):
+    def _validate_resolution_ids(
+        self, report: ReviewReport, previous_findings: list[ReviewFinding] | None
+    ) -> ReviewReport:
+        if report.resolved_finding_ids is None:
+            return report
+        known = {finding_identity(finding) for finding in (previous_findings or [])}
+        if set(report.resolved_finding_ids) - known:
+            return _invalid(
+                self.name,
+                "REVIEW_RESOLUTION_UNKNOWN_ID: resolved finding ID is not from prior findings",
+            )
+        return report
+
+    def review(
+        self, plan, task, changed_files, patch, validation_results,
+        previous_findings=None, correction_round=0,
+    ):
         instruction = self._instruction(
-            plan, task, changed_files, patch, validation_results, previous_findings
+            plan, task, changed_files, patch, validation_results,
+            previous_findings, correction_round,
         )
         process = self.adapter.execute(instruction, plan.repository.root, sandbox="read-only")
-        report = self._process_report(process)
+        report = self._validate_resolution_ids(
+            self._process_report(process), previous_findings
+        )
         if report.status is not ReviewStatus.HUMAN_REQUIRED:
             return report
         schema_error = next(
@@ -309,7 +365,9 @@ class CodexReviewerAdapter:
             f"Required JSON schema: {REVIEW_SCHEMA}"
         )
         repaired = self.adapter.execute(repair, plan.repository.root, sandbox="read-only")
-        repaired_report = self._process_report(repaired)
+        repaired_report = self._validate_resolution_ids(
+            self._process_report(repaired), previous_findings
+        )
         if repaired_report.status is ReviewStatus.HUMAN_REQUIRED:
             return ReviewReport(
                 self.name,
@@ -320,6 +378,7 @@ class CodexReviewerAdapter:
                 repaired_report.summary,
                 repaired_report.checks_performed,
                 repaired_report.residual_risks,
+                repaired_report.resolved_finding_ids,
             )
         return ReviewReport(
             repaired_report.reviewer,
@@ -330,4 +389,5 @@ class CodexReviewerAdapter:
             repaired_report.summary,
             repaired_report.checks_performed,
             repaired_report.residual_risks,
+            repaired_report.resolved_finding_ids,
         )
