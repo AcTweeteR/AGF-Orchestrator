@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any
@@ -12,6 +15,15 @@ class ReviewStatus(StrEnum):
     REQUEST_CHANGES = "REQUEST_CHANGES"
     REJECT = "REJECT"
     HUMAN_REQUIRED = "HUMAN_REQUIRED"
+
+
+class FindingResolution(StrEnum):
+    OPEN = "OPEN"
+    RESOLVED = "RESOLVED"
+    UNCHANGED = "UNCHANGED"
+    REPLACED = "REPLACED"
+    NEW = "NEW"
+    UNVERIFIABLE = "UNVERIFIABLE"
 
 
 class ComplianceStatus(StrEnum):
@@ -40,6 +52,21 @@ class ReviewFinding:
         return asdict(self)
 
 
+def finding_identity(finding: ReviewFinding) -> str:
+    """Return a stable identity that is independent of mutable line numbers."""
+    normalized = {
+        "code": finding.finding_id.strip().casefold(),
+        "paths": sorted(path.strip().casefold() for path in finding.affected_paths),
+        "message": " ".join(finding.message.split()),
+        "required_change": " ".join(finding.required_change.split()),
+    }
+    digest = hashlib.sha256(
+        json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+    code = re.sub(r"[^a-z0-9_.-]+", "-", normalized["code"]).strip("-") or "finding"
+    return f"{code}:{digest}"
+
+
 @dataclass(frozen=True)
 class ReviewReport:
     reviewer: str
@@ -50,6 +77,7 @@ class ReviewReport:
     summary: str = ""
     checks_performed: list[str] | None = None
     residual_risks: list[str] | None = None
+    resolved_finding_ids: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
