@@ -35,6 +35,10 @@ python -m pip install -e .
 python -m pip install pytest ruff
 ```
 
+The CLI automatically loads a `.env` file from the current directory or its parents when one is present.
+Existing environment variables take precedence over `.env` values, and `.env` is ignored by Git. Never store
+real credentials in committed files.
+
 Generate a deterministic plan for a clean Git repository:
 
 ```text

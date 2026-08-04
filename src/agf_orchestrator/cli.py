@@ -10,6 +10,8 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
+from dotenv import find_dotenv, load_dotenv
+
 from .adapters.codex import CodexAdapter
 from .adapters.openhands import OpenHandsSDKAdapter
 from .compliance import ComplianceChecker
@@ -27,6 +29,13 @@ from .project_registry import ProjectRegistry, ProjectRegistryError, parse_remot
 from .reviewer import CodexReviewerAdapter, DeterministicReviewer
 from .session_manager import SessionManager, SessionManagerError
 from .session_store import SessionStore, SessionStoreError
+
+
+def load_cli_environment() -> None:
+    """Load the nearest .env without overriding variables already in the environment."""
+    dotenv_path = find_dotenv(usecwd=True)
+    if dotenv_path:
+        load_dotenv(dotenv_path=dotenv_path, override=False)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -430,6 +439,7 @@ def run_deliver(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_cli_environment()
     args = build_parser().parse_args(argv)
     if args.command == "plan":
         return run_plan(args)
