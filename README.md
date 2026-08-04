@@ -35,6 +35,11 @@ python -m pip install -e .
 python -m pip install pytest ruff
 ```
 
+The CLI automatically loads `.env` only from the AGF repository root. Set `AGF_ENV_FILE` to select an explicit
+dotenv file; the path must be a regular, non-symlink file outside registered managed projects. Existing environment
+variables take precedence over dotenv values, missing files are ignored, and `.env` is ignored by Git. Never store
+real credentials in committed files.
+
 Generate a deterministic plan for a clean Git repository:
 
 ```text

@@ -10,6 +10,8 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from .adapters.codex import CodexAdapter
 from .adapters.openhands import OpenHandsSDKAdapter
 from .compliance import ComplianceChecker
@@ -27,6 +29,52 @@ from .project_registry import ProjectRegistry, ProjectRegistryError, parse_remot
 from .reviewer import CodexReviewerAdapter, DeterministicReviewer
 from .session_manager import SessionManager, SessionManagerError
 from .session_store import SessionStore, SessionStoreError
+
+AGF_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+
+
+def load_cli_environment() -> None:
+    """Load only an approved AGF .env without overriding process environment values."""
+    configured = os.environ.get("AGF_ENV_FILE")
+    selected = Path(configured).expanduser() if configured else AGF_PACKAGE_ROOT / ".env"
+    if not _approved_dotenv_path(selected, allow_registry_failure=not configured):
+        return
+    load_dotenv(dotenv_path=selected.resolve(), override=False)
+
+
+def _approved_dotenv_path(selected: Path, *, allow_registry_failure: bool = False) -> bool:
+    """Validate a dotenv path without exposing its contents or following escapes."""
+    candidate = selected if selected.is_absolute() else Path.cwd() / selected
+    if _contains_symlink(candidate):
+        return False
+    try:
+        resolved = candidate.resolve(strict=False)
+    except OSError:
+        return False
+    if not resolved.is_file() or not candidate.exists():
+        return False
+    try:
+        managed_roots = [
+            Path(project.repository_root).resolve()
+            for project in ProjectRegistry().list()
+        ]
+    except (OSError, ProjectRegistryError, ValueError):
+        return allow_registry_failure
+    return not any(
+        resolved == root or root in resolved.parents
+        for root in managed_roots
+    )
+
+
+def _contains_symlink(path: Path) -> bool:
+    """Reject symlink components so dotenv cannot escape an approved location."""
+    current = Path(path.anchor) if path.is_absolute() else Path.cwd()
+    parts = path.parts[1:] if path.is_absolute() else path.parts
+    for part in parts:
+        current /= part
+        if current.is_symlink():
+            return True
+    return False
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -430,6 +478,7 @@ def run_deliver(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_cli_environment()
     args = build_parser().parse_args(argv)
     if args.command == "plan":
         return run_plan(args)
