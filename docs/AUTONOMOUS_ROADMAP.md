@@ -1,7 +1,8 @@
 # Autonomous Technical Director Roadmap
 
-Status: foundation proposal; no epic is production-ready until its gates
-and transfer evidence pass.
+Status: Constitution Foundation v1 approved documentation; no
+implementation epic is production-ready until its gates and transfer
+evidence pass.
 
 ## Sequencing rules
 
@@ -35,6 +36,12 @@ E0 Foundation
  |                                               +--> E7 Completion and self-audit
  |                                                       |
  |                                                       +--> E8 Staged self-hosting
+ |                                                               |
+ |                                                               +--> E9 Dynamic capability discovery and provider intelligence
+ |                                                                       |
+ |                                                                       +--> E10 Self-audit and controlled learning
+ |                                                                               |
+ |                                                                               +--> E11 End-to-end autonomous project pilots
 ```
 
 Cross-cutting gates apply to every epic: security, compatibility,
@@ -134,6 +141,54 @@ atomic/reversible activation pass; a known-good version remains available;
 constitutional/policy changes cannot self-activate; controlled pilots
 demonstrate autonomous continuation.
 
+### E9 — Dynamic capability discovery and provider intelligence
+
+Scope: local-first discovery of approved interfaces, model enumeration,
+safe capability probes, versioned capability registry, empirical evidence,
+explainable selection, safe fallback, freshness, invalidation, and
+project isolation.
+
+Discovery is bounded, non-destructive, secret-safe, and network-free unless
+the active policy explicitly permits network probing. Provider or model
+names are metadata only; selection is based on verified capability,
+policy eligibility, privacy, health, context/tool support, budget, and
+bounded empirical evidence. Unknown values remain UNKNOWN and cannot be
+treated as verified capability.
+
+Acceptance: newly available compatible local capabilities can be detected
+without role-specific manual mapping; unavailable or stale capabilities
+become ineligible; no automatic fallback violates capability, privacy,
+cost, or independence requirements; no arbitrary network scanning or
+credential disclosure occurs; provider upgrades invalidate stale profiles;
+cross-project registries and evidence remain isolated; deterministic,
+failure, restart/resume, idempotency, and security pilots pass.
+
+Dependencies: E1 objective and traceability, E2 roadmap/backlog, E3
+engineering memory, E4 scheduler, E5 risk engine, and the active
+credential, budget, privacy, review, and Compliance policies. E10 is not
+eligible for implementation before those dependencies provide their
+required policy and evidence interfaces.
+
+### E10 — Self-audit and controlled learning
+
+Scope: bounded outcome analysis, confidence updates, regression detection,
+capability-profile invalidation, and owner-visible learning proposals.
+
+Acceptance: one result cannot create an extreme permanent score; learning
+cannot change authority, objective, constitution, permissions, risk
+thresholds, or merge policy; stale and contradictory evidence blocks
+unsafe selection; every update is attributable and reversible.
+
+### E11 — End-to-end autonomous project pilots
+
+Scope: disposable and controlled pilots proving objective intake through
+completion under approved policies, with restart, idempotency, failure,
+isolation, and rollback evidence.
+
+Acceptance: no pilot changes a real production project or external system;
+all required gates pass; human-controlled boundaries remain intact; any
+uncertainty checkpoints safely.
+
 ## Capability gate template
 
 Every epic must attach:
@@ -165,5 +220,20 @@ The first implementation tasks are intentionally small:
 | E1-T4 | Attach requirement traceability to plans and reports | E1-T2 |
 
 No task is complete until its evidence is stored and the next checkpoint
-is deterministic. The foundation remains pending human review until E0-T1
-is explicitly approved.
+is deterministic. E0-T1 is approved as Constitution Foundation v1
+documentation by PR #14; E0-T2 remains the next dependency-correct
+production task and requires a bounded implementation plan before work
+begins. Dynamic capability discovery is recorded as E10 and is not
+authorized to bypass the E1–E5 prerequisites.
+
+## Checkpoint after PR #14
+
+- Active main SHA: `ac812577cc9d84f362a21006f0816e7d2b52515d`.
+- Completed item: E0-T1, Constitution Foundation v1 documentation.
+- Evidence: PR #14 merged; 241 tests passed; Ruff passed; diff check and
+  Markdown links passed; hostile audit result `FOUNDATION_APPROVED`.
+- Scope: documentation only; no production constitutional enforcement,
+  autonomous implementation, or Epic 1 code was introduced.
+- Next deterministic action: prepare the bounded E0-T2 plan for immutable
+  constitution hash/protection checks, subject to the repository's
+  documentation-only constraints and owner approval for production code.
