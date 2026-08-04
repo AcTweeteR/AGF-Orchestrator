@@ -22,6 +22,7 @@ SAFE_ENV_KEYS = {
     "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
 }
+MACOS_CODEX_EXECUTABLE = "/Applications/ChatGPT.app/Contents/Resources/codex"
 
 
 def redact_secrets(
@@ -88,6 +89,16 @@ class CodexProcessResult:
     invocation_verified: bool = False
 
 
+@dataclass(frozen=True)
+class CodexExecutableResolution:
+    """Canonical, version-probed Codex executable resolution."""
+
+    path: str | None
+    source: str
+    error: str | None
+    evidence: tuple[str, ...]
+
+
 def _safe_environment() -> dict[str, str]:
     return {key: os.environ[key] for key in SAFE_ENV_KEYS if key in os.environ}
 
@@ -130,7 +141,7 @@ class CodexAdapter:
 
     def __init__(
         self,
-        executable: str = "codex",
+        executable: str | None = None,
         timeout: float = 300.0,
         profile: CodexInvocationProfile | None = None,
     ) -> None:
@@ -175,19 +186,16 @@ class CodexAdapter:
         *,
         sandbox: str = "workspace-write",
     ) -> CodexProcessResult:
-        executable_resolved = _resolve_executable(self.executable) is not None
-        if not executable_resolved:
+        resolution = resolve_codex_executable(self.executable)
+        if resolution.path is None:
             return CodexProcessResult(
                 "codex executable could not be resolved", None, "", "",
                 human_required=True,
-                transport_error="CODEX_EXECUTABLE_NOT_FOUND",
-                transport_evidence=_transport_evidence(
-                    executable_resolved=False, process_started=False,
-                    process_completed=False, created=False, fresh=False, size=0,
-                    parsed=False, verified=False,
-                ),
+                transport_error=resolution.error,
+                transport_evidence=resolution.evidence,
             )
-        profile = self.profile or discover_invocation_profile(self.executable)
+        executable = resolution.path
+        profile = self.profile or discover_invocation_profile(executable)
         if profile is None:
             return CodexProcessResult(
                 "codex invocation syntax could not be verified", None, "",
@@ -204,7 +212,7 @@ class CodexAdapter:
         final_message_path = approved_dir / "final-message.txt"
         invocation_started_ns = time.time_ns()
         command = profile.build_command(
-            self.executable,
+            executable,
             instruction,
             sandbox=sandbox,
             final_message_path=str(final_message_path),
@@ -291,11 +299,98 @@ class CodexAdapter:
         return result
 
 
-def _resolve_executable(executable: str) -> str | None:
-    path = Path(executable)
-    if path.is_absolute() or "/" in executable:
-        return str(path) if path.is_file() and os.access(path, os.X_OK) else None
-    return shutil.which(executable)
+def resolve_codex_executable(executable: str | None = None) -> CodexExecutableResolution:
+    """Resolve Codex deterministically, probing each candidate before use."""
+    explicit = bool(executable and (Path(executable).is_absolute() or "/" in executable))
+    if executable == "":
+        return _resolution_failure("explicit", True, "CODEX_EXECUTABLE_NOT_CONFIGURED")
+    if explicit:
+        return _inspect_candidate(executable, "explicit", explicit=True)
+
+    path_name = executable or "codex"
+    path_candidate = shutil.which(path_name)
+    if path_candidate:
+        resolution = _inspect_candidate(path_candidate, "PATH", explicit=False)
+        if resolution.path is not None:
+            return resolution
+
+    return _inspect_candidate(
+        MACOS_CODEX_EXECUTABLE, "macos-chatgpt", explicit=False,
+    )
+
+
+def _inspect_candidate(
+    candidate: str,
+    source: str,
+    *,
+    explicit: bool,
+) -> CodexExecutableResolution:
+    raw = Path(candidate).expanduser()
+    try:
+        canonical = raw.resolve(strict=False)
+    except OSError:
+        return _resolution_failure(source, explicit, "CODEX_EXECUTABLE_NOT_FOUND")
+    if not raw.exists():
+        return _resolution_failure(source, explicit, "CODEX_EXECUTABLE_NOT_FOUND")
+    if not canonical.is_file():
+        return _resolution_failure(source, explicit, "CODEX_EXECUTABLE_NOT_REGULAR_FILE")
+    if not os.access(canonical, os.X_OK):
+        return _resolution_failure(source, explicit, "CODEX_EXECUTABLE_NOT_EXECUTABLE")
+
+    if raw.is_symlink():
+        if source == "macos-chatgpt":
+            trusted_root = Path(MACOS_CODEX_EXECUTABLE).parent.resolve()
+        elif source == "PATH":
+            trusted_root = raw.parent.resolve()
+        else:
+            trusted_root = raw.parent.resolve()
+        if trusted_root not in canonical.parents and canonical != trusted_root:
+            return _resolution_failure(source, explicit, "CODEX_EXECUTABLE_NOT_REGULAR_FILE")
+
+    try:
+        version = subprocess.run(
+            [str(canonical), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            shell=False,
+            env=_safe_environment(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return _resolution_failure(source, explicit, "CODEX_EXECUTABLE_VERSION_PROBE_FAILED")
+    if version.returncode != 0:
+        return _resolution_failure(source, explicit, "CODEX_EXECUTABLE_VERSION_PROBE_FAILED")
+    return CodexExecutableResolution(
+        str(canonical), source, None,
+        _resolution_evidence(explicit, source, True, True),
+    )
+
+
+def _resolution_failure(
+    source: str, explicit: bool, error: str
+) -> CodexExecutableResolution:
+    return CodexExecutableResolution(
+        None,
+        source,
+        error,
+        _resolution_evidence(explicit, source, False, False),
+    )
+
+
+def _resolution_evidence(
+    explicit: bool, source: str, resolved: bool, version_passed: bool,
+) -> tuple[str, ...]:
+    return (
+        f"explicit path requested: {'yes' if explicit else 'no'}",
+        f"candidate source: {source}",
+        f"executable resolved: {'yes' if resolved else 'no'}",
+        f"version probe passed: {'yes' if version_passed else 'no'}",
+    )
+
+
+def _resolve_executable(executable: str | None) -> str | None:
+    """Backward-compatible path-only resolver for callers outside the adapter."""
+    return resolve_codex_executable(executable).path
 
 
 def _transport_evidence(
