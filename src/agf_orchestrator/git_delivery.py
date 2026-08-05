@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from .executor import _changed_paths, _run_validations, _status_lines
@@ -16,6 +17,38 @@ from .models import Task
 
 class GitDeliveryError(RuntimeError):
     """A delivery operation was blocked or failed."""
+
+
+class RemoteBranchClassification(StrEnum):
+    """Authoritative classification of one exact remote branch ref."""
+
+    ABSENT = "ABSENT"
+    PRESENT = "PRESENT"
+    UNCERTAIN = "UNCERTAIN"
+
+
+@dataclass(frozen=True)
+class RemoteBranchEvidence:
+    """Bounded evidence from one live remote branch query."""
+
+    classification: RemoteBranchClassification
+    queried_ref: str
+    exit_code: int
+    matched_sha: str | None
+    stderr_category: str
+    source: str
+    freshness: str
+
+    def to_dict(self) -> dict[str, str | int | None]:
+        return {
+            "classification": self.classification.value,
+            "queried_ref": self.queried_ref,
+            "exit_code": self.exit_code,
+            "matched_sha": self.matched_sha,
+            "stderr_category": self.stderr_category,
+            "source": self.source,
+            "freshness": self.freshness,
+        }
 
 
 def _git(repository: str, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -34,6 +67,71 @@ def sanitize_branch_name(plan_id: str, task_id: str) -> str:
         return result or "item"
 
     return f"agf/{clean(plan_id)}/{clean(task_id)}"
+
+
+_REMOTE_SHA = re.compile(r"^[0-9a-fA-F]{40,64}$")
+
+
+def _stderr_category(stderr: str) -> str:
+    value = stderr.casefold()
+    if not value.strip():
+        return "NONE"
+    if any(item in value for item in ("could not resolve host", "name or service", "network")):
+        return "DNS_OR_NETWORK"
+    if any(item in value for item in ("permission denied", "authentication", "unauthorized")):
+        return "AUTHORIZATION"
+    return "REMOTE_ERROR"
+
+
+def classify_remote_branch(repository: str, branch: str) -> RemoteBranchEvidence:
+    """Classify one exact live remote branch query without using cached refs."""
+    queried_ref = f"refs/heads/{branch}"
+    result = _git(repository, "ls-remote", "--heads", "origin", branch, check=False)
+    stderr_category = _stderr_category(result.stderr)
+    if result.returncode != 0 or stderr_category != "NONE":
+        return RemoteBranchEvidence(
+            RemoteBranchClassification.UNCERTAIN,
+            queried_ref,
+            result.returncode,
+            None,
+            stderr_category,
+            "git ls-remote --heads origin",
+            "live",
+        )
+    lines = result.stdout.splitlines()
+    if not lines:
+        return RemoteBranchEvidence(
+            RemoteBranchClassification.ABSENT,
+            queried_ref,
+            result.returncode,
+            None,
+            stderr_category,
+            "git ls-remote --heads origin",
+            "live",
+        )
+    if len(lines) != 1:
+        classification = RemoteBranchClassification.UNCERTAIN
+        matched_sha = None
+    else:
+        fields = lines[0].split("\t")
+        candidate_sha = fields[0] if len(fields) == 2 and _REMOTE_SHA.fullmatch(fields[0]) else None
+        classification = (
+            RemoteBranchClassification.PRESENT
+            if candidate_sha is not None and fields[1] == queried_ref
+            else RemoteBranchClassification.UNCERTAIN
+        )
+        matched_sha = (
+            candidate_sha if classification is RemoteBranchClassification.PRESENT else None
+        )
+    return RemoteBranchEvidence(
+        classification,
+        queried_ref,
+        result.returncode,
+        matched_sha,
+        stderr_category,
+        "git ls-remote --heads origin",
+        "live",
+    )
 
 
 @dataclass(frozen=True)
@@ -84,9 +182,14 @@ class GitDelivery:
         local = _git(repository, "show-ref", "--verify", f"refs/heads/{branch}", check=False)
         if local.returncode == 0:
             raise GitDeliveryError(f"delivery branch already exists: {branch}")
-        remote = _git(repository, "ls-remote", "--heads", "origin", branch, check=False)
-        if remote.returncode != 0 or remote.stdout.strip():
+        remote = classify_remote_branch(repository, branch)
+        if remote.classification is RemoteBranchClassification.PRESENT:
             raise GitDeliveryError(f"delivery branch already exists remotely: {branch}")
+        if remote.classification is RemoteBranchClassification.UNCERTAIN:
+            raise GitDeliveryError(
+                "remote branch state is uncertain: "
+                f"{remote.queried_ref}; stderr_category={remote.stderr_category}"
+            )
         current = _git(repository, "rev-parse", "HEAD").stdout.strip()
         if current != base_sha:
             raise GitDeliveryError("base SHA drifted before delivery")

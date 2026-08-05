@@ -4,7 +4,13 @@ import subprocess
 import pytest
 
 from agf_orchestrator import git_delivery as git_delivery_module
-from agf_orchestrator.git_delivery import GitDelivery, GitDeliveryError, sanitize_branch_name
+from agf_orchestrator.git_delivery import (
+    GitDelivery,
+    GitDeliveryError,
+    RemoteBranchClassification,
+    classify_remote_branch,
+    sanitize_branch_name,
+)
 from agf_orchestrator.models import PlanStatus, Task
 
 
@@ -120,3 +126,96 @@ def test_validation_failure_blocks_commit(tmp_path):
         GitDelivery().deliver(str(root), base, "agf/plan/task-004", str(patch), invalid)
     branch_sha = git(root, "rev-parse", "refs/heads/agf/plan/task-004").stdout.strip()
     assert branch_sha == base
+
+
+def _remote_result(stdout="", stderr="", returncode=0):
+    return subprocess.CompletedProcess(
+        ["git", "ls-remote"], returncode, stdout, stderr
+    )
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "returncode", "expected"),
+    [
+        ("", "", 0, RemoteBranchClassification.ABSENT),
+        ("a" * 40 + "\trefs/heads/agf/plan/task-001\n", "", 0,
+         RemoteBranchClassification.PRESENT),
+        ("malformed output\n", "", 0, RemoteBranchClassification.UNCERTAIN),
+        ("a" * 40 + "\trefs/heads/agf/plan/task-001\n", "warning\n", 0,
+         RemoteBranchClassification.UNCERTAIN),
+        ("", "fatal: could not resolve host\n", 128, RemoteBranchClassification.UNCERTAIN),
+        ("", "remote rejected\n", 1, RemoteBranchClassification.UNCERTAIN),
+    ],
+)
+def test_remote_branch_classifier_has_fail_closed_exact_semantics(
+    monkeypatch, stdout, stderr, returncode, expected
+):
+    monkeypatch.setattr(
+        git_delivery_module,
+        "_git",
+        lambda *args, **kwargs: _remote_result(stdout, stderr, returncode),
+    )
+
+    evidence = classify_remote_branch("/repo", "agf/plan/task-001")
+
+    assert evidence.classification is expected
+    assert evidence.queried_ref == "refs/heads/agf/plan/task-001"
+    assert evidence.source == "git ls-remote --heads origin"
+    assert evidence.freshness == "live"
+    if expected is RemoteBranchClassification.PRESENT:
+        assert evidence.matched_sha == "a" * 40
+    else:
+        assert evidence.matched_sha is None
+
+
+def test_remote_branch_classifier_rejects_prefix_and_wrong_ref(monkeypatch):
+    monkeypatch.setattr(
+        git_delivery_module,
+        "_git",
+        lambda *args, **kwargs: _remote_result(
+            "a" * 40 + "\trefs/heads/agf/plan/task-001-extra\n"
+        ),
+    )
+
+    evidence = classify_remote_branch("/repo", "agf/plan/task-001")
+
+    assert evidence.classification is RemoteBranchClassification.UNCERTAIN
+    assert evidence.matched_sha is None
+
+
+def test_remote_branch_classifier_handles_slashes_and_stale_tracking_ref(
+    monkeypatch, tmp_path
+):
+    root = repo(tmp_path)
+    branch = "agf/plan/task/001"
+    base = git(root, "rev-parse", "HEAD").stdout.strip()
+    git(root, "update-ref", f"refs/remotes/origin/{branch}", base)
+    monkeypatch.setattr(
+        git_delivery_module,
+        "_git",
+        lambda *args, **kwargs: _remote_result(),
+    )
+
+    evidence = classify_remote_branch(str(root), branch)
+
+    assert evidence.classification is RemoteBranchClassification.ABSENT
+    assert evidence.queried_ref == "refs/heads/agf/plan/task/001"
+
+
+def test_delivery_preflight_reports_uncertain_remote_state(monkeypatch, tmp_path):
+    root = repo(tmp_path)
+    base = git(root, "rev-parse", "HEAD").stdout.strip()
+    monkeypatch.setattr(
+        git_delivery_module,
+        "_git",
+        lambda *args, **kwargs: (
+            _remote_result(stderr="fatal: could not resolve host\n", returncode=128)
+            if args and args[0] == "ls-remote"
+            else _git_original(str(root), *args, **kwargs)
+        ),
+    )
+    with pytest.raises(GitDeliveryError, match="remote branch state is uncertain"):
+        GitDelivery().validate_target(str(root), base, "agf/plan/task-001")
+
+
+_git_original = git_delivery_module._git
