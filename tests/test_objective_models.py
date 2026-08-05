@@ -4,12 +4,15 @@ from pathlib import Path
 import pytest
 
 from agf_orchestrator.objective_models import (
+    ObjectiveGateStatus,
     ObjectiveStatus,
     ObjectiveValidationError,
+    analyze_objective,
     canonical_objective_json,
     normalize_objective,
     objective_from_dict,
     objective_hash,
+    propose_amendment,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "objectives"
@@ -126,3 +129,39 @@ def test_semantic_change_changes_hash():
     second = objective_from_dict(payload)
 
     assert objective_hash(first) != objective_hash(second)
+
+
+def test_contradiction_gate_requires_human():
+    payload = load_fixture("valid_objective.json")
+    payload["prohibited_outcomes"] = [payload["requirements"][0]["statement"]]
+    analysis = analyze_objective(objective_from_dict(payload))
+
+    assert analysis.status is ObjectiveGateStatus.HUMAN_REQUIRED
+    assert analysis.contradictions
+
+
+def test_ambiguous_language_gate_requires_human():
+    payload = load_fixture("valid_objective.json")
+    payload["statement"] = "Build the best possible system as soon as possible."
+    analysis = analyze_objective(objective_from_dict(payload))
+
+    assert analysis.status is ObjectiveGateStatus.HUMAN_REQUIRED
+    assert analysis.ambiguities
+
+
+def test_clear_objective_passes_analysis():
+    analysis = analyze_objective(objective_from_dict(load_fixture("valid_objective.json")))
+
+    assert analysis.status is ObjectiveGateStatus.READY
+    assert analysis.to_dict()["contradictions"] == []
+
+
+def test_amendment_proposal_is_deterministic_and_never_approved():
+    objective = objective_from_dict(load_fixture("valid_objective.json"))
+    first = propose_amendment(objective, ("Add a bounded audit requirement",), "Owner request")
+    second = propose_amendment(objective, ("Add a bounded audit requirement",), "Owner request")
+
+    assert first == second
+    assert first.status == "PROPOSED"
+    assert first.base_objective_hash == objective_hash(objective)
+    assert not hasattr(first, "approve")
