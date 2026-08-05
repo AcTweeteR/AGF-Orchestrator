@@ -227,6 +227,7 @@ The first implementation tasks are intentionally small:
 | E3-T3 | Record bounded memory query evidence in planning and review | E3-T2 |
 | E4-T1 | Define scheduler state and lifecycle schema | E3-T3 |
 | E4-T2 | Add persistent resumable scheduler state transitions | E4-T1 |
+| E4-T3 | Add deterministic task selection with leases and budget gates | E4-T2 |
 
 No task is complete until its evidence is stored and the next checkpoint
 is deterministic. E0-T1 is approved as Constitution Foundation v1
@@ -237,12 +238,12 @@ through PR #21; E1-T3 is complete through PR #23; E1-T4 is complete through
 PR #25; E2-T1 is complete through PR #27; E2-T2 is complete through PR #29;
 E2-T3 is complete through PR #31; E2-T4 is complete through PR #33; E3-T1
 is complete through PR #35; E3-T2 is complete through PR #37; E3-T3 is
-complete through PR #39; E4-T1 is complete through PR #41; E4-T2 is now the
-next dependency-correct task.
+complete through PR #39; E4-T1 is complete through PR #41; E4-T2 is complete
+through PR #43; E4-T3 is now the next dependency-correct task.
 
-## Checkpoint after PR #41
+## Checkpoint after PR #43
 
-- Active main SHA: `0798e4b2ce0456acdb270d05131c5291a79fd268`.
+- Active main SHA: `8c40043a0e2d36894275f9cb2071e7abb814996a`.
 - Completed items: E0-T1 foundation documentation, E0-T2 immutable
   Constitution Authority enforcement, E1-T1 objective schema and fixtures,
   E1-T2 deterministic normalization and hashing, E1-T3 contradiction,
@@ -251,12 +252,12 @@ next dependency-correct task.
   lifecycle/supersession transitions, E2-T3 eligible selection/critical
   path analysis, E2-T4 deterministic priority/version transitions, and E3-T1
   Engineering Memory schema/fixtures, E3-T2 atomic storage/bounded search,
-  E3-T3 bounded query evidence propagation, and E4-T1 scheduler state and
-  lifecycle schema.
+  E3-T3 bounded query evidence propagation, E4-T1 scheduler state and
+  lifecycle schema, and E4-T2 persistent resumable scheduler state.
 - Evidence: PR #14, PR #15, PR #16, PR #17, PR #18, PR #19, PR #20, PR #21,
   PR #22, PR #23, PR #24, PR #25, PR #26, PR #27, PR #28, PR #29, PR #30,
   PR #31, PR #32, PR #33, PR #34, PR #35, PR #36, PR #37, PR #38, PR #39,
-  PR #40 and PR #41 merged; 304 tests passed; Ruff
+  PR #40, PR #41, PR #42 and PR #43 merged; 307 tests passed; Ruff
   and diff check
   passed;
   authority, objective and roadmap canaries passed; deterministic Reviewer
@@ -286,6 +287,8 @@ next dependency-correct task.
   in planning and review evidence; memory content is never copied into the
   report. E4-T1 defines immutable scheduler state, explicit lifecycle
   transitions, lease pairing, bounded budgets, event sequence and human
-  escalation fields without executing work.
-- Next deterministic action: add persistent resumable scheduler state
-  transitions (E4-T2).
+  escalation fields without executing work. E4-T2 persists state atomically
+  under project namespaces, resumes after restart and makes repeated current
+  status transitions idempotent.
+- Next deterministic action: add deterministic task selection with leases
+  and budget gates (E4-T3).
