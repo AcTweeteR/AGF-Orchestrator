@@ -1,0 +1,25 @@
+{
+  "completion_criteria": ["Evidence exists"],
+  "constraints": [],
+  "objective_id": "objective-duplicate",
+  "owner_namespace": "owner-default",
+  "prohibited_outcomes": [],
+  "requirements": [
+    {
+      "acceptance_criteria": ["A"],
+      "mandatory": true,
+      "requirement_id": "requirement-same",
+      "statement": "First"
+    },
+    {
+      "acceptance_criteria": ["B"],
+      "mandatory": false,
+      "requirement_id": "requirement-same",
+      "statement": "Second"
+    }
+  ],
+  "schema_version": "1.0",
+  "statement": "A bounded objective",
+  "status": "DRAFT",
+  "title": "Invalid duplicate fixture"
+}

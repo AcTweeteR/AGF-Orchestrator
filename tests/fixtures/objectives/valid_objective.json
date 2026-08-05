@@ -1,0 +1,38 @@
+{
+  "completion_criteria": [
+    "Every mandatory requirement has deterministic evidence",
+    "The approved objective remains unchanged"
+  ],
+  "constraints": [
+    "Do not modify owner governance",
+    "Do not disclose secrets or complete transcripts"
+  ],
+  "objective_id": "objective-build-safe-system",
+  "owner_namespace": "owner-default",
+  "prohibited_outcomes": [
+    "Changing the master objective",
+    "Claiming completion without evidence"
+  ],
+  "requirements": [
+    {
+      "acceptance_criteria": [
+        "The delivered result passes the approved validation suite"
+      ],
+      "mandatory": true,
+      "requirement_id": "requirement-demonstrable-completion",
+      "statement": "The project reaches demonstrable completion"
+    },
+    {
+      "acceptance_criteria": [
+        "Protected governance remains unchanged"
+      ],
+      "mandatory": true,
+      "requirement_id": "requirement-preserve-governance",
+      "statement": "Owner-defined governance remains authoritative"
+    }
+  ],
+  "schema_version": "1.0",
+  "statement": "Build a safe system that reaches demonstrable completion under approved governance.",
+  "status": "DRAFT",
+  "title": "Build a safe autonomous system"
+}
