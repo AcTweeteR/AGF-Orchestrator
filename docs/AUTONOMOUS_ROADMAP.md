@@ -224,23 +224,26 @@ is deterministic. E0-T1 is approved as Constitution Foundation v1
 documentation by PR #14. E0-T2 is complete through PR #17. Dynamic
 capability discovery is recorded as E9 and is not authorized to bypass the
 E1–E5 prerequisites. E1-T1 is complete through PR #19; E1-T2 is complete
-through PR #21; E1-T3 is now the next dependency-correct task.
+through PR #21; E1-T3 is complete through PR #23; E1-T4 is now the next
+dependency-correct task.
 
-## Checkpoint after PR #21
+## Checkpoint after PR #23
 
-- Active main SHA: `b24e23df96f6752dc161c6bffdbf68a48322e87a`.
+- Active main SHA: `ab7b0dcf04b782d116c8511767c1b76dd848fc28`.
 - Completed items: E0-T1 foundation documentation, E0-T2 immutable
   Constitution Authority enforcement, E1-T1 objective schema and fixtures,
-  E1-T2 deterministic normalization and hashing, and the E9 roadmap
-  definition.
-- Evidence: PR #14, PR #15, PR #16, PR #17, PR #18, PR #19, PR #20 and
-  PR #21 merged; 271 tests passed; Ruff and diff check passed; authority
-  and objective canaries passed; deterministic Reviewer returned APPROVE;
-  Compliance returned PASS.
+  E1-T2 deterministic normalization and hashing, E1-T3 contradiction,
+  ambiguity and amendment gates, and the E9 roadmap definition.
+- Evidence: PR #14, PR #15, PR #16, PR #17, PR #18, PR #19, PR #20, PR #21,
+  PR #22 and PR #23 merged; 275 tests passed; Ruff and diff check passed;
+  authority and objective canaries passed; deterministic Reviewer returned
+  APPROVE; Compliance returned PASS.
 - Scope: Constitution Authority is implemented without modifying the
   Constitution, master objective, owner authority, or protected policies.
   Live execute, deliver, and session resume fail closed without verified
-  constitutional state. E1-T1 defines the schema and E1-T2 normalizes/hashes
+  constitutional state. E1-T1 defines the schema, E1-T2 normalizes/hashes,
+  and E1-T3 detects ambiguity/contradiction and creates inert proposals
   without approving or amending objectives.
-- Next deterministic action: implement E1-T3 contradiction, ambiguity and
-  amendment-proposal gates without allowing autonomous approval.
+- Next deterministic action: attach objective requirement references to
+  plans and execution/review/compliance reports without breaking existing
+  plan loading.
