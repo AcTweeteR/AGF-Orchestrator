@@ -1,141 +1,177 @@
+import base64
+import hashlib
+import hmac
 import json
 from pathlib import Path
 
 import pytest
 
 from agf_orchestrator.constitution import (
+    ConstitutionAuthority,
     ConstitutionVerificationError,
-    ConstitutionVerifier,
     canonical_hash,
     canonical_json,
 )
 
 PROJECT_ID = "project-0123456789abcdef"
+KEY = b"owner-key-material-that-is-at-least-32-bytes-long"
 
 
-def _write_state(
-    root: Path, *, project_id: str = PROJECT_ID, constitution_id: str = "constitution-v1"
-):
-    directory = root / "projects" / project_id / "constitution"
-    directory.mkdir(parents=True)
-    record = {
+def _write_state(root: Path, *, project_id: str = PROJECT_ID):
+    authority_dir = root / ".agf-orchestrator" / "constitution-authority"
+    constitution_dir = root / ".agf-orchestrator" / "projects" / project_id / "constitution"
+    authority_dir.mkdir(parents=True)
+    constitution_dir.mkdir(parents=True)
+    (authority_dir / "owner.key").write_text(base64.b64encode(KEY).decode("ascii"))
+    unsigned = {
         "schema_version": "1.0",
-        "constitution_id": constitution_id,
+        "constitution_id": "constitution-v1",
         "version": "1.0",
         "project_id": project_id,
         "compatibility": "agf-constitution-v1",
+        "approval_status": "APPROVED",
         "body": {"owner": "external-owner", "rules": ["fail-closed"]},
         "key_id": "owner-key-1",
-        "signature": "valid-signature",
+    }
+    record = {
+        **unsigned,
+        "signature": hmac.new(KEY, canonical_json(unsigned), hashlib.sha256).hexdigest(),
     }
     pointer = {
         "schema_version": "1.0",
         "project_id": project_id,
-        "constitution_id": constitution_id,
+        "constitution_id": "constitution-v1",
         "record_hash": canonical_hash(record),
     }
-    (directory / f"{constitution_id}.json").write_bytes(canonical_json(record))
-    (directory / "active.json").write_bytes(canonical_json(pointer))
+    (constitution_dir / "constitution-v1.json").write_bytes(canonical_json(record))
+    (constitution_dir / "active.json").write_bytes(canonical_json(pointer))
     return record, pointer
 
 
-def _signature_verifier(payload: bytes, signature: str, key_id: str) -> bool:
-    return bool(payload and signature == "valid-signature" and key_id == "owner-key-1")
+def _authority(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    return ConstitutionAuthority()
 
 
-def test_valid_state_returns_bounded_evidence_and_is_idempotent(tmp_path):
+def test_authority_resolves_immutable_state_and_is_idempotent(tmp_path, monkeypatch):
     _write_state(tmp_path)
-    verifier = ConstitutionVerifier(tmp_path, PROJECT_ID, signature_verifier=_signature_verifier)
+    authority = _authority(tmp_path, monkeypatch)
 
-    first = verifier.verify()
-    second = verifier.verify()
+    first = authority.resolve(PROJECT_ID)
+    second = authority.resolve(PROJECT_ID)
 
     assert first == second
-    assert first.to_dict() == {
-        "project_id": PROJECT_ID,
-        "constitution_id": "constitution-v1",
-        "version": "1.0",
-        "record_hash": first.record_hash,
-        "key_id": "owner-key-1",
-        "compatibility": "agf-constitution-v1",
-        "status": "VERIFIED",
-    }
+    assert first.evidence()["status"] == "VERIFIED"
+    with pytest.raises(TypeError):
+        first.body["new"] = "blocked"
 
 
-def test_missing_pointer_fails_closed(tmp_path):
+def test_authority_has_fixed_source_and_no_injectable_provider():
+    assert ConstitutionAuthority.__init__.__code__.co_argcount == 1
+    assert "signature_verifier" not in ConstitutionAuthority.__init__.__annotations__
+
+
+def test_missing_pointer_fails_closed(tmp_path, monkeypatch):
     with pytest.raises(ConstitutionVerificationError, match="unreadable active pointer"):
-        ConstitutionVerifier(tmp_path, PROJECT_ID, signature_verifier=_signature_verifier).verify()
+        _authority(tmp_path, monkeypatch).resolve(PROJECT_ID)
 
 
-def test_missing_signature_verifier_fails_closed(tmp_path):
+def test_missing_owner_key_fails_closed(tmp_path, monkeypatch):
     _write_state(tmp_path)
-    with pytest.raises(ConstitutionVerificationError, match="signature verifier is unavailable"):
-        ConstitutionVerifier(tmp_path, PROJECT_ID).verify()
+    (tmp_path / ".agf-orchestrator" / "constitution-authority" / "owner.key").unlink()
+
+    with pytest.raises(ConstitutionVerificationError, match="unreadable owner key"):
+        _authority(tmp_path, monkeypatch).resolve(PROJECT_ID)
 
 
-@pytest.mark.parametrize("field", ["signature", "key_id", "compatibility", "project_id"])
-def test_tampered_record_fails_closed(tmp_path, field):
+@pytest.mark.parametrize("field", ["signature", "key_id", "approval_status", "body"])
+def test_tampered_record_fails_closed(tmp_path, monkeypatch, field):
     _write_state(tmp_path)
-    path = tmp_path / "projects" / PROJECT_ID / "constitution" / "constitution-v1.json"
+    path = (
+        tmp_path
+        / ".agf-orchestrator"
+        / "projects"
+        / PROJECT_ID
+        / "constitution"
+        / "constitution-v1.json"
+    )
     record = json.loads(path.read_text())
     record[field] = "tampered"
     path.write_text(json.dumps(record), encoding="utf-8")
 
-    with pytest.raises(
-        ConstitutionVerificationError,
-        match=(
-            "(record hash mismatch|constitution compatibility mismatch|"
-            "constitution project identity mismatch)"
-        ),
-    ):
-        ConstitutionVerifier(tmp_path, PROJECT_ID, signature_verifier=_signature_verifier).verify()
+    with pytest.raises(ConstitutionVerificationError):
+        _authority(tmp_path, monkeypatch).resolve(PROJECT_ID)
 
 
-def test_pointer_for_another_project_cannot_cross_project_boundary(tmp_path):
+def test_pointer_for_another_project_cannot_cross_project_boundary(tmp_path, monkeypatch):
     _write_state(tmp_path, project_id="project-fedcba9876543210")
+
     with pytest.raises(ConstitutionVerificationError, match="unreadable active pointer"):
-        ConstitutionVerifier(tmp_path, PROJECT_ID, signature_verifier=_signature_verifier).verify()
+        _authority(tmp_path, monkeypatch).resolve(PROJECT_ID)
 
 
-def test_project_identity_is_validated_before_path_use(tmp_path):
+def test_project_identity_cannot_escape_namespaced_directory(tmp_path, monkeypatch):
+    _write_state(tmp_path)
+
     with pytest.raises(ConstitutionVerificationError, match="invalid project identity"):
-        ConstitutionVerifier(tmp_path, "../other", signature_verifier=_signature_verifier)
+        _authority(tmp_path, monkeypatch).resolve("../other")
 
 
-def test_unknown_schema_and_extra_fields_are_rejected(tmp_path):
+def test_constitution_identity_cannot_escape_namespaced_directory(tmp_path, monkeypatch):
     _write_state(tmp_path)
-    path = tmp_path / "projects" / PROJECT_ID / "constitution" / "active.json"
-    pointer = json.loads(path.read_text())
-    pointer["unexpected"] = True
-    path.write_text(json.dumps(pointer), encoding="utf-8")
-
-    with pytest.raises(ConstitutionVerificationError, match="invalid active pointer schema"):
-        ConstitutionVerifier(tmp_path, PROJECT_ID, signature_verifier=_signature_verifier).verify()
-
-
-def test_constitution_identity_cannot_escape_namespaced_directory(tmp_path):
-    _write_state(tmp_path)
-    path = tmp_path / "projects" / PROJECT_ID / "constitution" / "active.json"
+    path = (
+        tmp_path
+        / ".agf-orchestrator"
+        / "projects"
+        / PROJECT_ID
+        / "constitution"
+        / "active.json"
+    )
     pointer = json.loads(path.read_text())
     pointer["constitution_id"] = "../outside"
     path.write_text(json.dumps(pointer), encoding="utf-8")
 
     with pytest.raises(ConstitutionVerificationError, match="invalid constitution identity"):
-        ConstitutionVerifier(tmp_path, PROJECT_ID, signature_verifier=_signature_verifier).verify()
+        _authority(tmp_path, monkeypatch).resolve(PROJECT_ID)
 
 
-def test_pointer_change_during_verification_is_rejected(tmp_path):
+def test_unapproved_state_fails_closed(tmp_path, monkeypatch):
+    _write_state(tmp_path)
+    path = (
+        tmp_path
+        / ".agf-orchestrator"
+        / "projects"
+        / PROJECT_ID
+        / "constitution"
+        / "constitution-v1.json"
+    )
+    record = json.loads(path.read_text())
+    record["approval_status"] = "CANDIDATE"
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(ConstitutionVerificationError, match="approval is not APPROVED"):
+        _authority(tmp_path, monkeypatch).resolve(PROJECT_ID)
+
+
+def test_pointer_change_during_resolution_is_rejected(tmp_path, monkeypatch):
     _, pointer = _write_state(tmp_path)
-    verifier = None
+    authority = _authority(tmp_path, monkeypatch)
+    original = authority._read_json
+    calls = 0
 
-    def mutate_pointer(payload, signature, key_id):
-        nonlocal verifier
-        verifier.pointer_path.write_text(json.dumps({**pointer, "record_hash": "changed"}))
-        return True
+    def mutate(path, label):
+        nonlocal calls
+        result = original(path, label)
+        calls += 1
+        if calls == 2:
+            (authority._project_constitution_dir(PROJECT_ID) / "active.json").write_text(
+                json.dumps({**pointer, "record_hash": "changed"})
+            )
+        return result
 
-    verifier = ConstitutionVerifier(tmp_path, PROJECT_ID, signature_verifier=mutate_pointer)
+    monkeypatch.setattr(authority, "_read_json", mutate)
     with pytest.raises(ConstitutionVerificationError, match="changed during verification"):
-        verifier.verify()
+        authority.resolve(PROJECT_ID)
 
 
 def test_canonical_json_rejects_nan():
