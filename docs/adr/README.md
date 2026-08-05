@@ -5,3 +5,4 @@ Architecture decision records (ADRs) capture durable choices about boundaries, a
 ## Index
 
 - [ADR-0001: Reference orchestrator boundary](ADR-0001-reference-orchestrator.md)
+- [ADR-0002: Merge control authority](ADR-0002-merge-control-authority.md)
