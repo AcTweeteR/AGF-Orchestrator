@@ -6,6 +6,8 @@ import re
 
 from .models import ExecutionPlan, Task
 from .review_models import ComplianceReport, ComplianceStatus, ReviewReport, ReviewStatus
+from .risk_engine import risk_evidence
+from .risk_models import RiskAssessment, RiskValidationError
 
 SECRET_SHAPED = re.compile(r"(?i)(api[_-]?key|token|secret|password)\s*[:=]")
 
@@ -24,6 +26,7 @@ class ComplianceChecker:
         caller_clean: bool,
         base_sha: str,
         final_branch_files: list[str] | None = None,
+        risk_assessment: RiskAssessment | None = None,
     ) -> ComplianceReport:
         blockers: list[str] = []
         checks: list[str] = []
@@ -66,5 +69,15 @@ class ComplianceChecker:
             blockers.append("secret-shaped data found in evidence")
         if final_branch_files is not None and set(final_branch_files) != set(changed_files):
             blockers.append("final delivery branch paths differ from approved patch")
+        if risk_assessment is not None:
+            try:
+                summary = risk_evidence(risk_assessment)
+            except RiskValidationError:
+                blockers.append("risk assessment is invalid")
+            else:
+                if summary not in evidence:
+                    blockers.append("risk assessment evidence is missing")
+                else:
+                    checks.append("risk assessment evidence is present")
         status = ComplianceStatus.PASS if not blockers else ComplianceStatus.FAIL
         return ComplianceReport(self.name, status, checks, blockers)
