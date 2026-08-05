@@ -7,6 +7,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from .engineering_memory_evidence import query_evidence
 from .engineering_memory_models import MemoryEntry, MemoryValidationError, memory_from_dict
 from .locking import project_lock
 
@@ -72,6 +73,13 @@ class EngineeringMemoryStore:
             and all(term in self._search_text(entry) for term in terms)
         )
         return tuple(sorted(matches, key=lambda item: item.entry_id)[:limit])
+
+    def search_with_evidence(
+        self, query: str = "", *, limit: int = default_limit
+    ) -> tuple[tuple[MemoryEntry, ...], str]:
+        """Return search results and bounded scope evidence for a caller report."""
+        results = self.search(query, limit=limit)
+        return results, query_evidence(query, limit, results)
 
     def _load_unlocked(self) -> list[MemoryEntry]:
         if not self.path.exists():
