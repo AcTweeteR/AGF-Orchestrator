@@ -234,6 +234,7 @@ The first implementation tasks are intentionally small:
 | E4-T7 | Add lease expiry and interruption recovery gates | E4-T6 |
 | E4-T8 | Add no-progress and deadlock stop gates | E4-T7 |
 | E5-T1 | Define evidence-based risk schema and fixtures | E4-T8 |
+| E5-T2 | Add deterministic risk signal aggregation | E5-T1 |
 
 No task is complete until its evidence is stored and the next checkpoint
 is deterministic. E0-T1 is approved as Constitution Foundation v1
@@ -247,12 +248,12 @@ is complete through PR #35; E3-T2 is complete through PR #37; E3-T3 is
 complete through PR #39; E4-T1 is complete through PR #41; E4-T2 is complete
 through PR #43; E4-T3 is complete through PR #45; E4-T4 is complete through
 PR #47; E4-T5 is complete through PR #49; E4-T6 is complete through PR #51;
-E4-T7 is complete through PR #53; E4-T8 is complete through PR #55; E5-T1
-is now the next dependency-correct task.
+  E4-T7 is complete through PR #53; E4-T8 is complete through PR #55; E5-T1
+is complete through PR #57; E5-T2 is now the next dependency-correct task.
 
-## Checkpoint after PR #55
+## Checkpoint after PR #57
 
-- Active main SHA: `494c7b40b045eb39a06992eb0a0ea127d0b09c6f`.
+- Active main SHA: `64333ad8386dd1361b3cdb40642ecebf94a6adab`.
 - Completed items: E0-T1 foundation documentation, E0-T2 immutable
   Constitution Authority enforcement, E1-T1 objective schema and fixtures,
   E1-T2 deterministic normalization and hashing, E1-T3 contradiction,
@@ -267,12 +268,13 @@ is now the next dependency-correct task.
   bounded scheduler loop/status events, E4-T5 bounded scheduler command and
   audit surface, E4-T6 bounded scheduler event/inbox persistence, E4-T7
   lease expiry/interruption recovery gates, and E4-T8 no-progress/deadlock
-  stop gates.
+  stop gates, and E5-T1 evidence-based risk schema/fixtures.
 - Evidence: PR #14, PR #15, PR #16, PR #17, PR #18, PR #19, PR #20, PR #21,
   PR #22, PR #23, PR #24, PR #25, PR #26, PR #27, PR #28, PR #29, PR #30,
   PR #31, PR #32, PR #33, PR #34, PR #35, PR #36, PR #37, PR #38, PR #39,
   PR #40, PR #41, PR #42, PR #43, PR #44, PR #45, PR #46, PR #47, PR #48,
-  PR #49, PR #50, PR #51, PR #52, PR #53, PR #54 and PR #55 merged; 329 tests
+  PR #49, PR #50, PR #51, PR #52, PR #53, PR #54, PR #55, PR #56 and PR #57
+  merged; 333 tests
   passed;
   Ruff
   and diff check
@@ -317,6 +319,9 @@ is now the next dependency-correct task.
   E4-T7 releases only expired leases, pauses interrupted work and never auto-
   resumes HUMAN_REQUIRED or terminal states. E4-T8 blocks after repeated
   identical observations and when unfinished READY work is dependency-blocked
-  with no eligible item.
-- Next deterministic action: define evidence-based risk schema and fixtures
-  (E5-T1).
+  with no eligible item. E5-T1 defines typed risk levels/signals, rollback
+  difficulty, incident history, protected paths and evidence, with UNKNOWN
+  inputs conservatively requiring CRITICAL and protected paths requiring HIGH
+  or CRITICAL.
+- Next deterministic action: add deterministic risk signal aggregation
+  (E5-T2).
