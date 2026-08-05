@@ -1,0 +1,17 @@
+{
+  "actor": "director",
+  "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "created_at": "2026-08-05T00:00:00Z",
+  "entry_id": "memory-transcript",
+  "entry_type": "KNOWN_LIMITATION",
+  "evidence_refs": [],
+  "project_id": "project-agf-orchestrator",
+  "requirement_refs": [],
+  "schema_version": "1.0",
+  "sensitivity": "INTERNAL",
+  "summary": "Complete transcript of a model conversation.",
+  "superseded_at": null,
+  "supersedes_entry_id": null,
+  "tags": [],
+  "title": "Conversation record"
+}
