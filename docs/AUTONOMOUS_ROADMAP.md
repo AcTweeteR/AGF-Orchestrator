@@ -231,6 +231,7 @@ The first implementation tasks are intentionally small:
 | E4-T4 | Add bounded scheduler loop and status events | E4-T3 |
 | E4-T5 | Add bounded scheduler command and audit surface | E4-T4 |
 | E4-T6 | Persist bounded scheduler events and inbox items | E4-T5 |
+| E4-T7 | Add lease expiry and interruption recovery gates | E4-T6 |
 
 No task is complete until its evidence is stored and the next checkpoint
 is deterministic. E0-T1 is approved as Constitution Foundation v1
@@ -243,12 +244,12 @@ E2-T3 is complete through PR #31; E2-T4 is complete through PR #33; E3-T1
 is complete through PR #35; E3-T2 is complete through PR #37; E3-T3 is
 complete through PR #39; E4-T1 is complete through PR #41; E4-T2 is complete
 through PR #43; E4-T3 is complete through PR #45; E4-T4 is complete through
-PR #47; E4-T5 is complete through PR #49; E4-T6 is now the next
-dependency-correct task.
+PR #47; E4-T5 is complete through PR #49; E4-T6 is complete through PR #51;
+E4-T7 is now the next dependency-correct task.
 
-## Checkpoint after PR #49
+## Checkpoint after PR #51
 
-- Active main SHA: `20bb7769f5175b5c0c8c8955f7ba847cd5dd237c`.
+- Active main SHA: `e083705b4e383e53d8c339080516e51fb0248ffb`.
 - Completed items: E0-T1 foundation documentation, E0-T2 immutable
   Constitution Authority enforcement, E1-T1 objective schema and fixtures,
   E1-T2 deterministic normalization and hashing, E1-T3 contradiction,
@@ -260,13 +261,13 @@ dependency-correct task.
   E3-T3 bounded query evidence propagation, E4-T1 scheduler state and
   lifecycle schema, E4-T2 persistent resumable scheduler state, and E4-T3
   deterministic task selection with leases and budget gates, and E4-T4
-  bounded scheduler loop/status events, and E4-T5 bounded scheduler command
-  and audit surface.
+  bounded scheduler loop/status events, E4-T5 bounded scheduler command and
+  audit surface, and E4-T6 bounded scheduler event/inbox persistence.
 - Evidence: PR #14, PR #15, PR #16, PR #17, PR #18, PR #19, PR #20, PR #21,
   PR #22, PR #23, PR #24, PR #25, PR #26, PR #27, PR #28, PR #29, PR #30,
   PR #31, PR #32, PR #33, PR #34, PR #35, PR #36, PR #37, PR #38, PR #39,
-  PR #40, PR #41, PR #42, PR #43, PR #44, PR #45, PR #46, PR #47, PR #48
-  and PR #49 merged; 318 tests passed;
+  PR #40, PR #41, PR #42, PR #43, PR #44, PR #45, PR #46, PR #47, PR #48,
+  PR #49, PR #50 and PR #51 merged; 321 tests passed;
   Ruff
   and diff check
   passed;
@@ -305,6 +306,7 @@ dependency-correct task.
   budget, requires sequence/identity progress and emits bounded transition
   events; terminal and human-required states stop immediately. E4-T5 exposes
   bounded lifecycle commands and read-only status/audit snapshots with
-  idempotent retries.
-- Next deterministic action: persist bounded scheduler events and inbox items
-  (E4-T6).
+  idempotent retries. E4-T6 persists monotonic transition events and bounded
+  project-isolated inbox items with idempotent retries and secret rejection.
+- Next deterministic action: add lease expiry and interruption recovery gates
+  (E4-T7).
