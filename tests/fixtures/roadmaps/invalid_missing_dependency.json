@@ -1,0 +1,18 @@
+{
+  "items": [
+    {
+      "acceptance_criteria": ["A"],
+      "depends_on": ["item-missing"],
+      "item_id": "item-a",
+      "objective_refs": ["requirement-traceability"],
+      "risk_level": "LOW",
+      "status": "READY",
+      "title": "A"
+    }
+  ],
+  "objective_id": "objective-build-safe-system",
+  "roadmap_id": "roadmap-missing",
+  "schema_version": "1.0",
+  "status": "DRAFT",
+  "version": "1"
+}
