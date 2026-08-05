@@ -7,6 +7,7 @@
       "objective_refs": ["requirement-traceability"],
       "risk_level": "LOW",
       "status": "READY",
+      "superseded_by": null,
       "title": "A"
     },
     {
@@ -16,6 +17,7 @@
       "objective_refs": ["requirement-traceability"],
       "risk_level": "LOW",
       "status": "TODO",
+      "superseded_by": null,
       "title": "B"
     }
   ],

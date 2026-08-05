@@ -7,6 +7,7 @@
       "objective_refs": ["requirement-traceability"],
       "risk_level": "LOW",
       "status": "COMPLETED",
+      "superseded_by": null,
       "title": "Define the foundation"
     },
     {
@@ -16,6 +17,7 @@
       "objective_refs": ["requirement-traceability"],
       "risk_level": "LOW",
       "status": "READY",
+      "superseded_by": null,
       "title": "Define the backlog"
     }
   ],
