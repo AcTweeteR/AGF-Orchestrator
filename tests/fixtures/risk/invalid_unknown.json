@@ -1,0 +1,20 @@
+{
+  "assessment_id": "risk-task-002",
+  "evidence_refs": [],
+  "incident_count": 0,
+  "level": "HIGH",
+  "project_id": "project-agf-orchestrator",
+  "protected_paths": [],
+  "rollback_difficulty": "EASY",
+  "schema_version": "1.0",
+  "signals": [
+    {
+      "category": "PROVIDER_STATE",
+      "evidence_refs": [],
+      "level": "UNKNOWN",
+      "signal_id": "signal-provider-state",
+      "value": "not verified"
+    }
+  ],
+  "task_id": "task-002"
+}

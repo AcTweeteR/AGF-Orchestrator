@@ -1,0 +1,20 @@
+{
+  "assessment_id": "risk-task-001",
+  "evidence_refs": ["evidence-review-001"],
+  "incident_count": 0,
+  "level": "LOW",
+  "project_id": "project-agf-orchestrator",
+  "protected_paths": [],
+  "rollback_difficulty": "EASY",
+  "schema_version": "1.0",
+  "signals": [
+    {
+      "category": "CHANGE_SIZE",
+      "evidence_refs": ["evidence-diff-001"],
+      "level": "LOW",
+      "signal_id": "signal-change-size",
+      "value": "one bounded file"
+    }
+  ],
+  "task_id": "task-001"
+}
