@@ -7,6 +7,7 @@ import json
 
 from .adapters.base import DirectorAdapter
 from .adapters.mock import MockAdapter
+from .engineering_memory_evidence import MemoryEvidenceError, validate_query_evidence
 from .models import ExecutionPlan, PlanStatus, RepositoryContext, Task
 
 DETERMINISTIC_CREATED_AT = "1970-01-01T00:00:00Z"
@@ -18,12 +19,20 @@ class Director:
     def __init__(self, adapter: DirectorAdapter | None = None) -> None:
         self.adapter = adapter or MockAdapter()
 
-    def create_plan(self, goal: str, repository: RepositoryContext) -> ExecutionPlan:
+    def create_plan(
+        self, goal: str, repository: RepositoryContext, *, memory_evidence: str | None = None
+    ) -> ExecutionPlan:
         draft = self.adapter.build_plan_inputs(goal, repository)
         plan_id = self._plan_id(goal, repository)
         tasks = [Task(**{**item, "status": PlanStatus(item["status"])}) for item in draft["tasks"]]
         risks = list(draft["risks"])
         required_evidence = list(draft["required_evidence"])
+        if memory_evidence is not None:
+            try:
+                validate_query_evidence(memory_evidence)
+            except MemoryEvidenceError as exc:
+                raise ValueError(str(exc)) from exc
+            required_evidence.append(memory_evidence)
         if not repository.clean:
             dirty_risk = "The plan was created from a dirty working tree."
             dirty_evidence = "uncommitted working-tree status captured at preflight"

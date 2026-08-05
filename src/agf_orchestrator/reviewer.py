@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .adapters.codex import CodexAdapter
+from .engineering_memory_evidence import MemoryEvidenceError, validate_query_evidence
 from .models import ExecutionPlan, Task
 from .review_models import ReviewFinding, ReviewReport, ReviewStatus, finding_identity
 
@@ -233,7 +234,7 @@ class DeterministicReviewer:
 
     def review(
         self, plan, task, changed_files, patch, validation_results,
-        previous_findings=None, correction_round=0,
+        previous_findings=None, correction_round=0, memory_evidence=None,
     ):
         findings: list[ReviewFinding] = []
         unauthorized = sorted(set(changed_files) - set(task.allowed_paths))
@@ -253,6 +254,15 @@ class DeterministicReviewer:
                 "validation evidence has a non-zero exit code",
                 "Make the approved validation pass.",
             ))
+        if memory_evidence is not None:
+            try:
+                validate_query_evidence(memory_evidence)
+            except MemoryEvidenceError:
+                findings.append(ReviewFinding(
+                    "REV-MEMORY", "EVIDENCE", "blocker",
+                    "Memory query evidence is invalid.", [],
+                    "invalid memory query evidence", "Record bounded memory query evidence.",
+                ))
         if findings:
             return ReviewReport(
                 self.name, ReviewStatus.REQUEST_CHANGES, findings,
@@ -261,9 +271,10 @@ class DeterministicReviewer:
             )
         return ReviewReport(
             self.name, ReviewStatus.APPROVE, [],
-            ["task objective checked", "allowed paths checked", "acceptance criteria checked",
+                ["task objective checked", "allowed paths checked", "acceptance criteria checked",
              "validation evidence checked", "architecture constraints checked",
-             "security and regression scope checked"], [],
+             "security and regression scope checked"]
+                + ([memory_evidence] if memory_evidence is not None else []), [],
         )
 
 
