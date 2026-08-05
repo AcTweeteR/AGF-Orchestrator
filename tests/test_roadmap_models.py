@@ -104,3 +104,13 @@ def test_critical_path_is_deterministic():
     roadmap = roadmap_from_dict(load_fixture("valid_roadmap.json"))
 
     assert roadmap.critical_path() == ("item-foundation", "item-backlog")
+
+
+def test_eligible_items_use_priority_then_id_and_revision_is_monotonic():
+    roadmap = roadmap_from_dict(load_fixture("valid_roadmap.json"))
+    revised = roadmap.revise("2")
+
+    assert revised.version == "2"
+    assert roadmap.version == "1"
+    with pytest.raises(RoadmapValidationError, match="increase monotonically"):
+        roadmap.revise("1")

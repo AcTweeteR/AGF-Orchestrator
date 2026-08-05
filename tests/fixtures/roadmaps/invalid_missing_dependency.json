@@ -5,6 +5,7 @@
       "depends_on": ["item-missing"],
       "item_id": "item-a",
       "objective_refs": ["requirement-traceability"],
+      "priority": 10,
       "risk_level": "LOW",
       "status": "READY",
       "superseded_by": null,

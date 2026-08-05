@@ -45,6 +45,7 @@ class RoadmapItem:
     risk_level: str
     status: RoadmapItemStatus
     superseded_by: str | None = None
+    priority: int = 100
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -56,6 +57,7 @@ class RoadmapItem:
             "risk_level": self.risk_level,
             "status": self.status.value,
             "superseded_by": self.superseded_by,
+            "priority": self.priority,
         }
 
 
@@ -156,7 +158,7 @@ class Roadmap:
         )
 
     def eligible_items(self) -> tuple[RoadmapItem, ...]:
-        """Return READY items whose dependencies are all COMPLETED, sorted by ID."""
+        """Return eligible READY items in stable priority and ID order."""
         items = {item.item_id: item for item in self.items}
         return tuple(
             sorted(
@@ -169,9 +171,15 @@ class Roadmap:
                         for dependency in item.depends_on
                     )
                 ),
-                key=lambda item: item.item_id,
+                key=lambda item: (item.priority, item.item_id),
             )
         )
+
+    def revise(self, version: str) -> "Roadmap":
+        """Return a newer numbered roadmap version; never overwrite in place."""
+        if not version.isdigit() or int(version) <= int(self.version):
+            raise RoadmapValidationError("roadmap version must increase monotonically")
+        return replace(self, version=version)
 
     def critical_path(self) -> tuple[str, ...]:
         """Return one deterministic longest dependency path from root to leaf."""
@@ -231,6 +239,13 @@ class Roadmap:
             raise RoadmapValidationError(f"item {item.item_id} status is invalid")
         if not item.risk_level.strip():
             raise RoadmapValidationError(f"item {item.item_id} risk level is required")
+        invalid_priority = (
+            isinstance(item.priority, bool)
+            or not isinstance(item.priority, int)
+            or not 0 <= item.priority <= 1000
+        )
+        if invalid_priority:
+            raise RoadmapValidationError(f"item {item.item_id} priority is invalid")
         if item.superseded_by is not None and not _ITEM_ID.fullmatch(item.superseded_by):
             raise RoadmapValidationError(f"item {item.item_id} superseded_by is invalid")
         if item.status is not RoadmapItemStatus.SUPERSEDED and item.superseded_by is not None:
@@ -271,6 +286,7 @@ def roadmap_from_dict(payload: dict[str, Any]) -> Roadmap:
                 risk_level=item["risk_level"],
                 status=RoadmapItemStatus(item["status"]),
                 superseded_by=item.get("superseded_by"),
+                priority=item.get("priority", 100),
             )
             for item in payload["items"]
         )
