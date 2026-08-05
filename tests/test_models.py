@@ -1,3 +1,7 @@
+from dataclasses import replace
+
+import pytest
+
 from agf_orchestrator.models import (
     ExecutionPlan,
     PlanStatus,
@@ -60,3 +64,25 @@ def test_invalid_plan_missing_fields_rejected():
         assert "tasks" in str(exc)
     else:
         raise AssertionError("invalid plan was accepted")
+
+
+def test_optional_objective_traceability_round_trips_and_is_scoped_to_tasks():
+    plan = make_plan()
+    task = replace(plan.tasks[0], requirement_refs=["requirement-feature"])
+    traced = replace(
+        plan,
+        tasks=[task],
+        objective_id="objective-feature",
+        requirement_refs=["requirement-feature"],
+    )
+
+    restored = plan_from_dict(traced.to_dict())
+
+    assert restored.objective_id == "objective-feature"
+    assert restored.tasks[0].requirement_refs == ["requirement-feature"]
+
+
+def test_requirement_reference_without_objective_is_rejected():
+    plan = make_plan()
+    with pytest.raises(PlanValidationError, match="requirement_refs require objective_id"):
+        replace(plan, requirement_refs=["requirement-feature"]).validate()

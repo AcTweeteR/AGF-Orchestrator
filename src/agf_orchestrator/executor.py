@@ -144,6 +144,11 @@ def _validate_gates(
     allow_default_branch: bool = False,
 ):
     evidence: list[str] = []
+    evidence.append(
+        "objective traceability: objective_id="
+        f"{plan.objective_id or 'UNSET'}; requirement_refs="
+        f"{sorted(set(plan.requirement_refs or task.requirement_refs))}"
+    )
 
     def checked(name: str) -> None:
         evidence.append(f"gate checked: {name}")
