@@ -1,0 +1,27 @@
+{
+  "items": [
+    {
+      "acceptance_criteria": ["A"],
+      "depends_on": ["item-b"],
+      "item_id": "item-a",
+      "objective_refs": ["requirement-traceability"],
+      "risk_level": "LOW",
+      "status": "READY",
+      "title": "A"
+    },
+    {
+      "acceptance_criteria": ["B"],
+      "depends_on": ["item-a"],
+      "item_id": "item-b",
+      "objective_refs": ["requirement-traceability"],
+      "risk_level": "LOW",
+      "status": "TODO",
+      "title": "B"
+    }
+  ],
+  "objective_id": "objective-build-safe-system",
+  "roadmap_id": "roadmap-cycle",
+  "schema_version": "1.0",
+  "status": "DRAFT",
+  "version": "1"
+}

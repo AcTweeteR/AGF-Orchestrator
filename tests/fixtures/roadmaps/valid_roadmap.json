@@ -1,0 +1,27 @@
+{
+  "items": [
+    {
+      "acceptance_criteria": ["The schema validates deterministically"],
+      "depends_on": [],
+      "item_id": "item-foundation",
+      "objective_refs": ["requirement-traceability"],
+      "risk_level": "LOW",
+      "status": "COMPLETED",
+      "title": "Define the foundation"
+    },
+    {
+      "acceptance_criteria": ["Unknown dependencies are rejected"],
+      "depends_on": ["item-foundation"],
+      "item_id": "item-backlog",
+      "objective_refs": ["requirement-traceability"],
+      "risk_level": "LOW",
+      "status": "READY",
+      "title": "Define the backlog"
+    }
+  ],
+  "objective_id": "objective-build-safe-system",
+  "roadmap_id": "roadmap-initial",
+  "schema_version": "1.0",
+  "status": "ACTIVE",
+  "version": "1"
+}
