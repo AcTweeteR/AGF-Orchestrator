@@ -221,6 +221,7 @@ The first implementation tasks are intentionally small:
 | E2-T1 | Define roadmap/backlog schema and fixtures | E1-T4 |
 | E2-T2 | Add explicit lifecycle and supersession transitions | E2-T1 |
 | E2-T3 | Add eligible-task selection and critical-path analysis | E2-T2 |
+| E2-T4 | Add deterministic roadmap priority and version transitions | E2-T3 |
 
 No task is complete until its evidence is stored and the next checkpoint
 is deterministic. E0-T1 is approved as Constitution Foundation v1
@@ -229,24 +230,24 @@ capability discovery is recorded as E9 and is not authorized to bypass the
 E1–E5 prerequisites. E1-T1 is complete through PR #19; E1-T2 is complete
 through PR #21; E1-T3 is complete through PR #23; E1-T4 is complete through
 PR #25; E2-T1 is complete through PR #27; E2-T2 is complete through PR #29;
-E2-T3 is now the next dependency-correct task.
+E2-T3 is complete through PR #31; E2-T4 is now the next
+dependency-correct task.
 
-## Checkpoint after PR #29
+## Checkpoint after PR #31
 
-- Active main SHA: `7b0286b75eac227bfe74a219cac99d49e8e6f790`.
+- Active main SHA: `4dd7f9a7acec71910e87e536c61991ee497e7a05`.
 - Completed items: E0-T1 foundation documentation, E0-T2 immutable
   Constitution Authority enforcement, E1-T1 objective schema and fixtures,
   E1-T2 deterministic normalization and hashing, E1-T3 contradiction,
   ambiguity and amendment gates, E1-T4 requirement traceability, the E9
-  roadmap definition, E2-T1 roadmap schema/dependency validation, and E2-T2
-  lifecycle/supersession transitions.
+  roadmap definition, E2-T1 roadmap schema/dependency validation, E2-T2
+  lifecycle/supersession transitions, and E2-T3 eligible selection/critical
+  path analysis.
 - Evidence: PR #14, PR #15, PR #16, PR #17, PR #18, PR #19, PR #20, PR #21,
-  PR #22, PR #23, PR #24, PR #25, PR #26, PR #27, PR #28 and PR #29 merged;
-  285 tests passed; Ruff and diff check passed; authority, objective and
-  roadmap canaries passed; deterministic Reviewer returned APPROVE;
-  Compliance returned PASS.
-  authority and objective canaries passed; deterministic Reviewer returned
-  APPROVE; Compliance returned PASS.
+  PR #22, PR #23, PR #24, PR #25, PR #26, PR #27, PR #28, PR #29, PR #30
+  and PR #31 merged; 287 tests passed; Ruff and diff check passed;
+  authority, objective and roadmap canaries passed; deterministic Reviewer
+  returned APPROVE; Compliance returned PASS.
 - Scope: Constitution Authority is implemented without modifying the
   Constitution, master objective, owner authority, or protected policies.
   Live execute, deliver, and session resume fail closed without verified
@@ -257,6 +258,7 @@ E2-T3 is now the next dependency-correct task.
   review, Compliance and delivery. E2-T1 defines immutable roadmap items
   and rejects unknown dependencies and cycles. E2-T2 enforces explicit
   lifecycle transitions, dependency-gated completion and non-destructive
-  supersession.
-- Next deterministic action: add deterministic eligible-task selection and
-  critical-path analysis without starting a persistent scheduler.
+  supersession. E2-T3 selects eligible work and computes a deterministic
+  critical path without a scheduler.
+- Next deterministic action: add deterministic roadmap priority and version
+  transitions before Engineering Memory.
