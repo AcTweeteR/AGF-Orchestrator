@@ -218,24 +218,27 @@ The first implementation tasks are intentionally small:
 | E1-T2 | Implement deterministic normalization and hashing | E1-T1 |
 | E1-T3 | Add contradiction, ambiguity, and amendment proposal gates | E1-T2 |
 | E1-T4 | Attach requirement traceability to plans and reports | E1-T2 |
+| E2-T1 | Define roadmap/backlog schema and fixtures | E1-T4 |
 
 No task is complete until its evidence is stored and the next checkpoint
 is deterministic. E0-T1 is approved as Constitution Foundation v1
 documentation by PR #14. E0-T2 is complete through PR #17. Dynamic
 capability discovery is recorded as E9 and is not authorized to bypass the
 E1–E5 prerequisites. E1-T1 is complete through PR #19; E1-T2 is complete
-through PR #21; E1-T3 is complete through PR #23; E1-T4 is now the next
-dependency-correct task.
+through PR #21; E1-T3 is complete through PR #23; E1-T4 is complete through
+PR #25; E2-T1 is now the next dependency-correct task.
 
-## Checkpoint after PR #23
+## Checkpoint after PR #25
 
-- Active main SHA: `ab7b0dcf04b782d116c8511767c1b76dd848fc28`.
+- Active main SHA: `f48bf35fe8779c3cfdfc4a6f4b3f1777b17f45b8`.
 - Completed items: E0-T1 foundation documentation, E0-T2 immutable
   Constitution Authority enforcement, E1-T1 objective schema and fixtures,
   E1-T2 deterministic normalization and hashing, E1-T3 contradiction,
-  ambiguity and amendment gates, and the E9 roadmap definition.
+  ambiguity and amendment gates, E1-T4 requirement traceability, and the E9
+  roadmap definition.
 - Evidence: PR #14, PR #15, PR #16, PR #17, PR #18, PR #19, PR #20, PR #21,
-  PR #22 and PR #23 merged; 275 tests passed; Ruff and diff check passed;
+  PR #22, PR #23, PR #24 and PR #25 merged; 278 tests passed; Ruff and diff
+  check passed;
   authority and objective canaries passed; deterministic Reviewer returned
   APPROVE; Compliance returned PASS.
 - Scope: Constitution Authority is implemented without modifying the
@@ -243,7 +246,8 @@ dependency-correct task.
   Live execute, deliver, and session resume fail closed without verified
   constitutional state. E1-T1 defines the schema, E1-T2 normalizes/hashes,
   and E1-T3 detects ambiguity/contradiction and creates inert proposals
-  without approving or amending objectives.
-- Next deterministic action: attach objective requirement references to
-  plans and execution/review/compliance reports without breaking existing
-  plan loading.
+  without approving or amending objectives. E1-T4 carries optional
+  objective/requirement references and bounded evidence through execution,
+  review, Compliance and delivery.
+- Next deterministic action: define the bounded roadmap/backlog schema and
+  fixtures, including dependency and cycle validation.
