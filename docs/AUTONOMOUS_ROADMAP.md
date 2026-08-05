@@ -250,12 +250,12 @@ complete through PR #39; E4-T1 is complete through PR #41; E4-T2 is complete
 through PR #43; E4-T3 is complete through PR #45; E4-T4 is complete through
 PR #47; E4-T5 is complete through PR #49; E4-T6 is complete through PR #51;
 E4-T7 is complete through PR #53; E4-T8 is complete through PR #55; E5-T1
-is complete through PR #57; E5-T2 is complete through PR #59; E5-T3 is now
-the next dependency-correct task.
+is complete through PR #57; E5-T2 is complete through PR #59; E5-T3 is
+implemented in the current delivery.
 
-## Checkpoint after PR #59
+## Checkpoint after E5-T3 implementation
 
-- Active main SHA: `a5914af32b24df5486431ee0fa9ecd2aba4d7767`.
+- Active main base SHA: `e3e05e5606013dda1e82a2bc4557514d6ef4bcd0`.
 - Completed items: E0-T1 foundation documentation, E0-T2 immutable
   Constitution Authority enforcement, E1-T1 objective schema and fixtures,
   E1-T2 deterministic normalization and hashing, E1-T3 contradiction,
@@ -270,8 +270,9 @@ the next dependency-correct task.
   bounded scheduler loop/status events, E4-T5 bounded scheduler command and
   audit surface, E4-T6 bounded scheduler event/inbox persistence, E4-T7
   lease expiry/interruption recovery gates, and E4-T8 no-progress/deadlock
-  stop gates, E5-T1 evidence-based risk schema/fixtures, and E5-T2
-  deterministic risk signal aggregation.
+  stop gates, E5-T1 evidence-based risk schema/fixtures, E5-T2
+  deterministic risk signal aggregation, and E5-T3 risk evidence
+  propagation into review and Compliance.
 - Evidence: PR #14, PR #15, PR #16, PR #17, PR #18, PR #19, PR #20, PR #21,
   PR #22, PR #23, PR #24, PR #25, PR #26, PR #27, PR #28, PR #29, PR #30,
   PR #31, PR #32, PR #33, PR #34, PR #35, PR #36, PR #37, PR #38, PR #39,
@@ -327,6 +328,8 @@ the next dependency-correct task.
   inputs conservatively requiring CRITICAL and protected paths requiring HIGH
   or CRITICAL. E5-T2 derives reproducible signals from change size, protected
   paths, rollback, incidents, reviewer blockers and validation, then
-  aggregates by maximum severity.
-- Next deterministic action: carry risk assessment into review and Compliance
-  evidence (E5-T3).
+  aggregates by maximum severity. E5-T3 carries a bounded risk summary into
+  deterministic Reviewer and Compliance checks, rejects invalid assessments,
+  and blocks when required risk evidence is absent.
+- Next deterministic action after delivery: begin E5-T4 from the clean main
+  branch after this task is merged. E5-T4 is outside this task.

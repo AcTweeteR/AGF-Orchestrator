@@ -110,3 +110,12 @@ def _aggregate_level(signals: list[RiskSignal]) -> RiskLevel:
             return RiskLevel.CRITICAL
         level = max(level, RiskLevel[signal.level.value])
     return level
+
+
+def risk_evidence(assessment: RiskAssessment) -> str:
+    """Return bounded review evidence without copying signal values."""
+    assessment.validate()
+    return (
+        f"risk assessment: id={assessment.assessment_id}; level={assessment.level.name}; "
+        f"signal_count={len(assessment.signals)}"
+    )

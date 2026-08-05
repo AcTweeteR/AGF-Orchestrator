@@ -11,6 +11,8 @@ from .adapters.codex import CodexAdapter
 from .engineering_memory_evidence import MemoryEvidenceError, validate_query_evidence
 from .models import ExecutionPlan, Task
 from .review_models import ReviewFinding, ReviewReport, ReviewStatus, finding_identity
+from .risk_engine import risk_evidence
+from .risk_models import RiskValidationError
 
 REVIEW_FIELDS = {"status", "summary", "findings"}
 REVIEW_FIELDS_WITH_RESOLUTION = REVIEW_FIELDS | {"resolved_finding_ids"}
@@ -234,7 +236,7 @@ class DeterministicReviewer:
 
     def review(
         self, plan, task, changed_files, patch, validation_results,
-        previous_findings=None, correction_round=0, memory_evidence=None,
+        previous_findings=None, correction_round=0, memory_evidence=None, risk_assessment=None,
     ):
         findings: list[ReviewFinding] = []
         unauthorized = sorted(set(changed_files) - set(task.allowed_paths))
@@ -263,6 +265,15 @@ class DeterministicReviewer:
                     "Memory query evidence is invalid.", [],
                     "invalid memory query evidence", "Record bounded memory query evidence.",
                 ))
+        risk_evidence_text = None
+        if risk_assessment is not None:
+            try:
+                risk_evidence_text = risk_evidence(risk_assessment)
+            except RiskValidationError:
+                findings.append(ReviewFinding(
+                    "REV-RISK", "RISK", "blocker", "Risk assessment is invalid.", [],
+                    "invalid risk assessment", "Provide validated risk evidence.",
+                ))
         if findings:
             return ReviewReport(
                 self.name, ReviewStatus.REQUEST_CHANGES, findings,
@@ -274,7 +285,8 @@ class DeterministicReviewer:
                 ["task objective checked", "allowed paths checked", "acceptance criteria checked",
              "validation evidence checked", "architecture constraints checked",
              "security and regression scope checked"]
-                + ([memory_evidence] if memory_evidence is not None else []), [],
+                + ([memory_evidence] if memory_evidence is not None else [])
+                + ([risk_evidence_text] if risk_evidence_text is not None else []), [],
         )
 
 
