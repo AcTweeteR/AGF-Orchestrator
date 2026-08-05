@@ -223,20 +223,23 @@ No task is complete until its evidence is stored and the next checkpoint
 is deterministic. E0-T1 is approved as Constitution Foundation v1
 documentation by PR #14. E0-T2 is complete through PR #17. Dynamic
 capability discovery is recorded as E9 and is not authorized to bypass the
-E1–E5 prerequisites. E1-T1 is now the next dependency-correct task.
+E1–E5 prerequisites. E1-T1 is complete through PR #19; E1-T2 is now the
+next dependency-correct task.
 
-## Checkpoint after PR #17
+## Checkpoint after PR #19
 
-- Active main SHA: `a36df31d43a8be53b4c2536c93b1a9f05645999a`.
+- Active main SHA: `77d1f85b5a6f97077918bb50f2312148717ee293`.
 - Completed items: E0-T1 foundation documentation, E0-T2 immutable
-  Constitution Authority enforcement, and the E9 roadmap definition.
-- Evidence: PR #14, PR #15, PR #16 and PR #17 merged; 255 tests passed;
-  Ruff and diff check passed; authority canary resolved approved state and
-  rejected tampered state; deterministic Reviewer returned APPROVE;
-  Compliance returned PASS.
+  Constitution Authority enforcement, E1-T1 objective schema and fixtures,
+  and the E9 roadmap definition.
+- Evidence: PR #14, PR #15, PR #16, PR #17, PR #18 and PR #19 merged; 268
+  tests passed; Ruff and diff check passed; authority and objective canaries
+  passed; deterministic Reviewer returned APPROVE; Compliance returned
+  PASS.
 - Scope: Constitution Authority is implemented without modifying the
   Constitution, master objective, owner authority, or protected policies.
   Live execute, deliver, and session resume fail closed without verified
-  constitutional state.
-- Next deterministic action: prepare the bounded E1-T1 objective schema
-  and fixture plan, preserving immutable approved-objective ownership.
+  constitutional state. E1-T1 does not normalize, hash, approve, or amend
+  objectives.
+- Next deterministic action: implement E1-T2 deterministic objective
+  normalization and hashing without mutating the source objective.
