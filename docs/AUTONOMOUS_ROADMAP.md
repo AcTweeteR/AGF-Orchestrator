@@ -223,23 +223,24 @@ No task is complete until its evidence is stored and the next checkpoint
 is deterministic. E0-T1 is approved as Constitution Foundation v1
 documentation by PR #14. E0-T2 is complete through PR #17. Dynamic
 capability discovery is recorded as E9 and is not authorized to bypass the
-E1–E5 prerequisites. E1-T1 is complete through PR #19; E1-T2 is now the
-next dependency-correct task.
+E1–E5 prerequisites. E1-T1 is complete through PR #19; E1-T2 is complete
+through PR #21; E1-T3 is now the next dependency-correct task.
 
-## Checkpoint after PR #19
+## Checkpoint after PR #21
 
-- Active main SHA: `77d1f85b5a6f97077918bb50f2312148717ee293`.
+- Active main SHA: `b24e23df96f6752dc161c6bffdbf68a48322e87a`.
 - Completed items: E0-T1 foundation documentation, E0-T2 immutable
   Constitution Authority enforcement, E1-T1 objective schema and fixtures,
-  and the E9 roadmap definition.
-- Evidence: PR #14, PR #15, PR #16, PR #17, PR #18 and PR #19 merged; 268
-  tests passed; Ruff and diff check passed; authority and objective canaries
-  passed; deterministic Reviewer returned APPROVE; Compliance returned
-  PASS.
+  E1-T2 deterministic normalization and hashing, and the E9 roadmap
+  definition.
+- Evidence: PR #14, PR #15, PR #16, PR #17, PR #18, PR #19, PR #20 and
+  PR #21 merged; 271 tests passed; Ruff and diff check passed; authority
+  and objective canaries passed; deterministic Reviewer returned APPROVE;
+  Compliance returned PASS.
 - Scope: Constitution Authority is implemented without modifying the
   Constitution, master objective, owner authority, or protected policies.
   Live execute, deliver, and session resume fail closed without verified
-  constitutional state. E1-T1 does not normalize, hash, approve, or amend
-  objectives.
-- Next deterministic action: implement E1-T2 deterministic objective
-  normalization and hashing without mutating the source objective.
+  constitutional state. E1-T1 defines the schema and E1-T2 normalizes/hashes
+  without approving or amending objectives.
+- Next deterministic action: implement E1-T3 contradiction, ambiguity and
+  amendment-proposal gates without allowing autonomous approval.
