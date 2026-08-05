@@ -6,7 +6,10 @@ import pytest
 from agf_orchestrator.objective_models import (
     ObjectiveStatus,
     ObjectiveValidationError,
+    canonical_objective_json,
+    normalize_objective,
     objective_from_dict,
+    objective_hash,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "objectives"
@@ -84,3 +87,42 @@ def test_invalid_objective_and_requirement_ids_are_rejected():
     payload["requirements"][0]["requirement_id"] = "unsafe/id"
     with pytest.raises(ObjectiveValidationError, match="requirement_id is invalid"):
         objective_from_dict(payload)
+
+
+def test_normalization_is_pure_and_canonicalizes_text_and_collection_order():
+    payload = load_fixture("valid_objective.json")
+    source = objective_from_dict(payload)
+    payload["title"] = "  Build   a safe system  "
+    payload["requirements"] = list(reversed(payload["requirements"]))
+    payload["constraints"] = list(reversed(payload["constraints"]))
+    variant = objective_from_dict(payload)
+
+    normalized = normalize_objective(variant)
+
+    assert source.title == "Build a safe autonomous system"
+    assert normalized.title == "Build a safe system"
+    assert normalized.requirements[0].requirement_id == "requirement-demonstrable-completion"
+    assert objective_hash(source) != objective_hash(variant)
+
+
+def test_equivalent_objectives_have_equal_canonical_json_and_hash():
+    first = objective_from_dict(load_fixture("valid_objective.json"))
+    payload = load_fixture("valid_objective.json")
+    payload["statement"] = (
+        "  Build a safe system that reaches   demonstrable completion under approved governance.  "
+    )
+    payload["requirements"] = list(reversed(payload["requirements"]))
+    payload["constraints"] = list(reversed(payload["constraints"]))
+    second = objective_from_dict(payload)
+
+    assert canonical_objective_json(first) == canonical_objective_json(second)
+    assert objective_hash(first) == objective_hash(second)
+
+
+def test_semantic_change_changes_hash():
+    first = objective_from_dict(load_fixture("valid_objective.json"))
+    payload = load_fixture("valid_objective.json")
+    payload["statement"] = "Build a different system."
+    second = objective_from_dict(payload)
+
+    assert objective_hash(first) != objective_hash(second)

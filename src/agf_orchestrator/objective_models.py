@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -161,3 +164,65 @@ def objective_from_dict(payload: dict[str, Any]) -> Objective:
         raise ObjectiveValidationError(f"invalid objective structure: {exc}") from exc
     objective.validate()
     return objective
+
+
+def _normalize_text(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFC", value).split())
+
+
+def normalize_objective(objective: Objective) -> Objective:
+    """Return a new canonical objective without mutating the source object."""
+    objective.validate()
+    normalized = Objective(
+        schema_version=objective.schema_version,
+        objective_id=objective.objective_id,
+        title=_normalize_text(objective.title),
+        statement=_normalize_text(objective.statement),
+        requirements=tuple(
+            sorted(
+                (
+                    ObjectiveRequirement(
+                        requirement_id=item.requirement_id,
+                        statement=_normalize_text(item.statement),
+                        mandatory=item.mandatory,
+                        acceptance_criteria=tuple(
+                            sorted(_normalize_text(value) for value in item.acceptance_criteria)
+                        ),
+                    )
+                    for item in objective.requirements
+                ),
+                key=lambda item: item.requirement_id,
+            )
+        ),
+        constraints=tuple(sorted(_normalize_text(value) for value in objective.constraints)),
+        prohibited_outcomes=tuple(
+            sorted(_normalize_text(value) for value in objective.prohibited_outcomes)
+        ),
+        completion_criteria=tuple(
+            sorted(_normalize_text(value) for value in objective.completion_criteria)
+        ),
+        owner_namespace=_normalize_text(objective.owner_namespace),
+        status=objective.status,
+    )
+    normalized.validate()
+    return normalized
+
+
+def canonical_objective_json(objective: Objective) -> bytes:
+    """Serialize the normalized objective for hashing or evidence."""
+    normalized = normalize_objective(objective)
+    try:
+        return json.dumps(
+            normalized.to_dict(),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise ObjectiveValidationError("objective cannot be canonically serialized") from exc
+
+
+def objective_hash(objective: Objective) -> str:
+    """Return the deterministic SHA-256 hash of the canonical objective."""
+    return hashlib.sha256(canonical_objective_json(objective)).hexdigest()
