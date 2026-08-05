@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from .constitution import ConstitutionAuthority, ConstitutionVerificationError
 from .director import Director
 from .locking import lock_status, project_lock, session_lock
 from .models import PlanStatus
@@ -235,6 +236,10 @@ class SessionManager:
                 raise SessionManagerError("execution is not authorized by project policy")
             if confirm_delivery and not project.policy.allow_delivery:
                 raise SessionManagerError("delivery is not authorized by project policy")
+            try:
+                ConstitutionAuthority().resolve(project.project_id)
+            except ConstitutionVerificationError as exc:
+                raise SessionManagerError(str(exc)) from exc
             return self._transition_locked(
                 session,
                 SessionStatus.EXECUTING,

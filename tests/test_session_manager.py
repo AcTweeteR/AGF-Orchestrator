@@ -120,7 +120,18 @@ def test_execution_checkpoint_requires_both_policy_permissions(tmp_path):
             session.session_id, execute=True, confirm_execution=True, confirm_delivery=True
         )
     assert manager.get(session.session_id).status is SessionStatus.READY
-    authorized = manager.resume(session.session_id, execute=True, confirm_execution=True)
+    from agf_orchestrator import session_manager as session_module
+
+    class Authority:
+        def resolve(self, project_id):
+            return {"status": "VERIFIED"}
+
+    original_authority = session_module.ConstitutionAuthority
+    session_module.ConstitutionAuthority = Authority
+    try:
+        authorized = manager.resume(session.session_id, execute=True, confirm_execution=True)
+    finally:
+        session_module.ConstitutionAuthority = original_authority
     assert authorized.status is SessionStatus.EXECUTING
     assert authorized.execution_report_path is None
 

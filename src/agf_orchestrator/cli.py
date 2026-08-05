@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from .adapters.codex import CodexAdapter
 from .adapters.openhands import OpenHandsSDKAdapter
 from .compliance import ComplianceChecker
+from .constitution import ConstitutionAuthority, ConstitutionVerificationError
 from .delivery import DeliveryPipeline, write_delivery_report
 from .director import Director
 from .execution_models import ExecutionStatus
@@ -224,6 +225,13 @@ def _dirty_policy(project, repository: Path, allow_dirty: bool) -> None:
         )
 
 
+def _verify_constitution(project) -> None:
+    try:
+        ConstitutionAuthority().resolve(project.project_id)
+    except ConstitutionVerificationError as exc:
+        raise ProjectRegistryError(str(exc)) from exc
+
+
 def run_project(args: argparse.Namespace) -> int:
     registry = ProjectRegistry()
     try:
@@ -373,6 +381,8 @@ def run_execute(args: argparse.Namespace) -> int:
         _validate_plan_project(plan, project, target_root)
         if args.execute and not project.policy.allow_live_execution:
             raise ProjectRegistryError("project policy denies live execution")
+        if args.execute:
+            _verify_constitution(project)
         if args.output:
             output = Path(args.output).expanduser().resolve()
             if output == target_root or target_root in output.parents:
@@ -434,6 +444,7 @@ def run_deliver(args: argparse.Namespace) -> int:
                 raise ProjectRegistryError("project policy denies live delivery")
             if not project.policy.require_human_merge:
                 raise ProjectRegistryError("delivery requires human merge approval")
+            _verify_constitution(project)
         output = Path(args.output).expanduser().resolve()
         if output == target_root or target_root in output.parents:
             raise ExecutionValidationError(

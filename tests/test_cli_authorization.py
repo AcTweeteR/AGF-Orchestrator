@@ -146,6 +146,8 @@ def test_live_execute_policy_blocks_before_adapter_and_allows_with_policy(tmp_pa
     assert not called
     registry = ProjectRegistry(state)
     registry._save([replace(project, policy=replace(project.policy, allow_live_execution=True))])
+    assert invoke(monkeypatch, state, args) == 2
+    assert not called
 
 
 def test_plan_identity_cannot_cross_projects(tmp_path, monkeypatch):
@@ -190,6 +192,9 @@ def test_delivery_rejects_no_human_merge_and_passes_effective_limit(tmp_path, mo
             )()
 
     monkeypatch.setattr(cli, "DeliveryPipeline", FakePipeline)
+    monkeypatch.setattr(cli, "ConstitutionAuthority", lambda: type(
+        "Authority", (), {"resolve": lambda self, project_id: {"status": "VERIFIED"}}
+    )())
     args = [
         "deliver",
         "--project",
