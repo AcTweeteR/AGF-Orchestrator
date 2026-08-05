@@ -24,6 +24,9 @@ class ObjectiveStatus(StrEnum):
 _OBJECTIVE_ID = re.compile(r"^objective-[a-z0-9][a-z0-9-]{0,79}$")
 _REQUIREMENT_ID = re.compile(r"^requirement-[a-z0-9][a-z0-9-]{0,79}$")
 _SECRET_SHAPED = re.compile(r"(?i)(api[_-]?key|token|secret|password|authorization)\s*[:=]")
+_AMBIGUOUS_LANGUAGE = re.compile(
+    r"(?i)\b(as appropriate|as soon as possible|best possible|etc\.?|reasonable|soon)\b"
+)
 _MAX_TEXT = 4000
 _MAX_ITEMS = 200
 
@@ -226,3 +229,104 @@ def canonical_objective_json(objective: Objective) -> bytes:
 def objective_hash(objective: Objective) -> str:
     """Return the deterministic SHA-256 hash of the canonical objective."""
     return hashlib.sha256(canonical_objective_json(objective)).hexdigest()
+
+
+class ObjectiveGateStatus(StrEnum):
+    READY = "READY"
+    HUMAN_REQUIRED = "HUMAN_REQUIRED"
+
+
+@dataclass(frozen=True)
+class ObjectiveAnalysis:
+    status: ObjectiveGateStatus
+    contradictions: tuple[str, ...]
+    ambiguities: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status.value,
+            "contradictions": list(self.contradictions),
+            "ambiguities": list(self.ambiguities),
+        }
+
+
+@dataclass(frozen=True)
+class AmendmentProposal:
+    proposal_id: str
+    base_objective_hash: str
+    requested_changes: tuple[str, ...]
+    reason: str
+    status: str = "PROPOSED"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "proposal_id": self.proposal_id,
+            "base_objective_hash": self.base_objective_hash,
+            "requested_changes": list(self.requested_changes),
+            "reason": self.reason,
+            "status": self.status,
+        }
+
+
+def analyze_objective(objective: Objective) -> ObjectiveAnalysis:
+    """Detect bounded contradictions and ambiguities without making decisions."""
+    normalized = normalize_objective(objective)
+    prohibited = set(normalized.prohibited_outcomes)
+    contradictions = tuple(
+        f"requirement {item.requirement_id} conflicts with a prohibited outcome"
+        for item in normalized.requirements
+        if item.statement in prohibited
+    )
+    ambiguities = tuple(
+        sorted(
+            {
+                f"ambiguous language in {label}"
+                for label, values in (
+                    ("objective statement", (normalized.statement,)),
+                    ("requirement", tuple(item.statement for item in normalized.requirements)),
+                    ("constraint", normalized.constraints),
+                    ("completion criterion", normalized.completion_criteria),
+                )
+                for value in values
+                if _AMBIGUOUS_LANGUAGE.search(value)
+            }
+        )
+    )
+    status = (
+        ObjectiveGateStatus.HUMAN_REQUIRED
+        if contradictions or ambiguities
+        else ObjectiveGateStatus.READY
+    )
+    return ObjectiveAnalysis(status, contradictions, ambiguities)
+
+
+def propose_amendment(
+    objective: Objective, requested_changes: tuple[str, ...], reason: str
+) -> AmendmentProposal:
+    """Create a deterministic inert amendment proposal; never approves it."""
+    normalized = normalize_objective(objective)
+    if not requested_changes or any(
+        not isinstance(item, str) or not item.strip() for item in requested_changes
+    ):
+        raise ObjectiveValidationError("requested_changes must be non-empty strings")
+    Objective._bounded_list("requested_changes", requested_changes)
+    Objective._bounded_text("amendment reason", reason)
+    base_hash = objective_hash(normalized)
+    proposal_input = json.dumps(
+        {
+            "base_objective_hash": base_hash,
+            "reason": _normalize_text(reason),
+            "requested_changes": sorted(_normalize_text(item) for item in requested_changes),
+        },
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    proposal_id = "amendment-" + hashlib.sha256(proposal_input).hexdigest()[:16]
+    return AmendmentProposal(
+        proposal_id=proposal_id,
+        base_objective_hash=base_hash,
+        requested_changes=tuple(sorted(_normalize_text(item) for item in requested_changes)),
+        reason=_normalize_text(reason),
+    )
