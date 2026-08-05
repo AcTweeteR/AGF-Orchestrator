@@ -1,0 +1,17 @@
+{
+  "actor": "director",
+  "content_sha256": "cbe7c3c2cce85080e7d3f6b49776d8c6523e5841f1f2c6fe77bc19951ef95f7a",
+  "created_at": "2026-08-05T00:00:00Z",
+  "entry_id": "memory-roadmap-priority",
+  "entry_type": "INVARIANT",
+  "evidence_refs": ["evidence-e2-t4"],
+  "project_id": "project-agf-orchestrator",
+  "requirement_refs": ["requirement-traceability"],
+  "schema_version": "1.0",
+  "sensitivity": "INTERNAL",
+  "summary": "Eligible roadmap items are ordered by bounded priority and stable item ID.",
+  "superseded_at": null,
+  "supersedes_entry_id": null,
+  "tags": ["roadmap", "priority"],
+  "title": "Roadmap priority is deterministic"
+}
