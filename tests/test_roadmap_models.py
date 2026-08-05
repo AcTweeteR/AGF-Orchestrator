@@ -83,3 +83,24 @@ def test_supersession_is_explicit_and_non_destructive():
     assert old.status is RoadmapItemStatus.SUPERSEDED
     assert old.superseded_by == "item-backlog-v2"
     assert any(item.item_id == "item-backlog-v2" for item in superseded.items)
+
+
+def test_eligible_items_are_ready_and_dependency_complete():
+    roadmap = roadmap_from_dict(load_fixture("valid_roadmap.json"))
+
+    assert [item.item_id for item in roadmap.eligible_items()] == ["item-backlog"]
+
+    blocked = replace(
+        roadmap,
+        items=(
+            replace(roadmap.items[0], status=RoadmapItemStatus.READY),
+            roadmap.items[1],
+        ),
+    )
+    assert [item.item_id for item in blocked.eligible_items()] == ["item-foundation"]
+
+
+def test_critical_path_is_deterministic():
+    roadmap = roadmap_from_dict(load_fixture("valid_roadmap.json"))
+
+    assert roadmap.critical_path() == ("item-foundation", "item-backlog")

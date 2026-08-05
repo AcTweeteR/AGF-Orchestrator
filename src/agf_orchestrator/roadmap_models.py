@@ -155,6 +155,46 @@ class Roadmap:
             replace(item, status=RoadmapItemStatus.SUPERSEDED, superseded_by=replacement_id)
         )
 
+    def eligible_items(self) -> tuple[RoadmapItem, ...]:
+        """Return READY items whose dependencies are all COMPLETED, sorted by ID."""
+        items = {item.item_id: item for item in self.items}
+        return tuple(
+            sorted(
+                (
+                    item
+                    for item in self.items
+                    if item.status is RoadmapItemStatus.READY
+                    and all(
+                        items[dependency].status is RoadmapItemStatus.COMPLETED
+                        for dependency in item.depends_on
+                    )
+                ),
+                key=lambda item: item.item_id,
+            )
+        )
+
+    def critical_path(self) -> tuple[str, ...]:
+        """Return one deterministic longest dependency path from root to leaf."""
+        items = {item.item_id: item for item in self.items}
+        memo: dict[str, tuple[str, ...]] = {}
+
+        def path(item_id: str) -> tuple[str, ...]:
+            if item_id in memo:
+                return memo[item_id]
+            item = items[item_id]
+            if not item.depends_on:
+                result = (item_id,)
+            else:
+                predecessors = sorted((path(dependency) for dependency in item.depends_on))
+                result = (*max(predecessors, key=lambda value: (len(value), value)), item_id)
+            memo[item_id] = result
+            return result
+
+        return max(
+            (path(item_id) for item_id in sorted(items)),
+            key=lambda value: (len(value), value),
+        )
+
     def _item(self, item_id: str) -> RoadmapItem:
         matches = [item for item in self.items if item.item_id == item_id]
         if len(matches) != 1:
