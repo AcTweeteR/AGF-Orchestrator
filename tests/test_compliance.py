@@ -26,6 +26,7 @@ def test_compliance_passes_only_with_complete_evidence():
         ["validation: exit_code=0; stdout=; stderr="], ["gate evidence"], True, "abc",
     )
     assert result.status is ComplianceStatus.PASS
+    assert any("objective traceability" in item for item in result.evidence)
 
 
 def test_compliance_fails_rejected_review_and_dirty_caller():

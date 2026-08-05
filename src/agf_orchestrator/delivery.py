@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .adapters.codex import CodexAdapter, CodexProcessResult, redact_secrets
@@ -447,6 +447,15 @@ class DeliveryPipeline:
                         previous_findings,
                         _round_number,
                     )
+                review = replace(
+                    review,
+                    evidence=[
+                        "objective traceability: objective_id="
+                        f"{plan.objective_id or 'UNSET'}; requirement_refs="
+                        f"{sorted(set(plan.requirement_refs or task.requirement_refs))}",
+                        *review.evidence,
+                    ],
+                )
                 if review.status is ReviewStatus.APPROVE:
                     break
                 if review.status is ReviewStatus.HUMAN_REQUIRED:

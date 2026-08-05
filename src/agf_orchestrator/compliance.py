@@ -51,6 +51,11 @@ class ComplianceChecker:
             blockers.append("required evidence is missing")
         else:
             checks.append("evidence exists")
+        checks.append(
+            "objective traceability: objective_id="
+            f"{plan.objective_id or 'UNSET'}; requirement_refs="
+            f"{sorted(set(plan.requirement_refs or task.requirement_refs))}"
+        )
         if not caller_clean:
             blockers.append("caller repository was not clean before delivery")
         else:

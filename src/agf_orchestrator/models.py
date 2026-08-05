@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+import re
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
 
@@ -40,6 +41,7 @@ class Task:
     risk_level: str
     assigned_role: str
     status: PlanStatus
+    requirement_refs: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,8 @@ class ExecutionPlan:
     required_evidence: list[str]
     human_intervention: list[str]
     status: PlanStatus
+    objective_id: str | None = None
+    requirement_refs: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -78,6 +82,20 @@ class ExecutionPlan:
                 raise PlanValidationError(f"{name} is required")
         if not isinstance(self.status, PlanStatus):
             raise PlanValidationError("status is invalid")
+        if self.objective_id is not None and not re.fullmatch(
+            r"objective-[a-z0-9][a-z0-9-]{0,79}", self.objective_id
+        ):
+            raise PlanValidationError("objective_id is invalid")
+        if any(
+            not isinstance(ref, str)
+            or not re.fullmatch(r"requirement-[a-z0-9][a-z0-9-]{0,79}", ref)
+            for ref in self.requirement_refs
+        ):
+            raise PlanValidationError("requirement_refs contain an invalid reference")
+        if len(self.requirement_refs) != len(set(self.requirement_refs)):
+            raise PlanValidationError("requirement_refs must be unique")
+        if self.requirement_refs and self.objective_id is None:
+            raise PlanValidationError("requirement_refs require objective_id")
         if (
             not self.repository.root
             or not self.repository.branch
@@ -98,6 +116,10 @@ class ExecutionPlan:
         task_id_set = set(task_ids)
         for task in self.tasks:
             self._validate_task(task, task_id_set)
+            if not set(task.requirement_refs).issubset(set(self.requirement_refs)):
+                raise PlanValidationError(
+                    f"task {task.task_id} references requirements outside the plan"
+                )
         if self.status is PlanStatus.READY:
             if not self.tasks:
                 raise PlanValidationError("READY plans require at least one task")
@@ -130,6 +152,14 @@ class ExecutionPlan:
             raise PlanValidationError("task required fields are incomplete")
         if task.assigned_role != "Implementer":
             raise PlanValidationError("tasks must be assigned to Implementer")
+        if len(task.requirement_refs) != len(set(task.requirement_refs)):
+            raise PlanValidationError(f"task {task.task_id} requirement_refs must be unique")
+        if any(
+            not isinstance(ref, str)
+            or not re.fullmatch(r"requirement-[a-z0-9][a-z0-9-]{0,79}", ref)
+            for ref in task.requirement_refs
+        ):
+            raise PlanValidationError(f"task {task.task_id} has an invalid requirement reference")
         if not isinstance(task.status, PlanStatus):
             raise PlanValidationError(f"invalid status for task {task.task_id}")
         if not task.acceptance_criteria or not task.validation_commands:
@@ -196,6 +226,8 @@ def plan_from_dict(payload: dict[str, Any]) -> ExecutionPlan:
         required_evidence=payload["required_evidence"],
         human_intervention=payload["human_intervention"],
         status=status,
+        objective_id=payload.get("objective_id"),
+        requirement_refs=payload.get("requirement_refs", []),
     )
     plan.validate()
     return plan

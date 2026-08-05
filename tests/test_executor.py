@@ -81,6 +81,26 @@ def test_dry_run_does_not_invoke_fake_executable(tmp_path):
     assert any(item.startswith("gate checked:") for item in result.evidence)
 
 
+def test_execution_evidence_contains_objective_traceability(tmp_path):
+    init_repo(tmp_path)
+    task = Task(
+        "task-001", "Update allowed file", "Update allowed.txt", ["allowed.txt"], [],
+        ["allowed file contains the new value"], ["git diff --check -- allowed.txt"],
+        "low", "Implementer", PlanStatus.READY, ["requirement-file"],
+    )
+    plan = replace(
+        make_plan(tmp_path),
+        tasks=[task],
+        objective_id="objective-file",
+        requirement_refs=["requirement-file"],
+    )
+
+    result = Executor().execute(plan, "task-001", str(tmp_path))
+
+    assert any("objective_id=objective-file" in item for item in result.evidence)
+    assert any("requirement-file" in item for item in result.evidence)
+
+
 def test_unverified_invocation_syntax_requires_human(monkeypatch, tmp_path):
     init_repo(tmp_path)
     from agf_orchestrator.adapters import codex as codex_module
