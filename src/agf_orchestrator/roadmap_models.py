@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
@@ -44,6 +44,7 @@ class RoadmapItem:
     acceptance_criteria: tuple[str, ...]
     risk_level: str
     status: RoadmapItemStatus
+    superseded_by: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -54,6 +55,7 @@ class RoadmapItem:
             "acceptance_criteria": list(self.acceptance_criteria),
             "risk_level": self.risk_level,
             "status": self.status.value,
+            "superseded_by": self.superseded_by,
         }
 
 
@@ -65,6 +67,30 @@ class Roadmap:
     objective_id: str
     items: tuple[RoadmapItem, ...]
     status: RoadmapStatus
+
+    _TRANSITIONS = {
+        RoadmapItemStatus.TODO: {
+            RoadmapItemStatus.READY,
+            RoadmapItemStatus.BLOCKED,
+            RoadmapItemStatus.SUPERSEDED,
+        },
+        RoadmapItemStatus.READY: {
+            RoadmapItemStatus.IN_PROGRESS,
+            RoadmapItemStatus.BLOCKED,
+            RoadmapItemStatus.SUPERSEDED,
+        },
+        RoadmapItemStatus.IN_PROGRESS: {
+            RoadmapItemStatus.COMPLETED,
+            RoadmapItemStatus.BLOCKED,
+            RoadmapItemStatus.SUPERSEDED,
+        },
+        RoadmapItemStatus.BLOCKED: {
+            RoadmapItemStatus.READY,
+            RoadmapItemStatus.SUPERSEDED,
+        },
+        RoadmapItemStatus.COMPLETED: {RoadmapItemStatus.SUPERSEDED},
+        RoadmapItemStatus.SUPERSEDED: set(),
+    }
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -101,6 +127,50 @@ class Roadmap:
             edges[item.item_id].update(item.depends_on)
         self._validate_acyclic(edges)
 
+    def transition(self, item_id: str, status: RoadmapItemStatus) -> "Roadmap":
+        """Return a new roadmap after one explicit lifecycle transition."""
+        item = self._item(item_id)
+        if status not in self._TRANSITIONS[item.status]:
+            raise RoadmapValidationError(
+                f"invalid lifecycle transition: {item.status.value} -> {status.value}"
+            )
+        if status is RoadmapItemStatus.COMPLETED:
+            items = {candidate.item_id: candidate for candidate in self.items}
+            if any(
+                items[dependency].status is not RoadmapItemStatus.COMPLETED
+                for dependency in item.depends_on
+            ):
+                raise RoadmapValidationError("item cannot complete before dependencies")
+        return self._replace_item(replace(item, status=status))
+
+    def supersede(self, item_id: str, replacement_id: str) -> "Roadmap":
+        """Return a new roadmap with an explicit, non-destructive replacement link."""
+        if item_id == replacement_id:
+            raise RoadmapValidationError("an item cannot supersede itself")
+        item = self._item(item_id)
+        self._item(replacement_id)
+        if item.status is RoadmapItemStatus.SUPERSEDED:
+            raise RoadmapValidationError("superseded item cannot be superseded again")
+        return self._replace_item(
+            replace(item, status=RoadmapItemStatus.SUPERSEDED, superseded_by=replacement_id)
+        )
+
+    def _item(self, item_id: str) -> RoadmapItem:
+        matches = [item for item in self.items if item.item_id == item_id]
+        if len(matches) != 1:
+            raise RoadmapValidationError("roadmap item is missing or ambiguous")
+        return matches[0]
+
+    def _replace_item(self, updated: RoadmapItem) -> "Roadmap":
+        roadmap = replace(
+            self,
+            items=tuple(
+                updated if item.item_id == updated.item_id else item for item in self.items
+            ),
+        )
+        roadmap.validate()
+        return roadmap
+
     @staticmethod
     def _validate_item(item: RoadmapItem) -> None:
         if not _ITEM_ID.fullmatch(item.item_id):
@@ -121,6 +191,10 @@ class Roadmap:
             raise RoadmapValidationError(f"item {item.item_id} status is invalid")
         if not item.risk_level.strip():
             raise RoadmapValidationError(f"item {item.item_id} risk level is required")
+        if item.superseded_by is not None and not _ITEM_ID.fullmatch(item.superseded_by):
+            raise RoadmapValidationError(f"item {item.item_id} superseded_by is invalid")
+        if item.status is not RoadmapItemStatus.SUPERSEDED and item.superseded_by is not None:
+            raise RoadmapValidationError("only SUPERSEDED items may have superseded_by")
 
     @staticmethod
     def _validate_acyclic(edges: dict[str, set[str]]) -> None:
@@ -156,6 +230,7 @@ def roadmap_from_dict(payload: dict[str, Any]) -> Roadmap:
                 acceptance_criteria=tuple(item["acceptance_criteria"]),
                 risk_level=item["risk_level"],
                 status=RoadmapItemStatus(item["status"]),
+                superseded_by=item.get("superseded_by"),
             )
             for item in payload["items"]
         )

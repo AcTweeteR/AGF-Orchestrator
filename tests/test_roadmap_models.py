@@ -1,9 +1,12 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from agf_orchestrator.roadmap_models import (
+    RoadmapItem,
+    RoadmapItemStatus,
     RoadmapStatus,
     RoadmapValidationError,
     roadmap_from_dict,
@@ -51,3 +54,32 @@ def test_duplicate_item_ids_are_rejected():
 
     with pytest.raises(RoadmapValidationError, match="item_id values must be unique"):
         roadmap_from_dict(payload)
+
+
+def test_lifecycle_requires_explicit_valid_transitions_and_dependencies():
+    roadmap = roadmap_from_dict(load_fixture("valid_roadmap.json"))
+
+    progressing = roadmap.transition("item-backlog", RoadmapItemStatus.IN_PROGRESS)
+    completed = progressing.transition("item-backlog", RoadmapItemStatus.COMPLETED)
+
+    assert roadmap.items[1].status is RoadmapItemStatus.READY
+    assert completed.items[1].status is RoadmapItemStatus.COMPLETED
+    with pytest.raises(RoadmapValidationError, match="invalid lifecycle transition"):
+        roadmap.transition("item-backlog", RoadmapItemStatus.COMPLETED)
+
+
+def test_supersession_is_explicit_and_non_destructive():
+    roadmap = roadmap_from_dict(load_fixture("valid_roadmap.json"))
+    replacement = RoadmapItem(
+        "item-backlog-v2", "Replacement backlog", ("requirement-traceability",), (),
+        ("Replacement is explicit",), "LOW", RoadmapItemStatus.READY,
+    )
+    roadmap = replace(roadmap, items=(*roadmap.items, replacement))
+    roadmap.validate()
+
+    superseded = roadmap.supersede("item-backlog", "item-backlog-v2")
+
+    old = next(item for item in superseded.items if item.item_id == "item-backlog")
+    assert old.status is RoadmapItemStatus.SUPERSEDED
+    assert old.superseded_by == "item-backlog-v2"
+    assert any(item.item_id == "item-backlog-v2" for item in superseded.items)
