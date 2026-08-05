@@ -224,6 +224,7 @@ The first implementation tasks are intentionally small:
 | E2-T4 | Add deterministic roadmap priority and version transitions | E2-T3 |
 | E3-T1 | Define Engineering Memory schema and fixtures | E2-T4 |
 | E3-T2 | Add atomic project-isolated memory storage and bounded search | E3-T1 |
+| E3-T3 | Record bounded memory query evidence in planning and review | E3-T2 |
 
 No task is complete until its evidence is stored and the next checkpoint
 is deterministic. E0-T1 is approved as Constitution Foundation v1
@@ -233,11 +234,12 @@ E1–E5 prerequisites. E1-T1 is complete through PR #19; E1-T2 is complete
 through PR #21; E1-T3 is complete through PR #23; E1-T4 is complete through
 PR #25; E2-T1 is complete through PR #27; E2-T2 is complete through PR #29;
 E2-T3 is complete through PR #31; E2-T4 is complete through PR #33; E3-T1
-is complete through PR #35; E3-T2 is now the next dependency-correct task.
+is complete through PR #35; E3-T2 is complete through PR #37; E3-T3 is now
+the next dependency-correct task.
 
-## Checkpoint after PR #35
+## Checkpoint after PR #37
 
-- Active main SHA: `f62c4ce5802012d00a746df94de43b5fca56d17d`.
+- Active main SHA: `57ac3a18d687073d6edbdc5211ebb938cdc26df8`.
 - Completed items: E0-T1 foundation documentation, E0-T2 immutable
   Constitution Authority enforcement, E1-T1 objective schema and fixtures,
   E1-T2 deterministic normalization and hashing, E1-T3 contradiction,
@@ -245,10 +247,12 @@ is complete through PR #35; E3-T2 is now the next dependency-correct task.
   roadmap definition, E2-T1 roadmap schema/dependency validation, E2-T2
   lifecycle/supersession transitions, E2-T3 eligible selection/critical
   path analysis, E2-T4 deterministic priority/version transitions, and E3-T1
-  Engineering Memory schema/fixtures.
+  Engineering Memory schema/fixtures, and E3-T2 atomic storage/bounded
+  search.
 - Evidence: PR #14, PR #15, PR #16, PR #17, PR #18, PR #19, PR #20, PR #21,
   PR #22, PR #23, PR #24, PR #25, PR #26, PR #27, PR #28, PR #29, PR #30,
-  PR #31, PR #32, PR #33, PR #34 and PR #35 merged; 292 tests passed; Ruff
+  PR #31, PR #32, PR #33, PR #34, PR #35, PR #36 and PR #37 merged; 298 tests
+  passed; Ruff
   and diff check
   passed;
   authority, objective and roadmap canaries passed; deterministic Reviewer
@@ -270,5 +274,9 @@ is complete through PR #35; E3-T2 is now the next dependency-correct task.
   immutable, bounded, project-isolated entries with typed memory categories,
   evidence and requirement references, content hashes, sensitivity, explicit
   supersession, and secret/transcript rejection.
-- Next deterministic action: add atomic project-isolated memory storage and
-  bounded search (E3-T2).
+  E3-T2 persists validated entries atomically under project namespaces,
+  serializes writes with the existing project lock, accepts identical
+  retries, rejects conflicting IDs and provides bounded deterministic search
+  that excludes superseded entries.
+- Next deterministic action: record bounded memory query evidence in planning
+  and review (E3-T3).
