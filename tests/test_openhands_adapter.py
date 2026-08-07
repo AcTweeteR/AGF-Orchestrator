@@ -207,6 +207,50 @@ def test_sdk_missing_and_conflicting_terminal_events_block(monkeypatch, tmp_path
     assert conflict.transport_error == "OPENHANDS_EVENT_STREAM_CONFLICT"
 
 
+def test_sdk_finished_without_final_message_blocks(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+    state_event, message_event, error_event = _sdk_event_classes()
+    _fake_sdk(
+        monkeypatch,
+        [state_event("finished")],
+        (state_event, message_event, error_event),
+        final_state="finished",
+    )
+    result = OpenHandsSDKAdapter(timeout=2, allow_llm_env=True).execute(
+        "instruction", str(tmp_path)
+    )
+    assert result.transport_error == "OPENHANDS_FINAL_MESSAGE_MISSING"
+    assert result.human_required is True
+
+
+def test_sdk_accepts_enum_agent_source_and_mapping_text(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
+    state_event, message_event, error_event = _sdk_event_classes()
+
+    class AgentSource:
+        value = "agent"
+
+    class TypedMessageEvent(message_event):
+        source = AgentSource()
+
+        def __init__(self, text):
+            self.llm_message = type("Message", (), {"content": [{"text": text}]})()
+
+    _fake_sdk(
+        monkeypatch,
+        [TypedMessageEvent("done"), state_event("finished")],
+        (state_event, TypedMessageEvent, error_event),
+        final_state="finished",
+    )
+    result = OpenHandsSDKAdapter(timeout=2, allow_llm_env=True).execute(
+        "instruction", str(tmp_path)
+    )
+    assert result.transport_error is None
+    assert result.final_message == "done"
+
+
 def test_sdk_timeout_workspace_and_secret_redaction(monkeypatch, tmp_path):
     monkeypatch.setenv("LLM_API_KEY", "secret-value")
     monkeypatch.setenv("LLM_MODEL", "gemini/gemini-2.5-flash")
@@ -323,6 +367,7 @@ def test_sdk_transitional_states_do_not_conflict_with_finished(monkeypatch, tmp_
     _fake_sdk(
         monkeypatch,
         [
+            message_event("done"),
             state_event("idle"),
             state_event("running"),
             state_event("stopping"),
@@ -345,7 +390,7 @@ def test_sdk_duplicate_finished_observations_are_consistent(monkeypatch, tmp_pat
     state_event, message_event, error_event = _sdk_event_classes()
     _fake_sdk(
         monkeypatch,
-        [state_event("finished"), state_event("finished")],
+        [message_event("done"), state_event("finished"), state_event("finished")],
         (state_event, message_event, error_event),
         final_state="finished",
     )
@@ -362,7 +407,7 @@ def test_sdk_irrelevant_error_named_event_does_not_conflict(monkeypatch, tmp_pat
     state_event, message_event, error_event = _sdk_event_classes()
     _fake_sdk(
         monkeypatch,
-        [error_event(), state_event("running")],
+        [message_event("done"), error_event(), state_event("running")],
         (state_event, message_event, error_event),
         final_state="finished",
     )

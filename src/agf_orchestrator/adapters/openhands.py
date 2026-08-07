@@ -43,6 +43,7 @@ OPENHANDS_JSON_TRUNCATED = "OPENHANDS_JSON_TRUNCATED"
 OPENHANDS_JSON_INVALID = "OPENHANDS_JSON_INVALID"
 OPENHANDS_NO_TERMINAL_STATE = "OPENHANDS_NO_TERMINAL_STATE"
 OPENHANDS_TASK_FAILED = "OPENHANDS_TASK_FAILED"
+OPENHANDS_FINAL_MESSAGE_MISSING = "OPENHANDS_FINAL_MESSAGE_MISSING"
 OPENHANDS_PROVIDER_ERROR = "OPENHANDS_PROVIDER_ERROR"
 OPENHANDS_TOOL_ERROR = "OPENHANDS_TOOL_ERROR"
 OPENHANDS_WORKSPACE_ERROR = "OPENHANDS_WORKSPACE_ERROR"
@@ -119,6 +120,30 @@ def _bounded_event_error(event: object, secrets: tuple[str, ...]) -> str:
     return redact_secrets(
         f"{type(event).__name__}: {detail}", limit=500, additional_secrets=secrets
     )
+
+
+def _normalized_event_value(value: object) -> str:
+    raw = getattr(value, "value", value)
+    return _normalized_state(raw) if isinstance(raw, str) else ""
+
+
+def _message_text(message: object) -> str:
+    """Extract text from SDK message blocks across SDK 1.21 representations."""
+    content = getattr(message, "content", message)
+    if not isinstance(content, (list, tuple)):
+        content = [content]
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, str):
+            parts.append(item)
+            continue
+        if isinstance(item, dict):
+            text = item.get("text")
+        else:
+            text = getattr(item, "text", None)
+        if isinstance(text, str):
+            parts.append(text)
+    return "".join(parts).strip()
 
 
 def _validate_llm_environment(
@@ -573,6 +598,10 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
         agent_error_summary: str | None = None
         callback_queue_drained = False
         conversation_id_matched = True
+        callback_lock = threading.Lock()
+        callback_inflight = 0
+        callback_drained = threading.Event()
+        callback_drained.set()
 
         def on_event(event: object) -> None:
             nonlocal final_message, event_count, conversation_id_matched
@@ -603,14 +632,10 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
                         else:
                             unknown_callback_count += 1
                 return
-            if isinstance(event, MessageEvent) and event.source == "agent":
-                content = getattr(event, "llm_message", None)
-                parts = getattr(content, "content", []) if content is not None else []
-                text = "".join(
-                    getattr(part, "text", "")
-                    for part in parts
-                    if isinstance(getattr(part, "text", None), str)
-                ).strip()
+            if isinstance(event, MessageEvent) and _normalized_event_value(
+                getattr(event, "source", None)
+            ) == "agent":
+                text = _message_text(getattr(event, "llm_message", None))
                 if text:
                     final_message = text[-4000:]
                 return
@@ -619,12 +644,20 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
                 agent_error_summary = _bounded_event_error(event, secrets)
 
         def safe_event_callback(event: object) -> None:
-            nonlocal callback_error
+            nonlocal callback_error, callback_inflight
+            with callback_lock:
+                callback_inflight += 1
+                callback_drained.clear()
             try:
                 on_event(event)
             except Exception as exc:
                 callback_error = exc
                 raise
+            finally:
+                with callback_lock:
+                    callback_inflight -= 1
+                    if callback_inflight == 0:
+                        callback_drained.set()
 
         try:
             llm = LLM(
@@ -676,7 +709,7 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
             timed_out = True
         else:
             timed_out = False
-            callback_queue_drained = True
+            callback_queue_drained = callback_drained.wait(timeout=1.0)
 
         try:
             final_state = conversation.state.execution_status
@@ -761,6 +794,10 @@ class OpenHandsSDKAdapter(OpenHandsAdapter):
                     completion_source = "none"
                 else:
                     status_code = "OPENHANDS_UNKNOWN_EXECUTION_STATUS"
+                    human_required = True
+                    completion_source = "none"
+                if status_code is None and not final_message:
+                    status_code = OPENHANDS_FINAL_MESSAGE_MISSING
                     human_required = True
                     completion_source = "none"
             report_agent_error = agent_error_summary and (
