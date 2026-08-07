@@ -123,17 +123,19 @@ audited, and resumable; bootstrap PR workflow remains compatible.
 
 #### E6 execution backlog
 
-E5 is complete through E5-T3 and PR #61. The following bounded tasks
-decompose only the approved E6 scope. Task state is explicit: only E6-T1 is
-`READY`; every later task remains `PLANNED` until all listed dependencies
-complete with their required evidence. No task grants authority to change
+E5 is complete through E5-T3 and PR #61. E6-T1 is complete through merged
+PR #65, with its required evidence retained in the AGF state store. The
+following bounded tasks decompose only the approved E6 scope. Task state is
+explicit: E6-T2 is the next `READY` task; every later task remains `PLANNED`
+until all listed dependencies complete with their required evidence. No task
+grants authority to change
 the Constitution, protected policies, risk thresholds, or human merge
 requirement.
 
 | ID | Objective | Scope | Dependencies | Expected files/components | Acceptance criteria | Validation requirements | Risk | Rollback |
 |---|---|---|---|---|---|---|---|---|
-| E6-T1 (`READY`) | Define an immutable merge-gate decision record and deterministic gate aggregation. | Combine plan, implementation, review, Compliance, validation, risk, caller-clean, and base-SHA evidence into one bounded decision without authorizing merge. | E5-T3 | `src/agf_orchestrator/merge_models.py`; `src/agf_orchestrator/merge_policy.py`; focused tests. | Required gates are explicit; missing, contradictory, stale, or failed evidence blocks; forbidden risk classes cannot produce authorization; output is deterministic and serializable. | Full pytest; Ruff; diff check; valid, missing, contradictory, and forbidden-risk fixtures; restart/idempotency check. | HIGH: incorrect aggregation could permit unsafe delivery. | Additive schema/module only; revert the task commit and retain existing delivery gates. |
-| E6-T2 (`PLANNED`) | Authorize only low-risk merges after all mandatory gates pass. | Apply the E6-T1 decision to the existing controlled delivery path; preserve non-default branch/worktree and human merge policy. | E6-T1 | `src/agf_orchestrator/delivery.py`; `src/agf_orchestrator/git_delivery.py`; merge-policy tests. | Only a fully evidenced LOW decision can be eligible; no direct main/master execution or autonomous merge is introduced; repeated authorization is idempotent. | Full pytest; Ruff; diff check; disposable low-risk delivery and direct-default-branch failure canaries. | HIGH: merge authorization is a protected control boundary. | Revert authorization integration; existing delivery remains fail-closed. |
+| E6-T1 (`COMPLETED`) | Define an immutable merge-gate decision record and deterministic gate aggregation. | Combine plan, implementation, review, Compliance, validation, risk, caller-clean, and base-SHA evidence into one bounded decision without authorizing merge. | E5-T3 | `src/agf_orchestrator/merge_models.py`; `src/agf_orchestrator/merge_policy.py`; focused tests. | Required gates are explicit; missing, contradictory, stale, or failed evidence blocks; forbidden risk classes cannot produce authorization; output is deterministic and serializable. | Full pytest; Ruff; diff check; valid, missing, contradictory, and forbidden-risk fixtures; restart/idempotency check. | HIGH: incorrect aggregation could permit unsafe delivery. | Additive schema/module only; revert the task commit and retain existing delivery gates. |
+| E6-T2 (`READY`) | Authorize only low-risk merges after all mandatory gates pass. | Apply the E6-T1 decision to the existing controlled delivery path; preserve non-default branch/worktree and human merge policy. | E6-T1 | `src/agf_orchestrator/delivery.py`; `src/agf_orchestrator/git_delivery.py`; merge-policy tests. | Only a fully evidenced LOW decision can be eligible; no direct main/master execution or autonomous merge is introduced; repeated authorization is idempotent. | Full pytest; Ruff; diff check; disposable low-risk delivery and direct-default-branch failure canaries. | HIGH: merge authorization is a protected control boundary. | Revert authorization integration; existing delivery remains fail-closed. |
 | E6-T3 (`PLANNED`) | Produce bounded medium-risk summaries in the Director inbox. | Convert an evidenced MEDIUM decision into a concise, project-isolated, auditable human action item. | E6-T1, E6-T2 | `src/agf_orchestrator/inbox.py`; `src/agf_orchestrator/scheduler_journal.py`; inbox/report models and tests. | Summary contains stable identity, risk, failed/pending gates, evidence references, and required human action; no secrets or transcripts; no merge authorization. | Full pytest; Ruff; diff check; bounded serialization, persistence, restart, idempotency, isolation, and secret-rejection tests. | MEDIUM: omission or leakage could mislead human decisions. | Revert summary/inbox additions; retain existing inbox behavior. |
 | E6-T4 (`PLANNED`) | Route HIGH and CRITICAL decisions to explicit human escalation. | Preserve conservative risk outcomes and expose only bounded decision context; do not lower risk or infer approval. | E6-T1, E6-T3 | `src/agf_orchestrator/inbox.py`; `src/agf_orchestrator/risk_models.py`; escalation/report tests. | HIGH/CRITICAL and UNKNOWN states cannot authorize merge; human decision is explicit, auditable, resumable, and required before continuation. | Full pytest; Ruff; diff check; high/critical/unknown fixtures; restart/resume and fail-closed canaries. | HIGH: escalation errors can bypass safety. | Revert escalation integration; fail closed on unresolved high/critical decisions. |
 | E6-T5 (`PLANNED`) | Add a bounded kill-switch gate to merge decisions. | Consume the existing policy-controlled stop signal at the final authorization boundary; do not create a new authority source. | E6-T2, E6-T4 | `src/agf_orchestrator/merge_policy.py`; `src/agf_orchestrator/constitution.py`; policy/merge tests. | Active kill switch blocks authorization and delivery; state is observable and auditable; clearing it never retroactively authorizes stale evidence. | Full pytest; Ruff; diff check; enabled/disabled, stale-evidence, restart, and idempotency canaries. | CRITICAL: a faulty kill switch could permit forbidden execution. | Revert integration; default to blocked authorization. |
@@ -359,5 +361,6 @@ implemented in the current delivery.
   aggregates by maximum severity. E5-T3 carries a bounded risk summary into
   deterministic Reviewer and Compliance checks, rejects invalid assessments,
   and blocks when required risk evidence is absent.
-- E5 is complete through E5-T3 and PR #61. The next approved executable
-  task is E6-T1, which is `READY`; E6-T2 through E6-T8 remain `PLANNED`.
+- E5 is complete through E5-T3 and PR #61. E6-T1 is complete through PR
+  #65, and the next approved executable task is E6-T2, which is `READY`;
+  E6-T3 through E6-T8 remain `PLANNED`.
