@@ -25,7 +25,13 @@ from .executor import (
     _validate_gates,
     load_plan,
 )
-from .git_delivery import DraftPRCreator, GitDelivery, GitDeliveryError, sanitize_branch_name
+from .git_delivery import (
+    DraftPRCreator,
+    GitDelivery,
+    GitDeliveryError,
+    sanitize_branch_name,
+)
+from .merge_models import MergeDecision
 from .models import ExecutionPlan, Task
 from .preflight import PreflightError, collect_repository
 from .review_models import (
@@ -359,7 +365,13 @@ class DeliveryPipeline:
         self.max_correction_rounds = max_correction_rounds
 
     def deliver(
-        self, plan: ExecutionPlan, task_id: str, repository: str, *, execute: bool
+        self,
+        plan: ExecutionPlan,
+        task_id: str,
+        repository: str,
+        *,
+        execute: bool,
+        merge_decision: MergeDecision | dict[str, object] | None = None,
     ) -> DeliveryReport:
         task = _task(plan, task_id)
         delivery_id = _delivery_id(plan.plan_id, task_id)
@@ -502,12 +514,17 @@ class DeliveryPipeline:
             )
             if compliance.status is not ComplianceStatus.PASS:
                 raise ExecutionValidationError("; ".join(compliance.blocking_issues))
+            if task.task_id == "E6-T2" and merge_decision is None:
+                raise ExecutionValidationError(
+                    "E6-T2 delivery requires an externally evidenced LOW decision"
+                )
             git_result = GitDelivery().deliver(
                 repository,
                 base_sha,
                 branch,
                 attempt.patch.path,
                 task,
+                merge_decision=merge_decision,
                 expected_patch_sha256=attempt.patch.sha256,
                 validation_timeout=self.validation_timeout,
             )
