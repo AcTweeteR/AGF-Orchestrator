@@ -1,5 +1,6 @@
 import hashlib
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -8,10 +9,13 @@ from agf_orchestrator.git_delivery import (
     GitDelivery,
     GitDeliveryError,
     RemoteBranchClassification,
+    RemoteBranchEvidence,
     classify_remote_branch,
+    persist_remote_uncertainty,
     sanitize_branch_name,
 )
 from agf_orchestrator.models import PlanStatus, Task
+from agf_orchestrator.scheduler_journal import SchedulerJournal
 
 
 def git(path, *args, check=True):
@@ -214,8 +218,62 @@ def test_delivery_preflight_reports_uncertain_remote_state(monkeypatch, tmp_path
             else _git_original(str(root), *args, **kwargs)
         ),
     )
+    captured = []
     with pytest.raises(GitDeliveryError, match="remote branch state is uncertain"):
-        GitDelivery().validate_target(str(root), base, "agf/plan/task-001")
+        GitDelivery().validate_target(
+            str(root), base, "agf/plan/task-001", uncertainty_handler=captured.append
+        )
+    assert captured[0].inbox_payload(
+        project_id="project-efc8e8ef7be7050b", task_id="task-e6-t6"
+    )["classification"] == "UNCERTAIN"
+    item = persist_remote_uncertainty(
+        captured[0], project_id="project-efc8e8ef7be7050b", task_id="task-e6-t6",
+        state_dir=tmp_path / "state",
+    )
+    assert item.failed_gates == ("remote_state",)
+    assert item.uncertainty_kind == "UNAVAILABLE"
 
 
 _git_original = git_delivery_module._git
+
+
+def test_real_delivery_routes_uncertainty_before_patch_mutation(monkeypatch, tmp_path):
+    root = repo(tmp_path)
+    base = git(root, "rev-parse", "HEAD").stdout.strip()
+    patch = patch_file(root, tmp_path)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(
+        git_delivery_module,
+        "_git",
+        lambda *args, **kwargs: (
+            _remote_result(stderr="fatal: could not resolve host\n", returncode=128)
+            if args and args[0] == "ls-remote"
+            else _git_original(str(root), *args, **kwargs)
+        ),
+    )
+    with pytest.raises(GitDeliveryError, match="remote branch state is uncertain"):
+        GitDelivery(push=False).deliver(
+            str(root), base, "agf/plan/task-001", str(patch), task(),
+            project_id="project-0123456789abcdef",
+        )
+    assert git(
+        root, "show-ref", "--verify", "refs/heads/agf/plan/task-001", check=False
+    ).returncode != 0
+    journal = SchedulerJournal(
+        tmp_path / ".agf-orchestrator", "project-0123456789abcdef", "scheduler-delivery"
+    )
+    assert journal.open_inbox()[0].risk_class == "HIGH"
+    assert journal.open_inbox()[0].uncertainty_kind == "UNAVAILABLE"
+    for index, kind in enumerate(("DIVERGENT", "CONTRADICTORY"), start=1):
+        persist_remote_uncertainty(
+            RemoteBranchEvidence(
+                RemoteBranchClassification.UNCERTAIN,
+                f"refs/heads/agf/uncertain-{index}", 0, None, "REMOTE_ERROR",
+                "fixture", "live", kind,
+            ),
+            project_id="project-0123456789abcdef", task_id=f"task-e6-t6-{index}",
+            state_dir=tmp_path / ".agf-orchestrator",
+        )
+    assert {
+        item.uncertainty_kind for item in journal.open_inbox()
+    } == {"UNAVAILABLE", "DIVERGENT", "CONTRADICTORY"}

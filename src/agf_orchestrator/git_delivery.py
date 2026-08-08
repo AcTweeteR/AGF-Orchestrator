@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .executor import _changed_paths, _run_validations, _status_lines
 from .merge_models import (
@@ -29,6 +29,7 @@ from .models import Task
 from .policy_authority import PolicyActivationError, PolicyAuthority
 from .policy_state_store import PolicyStateError, PolicyStateStore
 from .risk_models import risk_from_dict
+from .scheduler_journal import InboxItem, SchedulerJournal
 
 
 class GitDeliveryError(RuntimeError):
@@ -54,6 +55,7 @@ class RemoteBranchEvidence:
     stderr_category: str
     source: str
     freshness: str
+    uncertainty_kind: str = "NONE"
 
     def to_dict(self) -> dict[str, str | int | None]:
         return {
@@ -64,8 +66,65 @@ class RemoteBranchEvidence:
             "stderr_category": self.stderr_category,
             "source": self.source,
             "freshness": self.freshness,
+            "uncertainty_kind": self.uncertainty_kind,
         }
 
+    def inbox_payload(self, *, project_id: str, task_id: str) -> dict[str, str]:
+        """Return bounded Director-inbox evidence for remote uncertainty."""
+        if self.classification is not RemoteBranchClassification.UNCERTAIN:
+            raise GitDeliveryError("only uncertain remote evidence can enter the inbox")
+        if (
+            not re.fullmatch(r"project-[0-9a-f]{16}", project_id)
+            or not re.fullmatch(r"task-[a-z0-9][a-z0-9-]{2,127}", task_id)
+            or not re.fullmatch(r"refs/heads/[A-Za-z0-9._/-]{1,200}", self.queried_ref)
+            or len(self.stderr_category) > 64
+        ):
+            raise GitDeliveryError("remote uncertainty identity is invalid")
+        return {
+            "title": "Remote state requires reconciliation",
+            "project_id": project_id,
+            "task_id": task_id,
+            "summary": (
+                f"Remote ref {self.queried_ref} is UNCERTAIN; "
+                f"kind={self.uncertainty_kind}; source={self.source}; "
+                f"category={self.stderr_category}."
+            ),
+            "required_action": "Reconcile remote identity and branch state before delivery.",
+            "evidence_ref": self.queried_ref,
+            "classification": self.classification.value,
+            "uncertainty_kind": self.uncertainty_kind,
+        }
+
+
+def persist_remote_uncertainty(
+    evidence: RemoteBranchEvidence, *, project_id: str, task_id: str,
+    state_dir: str | Path | None = None,
+) -> InboxItem:
+    """Route one uncertain remote observation into the bounded Director inbox."""
+    payload = evidence.inbox_payload(project_id=project_id, task_id=task_id)
+    digest = hashlib.sha256(
+        f"{project_id}:{task_id}:{evidence.queried_ref}".encode("utf-8")
+    ).hexdigest()
+    inbox_id = "inbox-" + str(int(digest, 16))[:16]
+    item = InboxItem(
+        inbox_id=inbox_id,
+        project_id=project_id,
+        scheduler_id="scheduler-delivery",
+        title=payload["title"],
+        summary=payload["summary"],
+        required_action=payload["required_action"],
+        decision_id="decision-" + digest[:32],
+        task_id=task_id,
+        risk_class="HIGH",
+        failed_gates=("remote_state",),
+        evidence_refs=(evidence.queried_ref,),
+        policy_id="remote-state-policy",
+        policy_hash=digest,
+        uncertainty_kind=payload["uncertainty_kind"],
+    )
+    return SchedulerJournal(
+        state_dir or (Path.home() / ".agf-orchestrator"), project_id, "scheduler-delivery"
+    ).add_inbox(item)
 
 def _git(repository: str, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -113,6 +172,7 @@ def classify_remote_branch(repository: str, branch: str) -> RemoteBranchEvidence
             stderr_category,
             "git ls-remote --heads origin",
             "live",
+            "UNAVAILABLE",
         )
     lines = result.stdout.splitlines()
     if not lines:
@@ -124,10 +184,12 @@ def classify_remote_branch(repository: str, branch: str) -> RemoteBranchEvidence
             stderr_category,
             "git ls-remote --heads origin",
             "live",
+            "ABSENT",
         )
     if len(lines) != 1:
         classification = RemoteBranchClassification.UNCERTAIN
         matched_sha = None
+        uncertainty_kind = "DIVERGENT"
     else:
         fields = lines[0].split("\t")
         candidate_sha = fields[0] if len(fields) == 2 and _REMOTE_SHA.fullmatch(fields[0]) else None
@@ -139,6 +201,10 @@ def classify_remote_branch(repository: str, branch: str) -> RemoteBranchEvidence
         matched_sha = (
             candidate_sha if classification is RemoteBranchClassification.PRESENT else None
         )
+        uncertainty_kind = (
+            "NONE" if classification is not RemoteBranchClassification.UNCERTAIN
+            else "CONTRADICTORY"
+        )
     return RemoteBranchEvidence(
         classification,
         queried_ref,
@@ -147,6 +213,7 @@ def classify_remote_branch(repository: str, branch: str) -> RemoteBranchEvidence
         stderr_category,
         "git ls-remote --heads origin",
         "live",
+        uncertainty_kind,
     )
 
 
@@ -192,7 +259,8 @@ class GitDelivery:
         self.push = push
 
     def validate_target(
-        self, repository: str, base_sha: str, branch: str
+        self, repository: str, base_sha: str, branch: str,
+        *, uncertainty_handler: Callable[[RemoteBranchEvidence], None] | None = None,
     ) -> RemoteBranchEvidence:
         """Validate the delivery target before any agent execution occurs."""
         if branch in {"main", "master"} or branch.startswith(("main/", "master/")):
@@ -204,6 +272,8 @@ class GitDelivery:
         if remote.classification is RemoteBranchClassification.PRESENT:
             raise GitDeliveryError(f"delivery branch already exists remotely: {branch}")
         if remote.classification is RemoteBranchClassification.UNCERTAIN:
+            if uncertainty_handler is not None:
+                uncertainty_handler(remote)
             raise GitDeliveryError(
                 "remote branch state is uncertain: "
                 f"{remote.queried_ref}; stderr_category={remote.stderr_category}"
@@ -228,7 +298,14 @@ class GitDelivery:
         expected_patch_sha256: str | None = None,
         validation_timeout: float = 60.0,
     ) -> GitDeliveryResult:
-        self.validate_target(repository, base_sha, branch)
+        handler = (
+            None
+            if project_id is None
+            else lambda evidence: persist_remote_uncertainty(
+                evidence, project_id=project_id, task_id=task.task_id
+            )
+        )
+        self.validate_target(repository, base_sha, branch, uncertainty_handler=handler)
         patch_bytes = Path(patch_path).read_bytes()
         if (
             expected_patch_sha256
