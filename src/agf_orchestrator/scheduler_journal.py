@@ -6,7 +6,8 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .locking import project_lock
@@ -45,6 +46,9 @@ class InboxItem:
     evidence_refs: tuple[str, ...] = ()
     policy_id: str = ""
     policy_hash: str = ""
+    resolution_actor: str = ""
+    resolution_outcome: str = ""
+    resolved_at: str = ""
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -63,6 +67,9 @@ class InboxItem:
             "evidence_refs": list(self.evidence_refs),
             "policy_id": self.policy_id,
             "policy_hash": self.policy_hash,
+            "resolution_actor": self.resolution_actor,
+            "resolution_outcome": self.resolution_outcome,
+            "resolved_at": self.resolved_at,
         }
 
 
@@ -126,6 +133,30 @@ class SchedulerJournal:
             )[:limit]
         )
 
+    def resolve_inbox(self, inbox_id: str, *, actor: str, outcome: str) -> InboxItem:
+        """Record an explicit human resolution idempotently."""
+        if not isinstance(inbox_id, str) or not inbox_id.startswith("inbox-"):
+            raise SchedulerJournalError("inbox ID is invalid")
+        self._bounded_text(actor)
+        self._bounded_text(outcome)
+        with project_lock(self.state_dir, self.project_id, "scheduler-inbox-resolve", timeout=5.0):
+            events, inbox = self._load_unlocked()
+            existing = next((item for item in inbox if item.inbox_id == inbox_id), None)
+            if existing is None:
+                raise SchedulerJournalError("inbox ID does not exist")
+            if existing.status == InboxStatus.RESOLVED:
+                if (existing.resolution_actor, existing.resolution_outcome) != (actor, outcome):
+                    raise SchedulerJournalError("inbox resolution conflicts with existing result")
+                return existing
+            resolved = replace(
+                existing, status=InboxStatus.RESOLVED, resolution_actor=actor,
+                resolution_outcome=outcome, resolved_at=_now(),
+            )
+            self._save_unlocked(
+                events, [resolved if item.inbox_id == inbox_id else item for item in inbox]
+            )
+            return resolved
+
     def _load_unlocked(self) -> tuple[list[SchedulerEvent], list[InboxItem]]:
         if not self.path.exists():
             return [], []
@@ -178,6 +209,7 @@ class SchedulerJournal:
         event = SchedulerEvent(**payload)
         if not _ID.fullmatch(event.event_id) or event.sequence < 1:
             raise SchedulerJournalError("event is invalid")
+        SchedulerJournal._bounded_text(event.summary)
         return event
 
     def _inbox_from_dict(self, payload: dict) -> InboxItem:
@@ -189,21 +221,28 @@ class SchedulerJournal:
             "decision_id", "task_id", "risk_class", "failed_gates", "pending_gates",
             "evidence_refs", "policy_id", "policy_hash",
         }
-        if not isinstance(payload, dict) or set(payload) not in (legacy, extended):
+        resolved = extended | {"resolution_actor", "resolution_outcome", "resolved_at"}
+        if not isinstance(payload, dict) or set(payload) not in (legacy, extended, resolved):
             raise SchedulerJournalError("inbox schema is invalid")
         if set(payload) == legacy:
             payload = {
                 **payload, "decision_id": "", "task_id": "", "risk_class": "",
                 "failed_gates": (), "pending_gates": (), "evidence_refs": (),
-                "policy_id": "", "policy_hash": "",
+                "policy_id": "", "policy_hash": "", "resolution_actor": "",
+                "resolution_outcome": "", "resolved_at": "",
             }
-        else:
+        elif set(payload) == extended:
             payload = {
-                **payload,
-                "failed_gates": tuple(payload["failed_gates"]),
-                "pending_gates": tuple(payload["pending_gates"]),
-                "evidence_refs": tuple(payload["evidence_refs"]),
+                **payload, "resolution_actor": "", "resolution_outcome": "", "resolved_at": "",
             }
+        for field in ("failed_gates", "pending_gates", "evidence_refs"):
+            value = payload[field]
+            if isinstance(value, list):
+                if any(not isinstance(entry, str) for entry in value):
+                    raise SchedulerJournalError("inbox evidence list is invalid")
+                payload[field] = tuple(value)
+            elif not isinstance(value, tuple):
+                raise SchedulerJournalError("inbox evidence list is invalid")
         item = InboxItem(**payload)
         self._validate_inbox(item)
         return item
@@ -225,7 +264,7 @@ class SchedulerJournal:
         if item.decision_id:
             if not re.fullmatch(r"decision-[a-f0-9]{32}", item.decision_id):
                 raise SchedulerJournalError("inbox decision identity is invalid")
-            if not item.task_id or item.risk_class != "MEDIUM":
+            if not item.task_id or item.risk_class not in {"MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"}:
                 raise SchedulerJournalError("inbox decision context is invalid")
             if item.policy_hash and not re.fullmatch(r"[a-f0-9]{64}", item.policy_hash):
                 raise SchedulerJournalError("inbox policy hash is invalid")
@@ -234,6 +273,15 @@ class SchedulerJournal:
             self._bounded_list(item.evidence_refs)
             self._bounded_text(item.task_id)
             self._bounded_text(item.policy_id)
+        if item.status == InboxStatus.OPEN and any(
+            (item.resolution_actor, item.resolution_outcome, item.resolved_at)
+        ):
+            raise SchedulerJournalError("open inbox cannot contain resolution")
+        if item.status == InboxStatus.RESOLVED:
+            self._bounded_text(item.resolution_actor)
+            self._bounded_text(item.resolution_outcome)
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", item.resolved_at):
+                raise SchedulerJournalError("resolved inbox timestamp is invalid")
 
     @classmethod
     def _bounded_list(cls, values: tuple[str, ...]) -> None:
@@ -256,3 +304,7 @@ class SchedulerJournal:
     def _validate_limit(limit: int) -> None:
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= _MAX_RECORDS:
             raise SchedulerJournalError("journal limit is invalid")
+
+
+def _now() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
