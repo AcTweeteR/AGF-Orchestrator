@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import pytest
 
@@ -18,3 +19,9 @@ def isolate_llm_environment():
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+@pytest.fixture(autouse=True)
+def isolate_external_agf_state(monkeypatch, tmp_path):
+    """Keep tests away from the owner's canonical external state root."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
