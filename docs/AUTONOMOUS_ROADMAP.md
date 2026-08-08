@@ -226,6 +226,21 @@ atomic/reversible activation pass; a known-good version remains available;
 constitutional/policy changes cannot self-activate; controlled pilots
 demonstrate autonomous continuation.
 
+#### E8 execution backlog
+
+E8 had no previously defined executable tasks. This deterministic
+decomposition derives only from the approved E8 scope and acceptance criteria;
+it adds no release, production, or constitutional authority. E8-T1 is `READY`.
+E8-T2 through E8-T4 remain `PLANNED`, and the activation/transfer boundaries
+are explicitly CRITICAL until separately authorized.
+
+| ID | Objective | Scope | Dependencies | Expected files/components | Acceptance criteria | Validation requirements | Risk | Rollback |
+|---|---|---|---|---|---|---|---|---|
+| E8-T1 (`READY`) | Validate immutable self-hosting candidates. | Define candidate identity, artifact integrity, compatibility evidence, known-good pin, and isolated validation without in-place mutation. | E7-T3 | `docs/AUTONOMOUS_ROADMAP.md`; candidate validation evidence. | Candidate validation is deterministic and restart-safe; current Director remains authoritative; no activation or production mutation occurs. | Full repository validation; Ruff; `git diff --check`; disposable candidate success/failure, restart, integrity and secret-scan canaries; independent review and Compliance PASS. | HIGH: invalid candidates could corrupt self-hosting. | Revert candidate evidence; retain known-good version. |
+| E8-T2 (`PLANNED`) | Prove atomic candidate activation and rollback. | Specify reversible activation transaction, pinned rollback target, generation and crash recovery without self-mutation. | E8-T1 | `docs/AUTONOMOUS_ROADMAP.md`; activation/rollback evidence. | Activation and rollback are atomic, crash-safe and owner-controlled; Constitution/policy changes cannot self-activate. | Crash/race/restart/idempotency/security canaries; independent review and Compliance PASS. | CRITICAL: activation changes the execution authority boundary. | HUMAN_REQUIRED; restore pinned known-good candidate. |
+| E8-T3 (`PLANNED`) | Record directing version and kill-switch behavior. | Bind directing-version evidence to verified candidate state and preserve immediate owner kill-switch control. | E8-T2 | `docs/AUTONOMOUS_ROADMAP.md`; directing-version/kill-switch evidence. | Stale or mismatched directing versions fail closed; kill switch remains owner-controlled and auditable. | Stale-generation, replay, fail-closed and race canaries; independent review and Compliance PASS. | CRITICAL: modifies the self-hosting authority boundary. | HUMAN_REQUIRED; retain provisional Director. |
+| E8-T4 (`PLANNED`) | Demonstrate controlled transfer to AGF. | Run only disposable/controlled pilots proving restart, isolation, rollback and autonomous continuation after verified transfer. | E8-T1, E8-T2, E8-T3 | `docs/AUTONOMOUS_ROADMAP.md`; pilot evidence. | No real production mutation; transfer is reversible, kill-switchable and constitutionally bounded; all pilot failures checkpoint safely. | Controlled success/failure pilots; full validation; independent review and Compliance PASS. | CRITICAL: transfer changes the directing authority. | HUMAN_REQUIRED; abort pilot and restore provisional Director. |
+
 ### E9 — Dynamic capability discovery and provider intelligence
 
 Scope: local-first discovery of approved interfaces, model enumeration,
@@ -329,6 +344,13 @@ The first implementation tasks are intentionally small:
 | E6-T6 | Escalate remote uncertainty safely | E6-T2, E6-T4, E6-T5 |
 | E6-T7 | Generate bounded executive decision summaries | E6-T3, E6-T4, E6-T6 |
 | E6-T8 | Prove E6 compatibility with bootstrap delivery | E6-T2, E6-T5, E6-T6, E6-T7 |
+| E7-T1 | Audit approved requirements and retained evidence | E6-T8 |
+| E7-T2 | Record technical debt and authorized deferred work | E7-T1 |
+| E7-T3 | Produce controlled release-readiness report | E7-T1, E7-T2 |
+| E8-T1 | Validate immutable self-hosting candidates | E7-T3 |
+| E8-T2 | Prove atomic candidate activation and rollback | E8-T1 |
+| E8-T3 | Record directing version and kill-switch behavior | E8-T2 |
+| E8-T4 | Demonstrate controlled transfer to AGF | E8-T1, E8-T2, E8-T3 |
 
 No task is complete until its evidence is stored and the next checkpoint
 is deterministic. E0-T1 is approved as Constitution Foundation v1
@@ -426,5 +448,7 @@ implemented in the current delivery.
   and blocks when required risk evidence is absent.
 - E5 is complete through E5-T3 and PR #61. E6-T1 through E6-T8 are complete
   through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 through E7-T3
-  are complete; E8 is the next approved epic requiring deterministic task
-  decomposition. Final readiness remains `NOT_READY_FOR_ROADMAP_COMPLETE`.
+  are complete; E8-T1 is the next approved executable task and is `READY`.
+  E8-T2 through E8-T4 remain `PLANNED` and CRITICAL boundaries require
+  separate owner authorization. Final readiness remains
+  `NOT_READY_FOR_ROADMAP_COMPLETE`.
