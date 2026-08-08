@@ -123,11 +123,10 @@ audited, and resumable; bootstrap PR workflow remains compatible.
 
 #### E6 execution backlog
 
-E5 is complete through E5-T3 and PR #61. E6-T1 through E6-T7 are complete
-through merged PRs #65, #69, #74, #76, #78, #80, and #82, with their required
-evidence retained in the AGF state store. The following bounded tasks decompose
-only the approved E6 scope. Task state is explicit: E6-T8 is the next `READY`
-task, with all E6 dependencies complete.
+E5 is complete through E5-T3 and PR #61. E6-T1 through E6-T8 are complete
+through merged PRs #65, #69, #74, #76, #78, #80, #82, and #84, with their
+required evidence retained in the AGF state store. The following bounded tasks
+decompose only the approved E6 scope. All E6 dependencies are complete.
 with their required evidence. No task
 grants authority to change
 the Constitution, protected policies, risk thresholds, or human merge
@@ -142,7 +141,7 @@ requirement.
 | E6-T5 (`COMPLETED`) | Add a bounded kill-switch gate to merge decisions. | Consume the existing policy-controlled stop signal at the final authorization boundary; do not create a new authority source. | E6-T2, E6-T4 | `src/agf_orchestrator/merge_policy.py`; `src/agf_orchestrator/constitution.py`; policy/merge tests. | Active kill switch blocks authorization and delivery; state is observable and auditable; clearing it never retroactively authorizes stale evidence. | Full pytest; Ruff; diff check; enabled/disabled, stale-evidence, restart, and idempotency canaries. | CRITICAL: a faulty kill switch could permit forbidden execution. | Revert integration; default to blocked authorization. |
 | E6-T6 (`COMPLETED`) | Escalate remote uncertainty without weakening local gates. | Classify unavailable, divergent, stale, or contradictory remote state and route it to the Director inbox. | E6-T2, E6-T4, E6-T5 | `src/agf_orchestrator/remote_identity.py`; `src/agf_orchestrator/git_delivery.py`; remote-state tests. | Remote uncertainty never authorizes merge; canonical identity and base-SHA checks remain mandatory; no unapproved network behavior is added. | Full pytest; Ruff; diff check; local fixture canaries for unavailable, drifted, and equivalent remote states; no external repository mutation. | HIGH: remote ambiguity can cause wrong-target delivery. | Revert remote decision integration; block on uncertainty. |
 | E6-T7 (`COMPLETED`) | Generate bounded executive summaries from persisted E6 decisions. | Summarize one project decision and its required action using stable references only; no new policy or merge authority. | E6-T3, E6-T4, E6-T6 | `src/agf_orchestrator/inbox.py`; executive-summary model/tests. | Summary is bounded, deterministic, secret-safe, attributable, and omits raw transcripts; unresolved blockers remain visible. | Full pytest; Ruff; diff check; size-bound, secret-scan, restart, and project-isolation tests. | MEDIUM: lossy summaries could hide blockers. | Revert summary generation; preserve detailed audit records. |
-| E6-T8 (`READY`) | Prove E6 compatibility with the existing bootstrap PR workflow. | Integrate the completed E6 gates with current controlled delivery without changing constitutional or human-controlled boundaries. | E6-T2, E6-T5, E6-T6, E6-T7 | `src/agf_orchestrator/delivery.py`; `src/agf_orchestrator/cli.py`; integration tests and E6 canary fixtures. | Existing bootstrap flow remains compatible; all mandatory gates run; only approved delivery branches are pushed; no autonomous merge is enabled; caller repositories remain clean. | Full pytest; Ruff; diff check; disposable success/failure, restart, idempotency, isolation, and security canaries; independent review and Compliance PASS. | HIGH: cross-component integration can bypass a gate. | Revert integration and retain the pre-E6 controlled workflow. |
+| E6-T8 (`COMPLETED`) | Prove E6 compatibility with the existing bootstrap PR workflow. | Integrate the completed E6 gates with current controlled delivery without changing constitutional or human-controlled boundaries. | E6-T2, E6-T5, E6-T6, E6-T7 | `src/agf_orchestrator/delivery.py`; `src/agf_orchestrator/cli.py`; integration tests and E6 canary fixtures. | Existing bootstrap flow remains compatible; all mandatory gates run; only approved delivery branches are pushed; no autonomous merge is enabled; caller repositories remain clean. | Full pytest; Ruff; diff check; disposable success/failure, restart, idempotency, isolation, and security canaries; independent review and Compliance PASS. | HIGH: cross-component integration can bypass a gate. | Revert integration and retain the pre-E6 controlled workflow. |
 
 ### E7 — Global completion and self-audit
 
@@ -153,6 +152,19 @@ completion report.
 Acceptance: completion requires every mandatory criterion and evidence;
 deferred work is authorized; open high/critical blockers prevent complete;
 audits create tasks without changing objective/constitution.
+
+#### E7 execution backlog
+
+E7 has no previously defined executable tasks. The following decomposition is
+deterministic from the approved E7 scope and acceptance criteria; it adds no
+product scope or authority. E7-T1 is `READY`; later tasks remain `PLANNED`
+until their dependencies and evidence are complete.
+
+| ID | Objective | Scope | Dependencies | Expected files/components | Acceptance criteria | Validation requirements | Risk | Rollback |
+|---|---|---|---|---|---|---|---|---|
+| E7-T1 (`READY`) | Audit approved requirements and retained evidence. | Reconcile roadmap, Constitution, ADRs, task evidence, validation and delivery records; identify only deterministic gaps. | E6-T8 | `docs/AUTONOMOUS_ROADMAP.md`; completion audit documentation. | Every approved task is classified with traceable evidence; unresolved high/critical blockers remain explicit; no protected source is changed. | Link/terminology checks; `git diff --check`; deterministic audit and secret-scan canary. | MEDIUM: omitted evidence could falsely signal completion. | Revert audit documentation; retain source records. |
+| E7-T2 (`PLANNED`) | Record technical debt and authorized deferred work. | Convert E7-T1 gaps and existing bounded debt into an attributable register without silently removing work. | E7-T1 | `docs/AUTONOMOUS_ROADMAP.md`; technical-debt documentation. | Every deferred item has owner/status/evidence/next action; no item weakens policy or changes objective; unknown status remains blocked. | Link/terminology checks; `git diff --check`; deterministic restart/readback and secret-scan canary. | MEDIUM: untracked debt can hide blockers. | Revert debt register; preserve audit findings. |
+| E7-T3 (`PLANNED`) | Produce the controlled release-readiness and completion report. | Summarize architecture, security, tests, Compliance, delivery, residual debt and remaining roadmap state. | E7-T1, E7-T2 | `docs/AUTONOMOUS_ROADMAP.md`; final readiness documentation. | Completion is claimed only when no READY/PLANNED work or blocking findings remain; Constitution is VERIFIED and main is clean/aligned. | Full repository validation; Ruff; `git diff --check`; deterministic readiness and secret-scan canaries; independent review and Compliance PASS. | HIGH: premature completion could hide unsafe residual work. | Revert readiness report; retain non-terminal roadmap state. |
 
 ### E8 — Staged self-hosting and transfer
 
@@ -362,6 +374,6 @@ implemented in the current delivery.
   aggregates by maximum severity. E5-T3 carries a bounded risk summary into
   deterministic Reviewer and Compliance checks, rejects invalid assessments,
   and blocks when required risk evidence is absent.
-- E5 is complete through E5-T3 and PR #61. E6-T1 through E6-T7 are complete
-  through PRs #65, #69, #74, #76, #78, #80, and #82; E6-T8 is the next
-  approved executable task and is `READY`.
+- E5 is complete through E5-T3 and PR #61. E6-T1 through E6-T8 are complete
+  through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 is the next
+  approved executable task and is `READY`; E7-T2 and E7-T3 are `PLANNED`.
