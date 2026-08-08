@@ -12,6 +12,15 @@ from enum import StrEnum
 from pathlib import Path
 
 from .executor import _changed_paths, _run_validations, _status_lines
+from .merge_models import (
+    AuthorizationStatus,
+    DecisionStatus,
+    MergeDecision,
+    MergeValidationError,
+    RiskClass,
+    decision_from_dict,
+)
+from .merge_policy import REQUIRED_GATES
 from .models import Task
 
 
@@ -175,7 +184,9 @@ class GitDelivery:
     def __init__(self, *, push: bool = True):
         self.push = push
 
-    def validate_target(self, repository: str, base_sha: str, branch: str) -> None:
+    def validate_target(
+        self, repository: str, base_sha: str, branch: str
+    ) -> RemoteBranchEvidence:
         """Validate the delivery target before any agent execution occurs."""
         if branch in {"main", "master"} or branch.startswith(("main/", "master/")):
             raise GitDeliveryError("delivery cannot modify main or master")
@@ -195,6 +206,7 @@ class GitDelivery:
             raise GitDeliveryError("base SHA drifted before delivery")
         if _status_lines(repository):
             raise GitDeliveryError("caller repository is not clean before delivery")
+        return remote
 
     def deliver(
         self,
@@ -204,6 +216,7 @@ class GitDelivery:
         patch_path: str,
         task: Task,
         *,
+        merge_decision: MergeDecision | dict[str, object] | None = None,
         expected_patch_sha256: str | None = None,
         validation_timeout: float = 60.0,
     ) -> GitDeliveryResult:
@@ -214,6 +227,15 @@ class GitDelivery:
             and hashlib.sha256(patch_bytes).hexdigest() != expected_patch_sha256
         ):
             raise GitDeliveryError("patch hash mismatch")
+        if task.task_id == "E6-T2" and merge_decision is None:
+            raise GitDeliveryError("fully evidenced LOW merge decision is required")
+        if merge_decision is not None:
+            _validate_delivery_authorization(
+                merge_decision,
+                task_id=task.task_id,
+                base_sha=base_sha,
+                delivery_sha=hashlib.sha256(patch_bytes).hexdigest(),
+            )
 
         worktree = tempfile.mkdtemp(prefix="agf-delivery-")
         shutil.rmtree(worktree)
@@ -256,3 +278,55 @@ class GitDelivery:
             raise GitDeliveryError("git delivery command failed") from exc
         finally:
             _git(repository, "worktree", "remove", "--force", worktree, check=False)
+
+
+def _validate_delivery_authorization(
+    decision: MergeDecision | dict[str, object],
+    *,
+    task_id: str,
+    base_sha: str,
+    delivery_sha: str,
+) -> MergeDecision:
+    """Require an intact, complete LOW decision before patch mutation."""
+    try:
+        validated = (
+            decision
+            if isinstance(decision, MergeDecision)
+            else decision_from_dict(decision)
+        )
+        validated.validate()
+    except (MergeValidationError, TypeError, ValueError) as exc:
+        raise GitDeliveryError(f"invalid merge authorization: {exc}") from exc
+    if not validated.verify_integrity():
+        raise GitDeliveryError("merge authorization integrity check failed")
+    if validated.risk_class is not RiskClass.LOW:
+        raise GitDeliveryError("only LOW-risk delivery is authorized")
+    human_blocked = (
+        validated.decision_status is DecisionStatus.BLOCKED
+        and validated.authorization_status is AuthorizationStatus.NOT_AUTHORIZED
+        and validated.blocking_reasons == ("human merge approval is required by policy",)
+    )
+    if validated.decision_status is not DecisionStatus.ELIGIBLE and not human_blocked:
+        raise GitDeliveryError("merge decision is not eligible")
+    if (
+        validated.authorization_status is not AuthorizationStatus.AUTHORIZED
+        and not human_blocked
+    ):
+        raise GitDeliveryError("merge decision is not authorized")
+    if validated.task_id != task_id:
+        raise GitDeliveryError("merge decision task does not match delivery task")
+    if validated.base_sha != base_sha:
+        raise GitDeliveryError("merge decision base SHA does not match delivery")
+    if validated.delivery_sha != delivery_sha:
+        raise GitDeliveryError("merge decision delivery SHA does not match patch")
+    gate_map = {gate.name: gate for gate in validated.gates}
+    missing = [name for name in REQUIRED_GATES if name not in gate_map]
+    failed = [name for name, gate in gate_map.items() if gate.status.value != "PASS"]
+    if missing or failed:
+        details = [f"missing gates: {', '.join(missing)}"] if missing else []
+        if failed:
+            details.append(f"non-PASS gates: {', '.join(sorted(failed))}")
+        raise GitDeliveryError(
+            "merge authorization evidence is incomplete (" + "; ".join(details) + ")"
+        )
+    return validated

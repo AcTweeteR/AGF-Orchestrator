@@ -1,3 +1,6 @@
+import pytest
+
+from agf_orchestrator.git_delivery import GitDeliveryError, _validate_delivery_authorization
 from agf_orchestrator.merge_models import GateEvidence, GateStatus, RiskClass
 from agf_orchestrator.merge_policy import REQUIRED_GATES, MergePolicy, MergePolicyEngine
 
@@ -74,3 +77,25 @@ def test_human_merge_policy_blocks_even_complete_evidence():
     )
     assert item.decision_status.value == "BLOCKED"
     assert "human merge approval is required by policy" in item.blocking_reasons
+
+
+def test_low_risk_authorization_is_accepted_only_with_complete_evidence():
+    item = evaluate()
+    assert _validate_delivery_authorization(
+        item, task_id="task-e6-t1", base_sha=BASE, delivery_sha=DELIVERY
+    ) == item
+
+
+def test_low_risk_authorization_rejects_tampering_and_non_low_decisions():
+    item = evaluate()
+    tampered = item.to_dict()
+    tampered["risk_class"] = "HIGH"
+    with pytest.raises(GitDeliveryError, match="integrity|invalid merge authorization"):
+        _validate_delivery_authorization(
+            tampered, task_id="task-e6-t1", base_sha=BASE, delivery_sha=DELIVERY
+        )
+    forbidden = evaluate(risk=RiskClass.HIGH)
+    with pytest.raises(GitDeliveryError, match="eligible|authorized|LOW"):
+        _validate_delivery_authorization(
+            forbidden, task_id="task-e6-t1", base_sha=BASE, delivery_sha=DELIVERY
+        )
