@@ -10,18 +10,24 @@ from test_delivery import (
     setup_repo,
 )
 
+from agf_orchestrator.policy_state_store import PolicyStateStore
 
-def test_bootstrap_delivery_keeps_caller_main_clean_and_never_merges(tmp_path):
+PROJECT = "project-efc8e8ef7be7050b"
+
+
+def test_bootstrap_delivery_keeps_caller_main_clean_and_never_merges(tmp_path, monkeypatch):
     root = setup_repo(tmp_path, branch="main")
     plan = plan_for(root)
     caller_head = git(root, "rev-parse", "HEAD").stdout.strip()
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    PolicyStateStore(tmp_path / ".agf-orchestrator").bootstrap_authority(PROJECT, generation=1)
 
     report = DeliveryPipeline(
         adapter=fake_adapter(tmp_path),
         reviewer=DeterministicReviewer(),
         pr_creator=DraftPRCreator(simulate=True),
         artifact_dir=tmp_path / "artifacts",
-    ).deliver(plan, "task-001", str(root), execute=True)
+    ).deliver(plan, "task-001", str(root), execute=True, project_id=PROJECT)
 
     assert report.status == "COMPLETED"
     assert report.review_status == "APPROVE"
