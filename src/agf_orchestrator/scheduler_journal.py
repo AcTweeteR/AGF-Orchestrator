@@ -46,6 +46,7 @@ class InboxItem:
     evidence_refs: tuple[str, ...] = ()
     policy_id: str = ""
     policy_hash: str = ""
+    uncertainty_kind: str = ""
     resolution_actor: str = ""
     resolution_outcome: str = ""
     resolved_at: str = ""
@@ -67,6 +68,7 @@ class InboxItem:
             "evidence_refs": list(self.evidence_refs),
             "policy_id": self.policy_id,
             "policy_hash": self.policy_hash,
+            "uncertainty_kind": self.uncertainty_kind,
             "resolution_actor": self.resolution_actor,
             "resolution_outcome": self.resolution_outcome,
             "resolved_at": self.resolved_at,
@@ -217,20 +219,33 @@ class SchedulerJournal:
             "inbox_id", "project_id", "scheduler_id", "title", "summary",
             "required_action", "status",
         }
-        extended = legacy | {
+        old_extended = legacy | {
             "decision_id", "task_id", "risk_class", "failed_gates", "pending_gates",
             "evidence_refs", "policy_id", "policy_hash",
         }
+        extended = old_extended | {
+            "uncertainty_kind",
+        }
+        old_resolved = old_extended | {"resolution_actor", "resolution_outcome", "resolved_at"}
         resolved = extended | {"resolution_actor", "resolution_outcome", "resolved_at"}
-        if not isinstance(payload, dict) or set(payload) not in (legacy, extended, resolved):
+        if not isinstance(payload, dict) or set(payload) not in (
+            legacy, old_extended, extended, old_resolved, resolved
+        ):
             raise SchedulerJournalError("inbox schema is invalid")
         if set(payload) == legacy:
             payload = {
                 **payload, "decision_id": "", "task_id": "", "risk_class": "",
                 "failed_gates": (), "pending_gates": (), "evidence_refs": (),
                 "policy_id": "", "policy_hash": "", "resolution_actor": "",
+                "uncertainty_kind": "", "resolution_outcome": "", "resolved_at": "",
+            }
+        elif set(payload) == old_extended:
+            payload = {
+                **payload, "uncertainty_kind": "", "resolution_actor": "",
                 "resolution_outcome": "", "resolved_at": "",
             }
+        elif set(payload) == old_resolved:
+            payload = {**payload, "uncertainty_kind": ""}
         elif set(payload) == extended:
             payload = {
                 **payload, "resolution_actor": "", "resolution_outcome": "", "resolved_at": "",
@@ -273,6 +288,10 @@ class SchedulerJournal:
             self._bounded_list(item.evidence_refs)
             self._bounded_text(item.task_id)
             self._bounded_text(item.policy_id)
+            if item.uncertainty_kind and item.uncertainty_kind not in {
+                "UNAVAILABLE", "DIVERGENT", "CONTRADICTORY"
+            }:
+                raise SchedulerJournalError("inbox uncertainty kind is invalid")
         if item.status == InboxStatus.OPEN and any(
             (item.resolution_actor, item.resolution_outcome, item.resolved_at)
         ):

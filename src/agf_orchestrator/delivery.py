@@ -29,6 +29,7 @@ from .git_delivery import (
     DraftPRCreator,
     GitDelivery,
     GitDeliveryError,
+    persist_remote_uncertainty,
     sanitize_branch_name,
 )
 from .merge_models import MergeDecision
@@ -414,7 +415,16 @@ class DeliveryPipeline:
                 raise ExecutionValidationError("repository context or base SHA does not match plan")
             if not context.clean:
                 raise ExecutionValidationError("caller repository must be clean before delivery")
-            GitDelivery().validate_target(repository, base_sha, branch)
+            remote_handler = (
+                None
+                if project_id is None
+                else lambda evidence: persist_remote_uncertainty(
+                    evidence, project_id=project_id, task_id=task_id
+                )
+            )
+            GitDelivery().validate_target(
+                repository, base_sha, branch, uncertainty_handler=remote_handler
+            )
             previous_findings: list[ReviewFinding] = []
             previous_patch_sha: str | None = None
             previous_patch = ""
