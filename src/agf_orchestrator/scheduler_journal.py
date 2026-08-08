@@ -37,6 +37,14 @@ class InboxItem:
     summary: str
     required_action: str
     status: str = InboxStatus.OPEN
+    decision_id: str = ""
+    task_id: str = ""
+    risk_class: str = ""
+    failed_gates: tuple[str, ...] = ()
+    pending_gates: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+    policy_id: str = ""
+    policy_hash: str = ""
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -47,6 +55,14 @@ class InboxItem:
             "summary": self.summary,
             "required_action": self.required_action,
             "status": self.status,
+            "decision_id": self.decision_id,
+            "task_id": self.task_id,
+            "risk_class": self.risk_class,
+            "failed_gates": list(self.failed_gates),
+            "pending_gates": list(self.pending_gates),
+            "evidence_refs": list(self.evidence_refs),
+            "policy_id": self.policy_id,
+            "policy_hash": self.policy_hash,
         }
 
 
@@ -165,12 +181,29 @@ class SchedulerJournal:
         return event
 
     def _inbox_from_dict(self, payload: dict) -> InboxItem:
-        required = {
+        legacy = {
             "inbox_id", "project_id", "scheduler_id", "title", "summary",
             "required_action", "status",
         }
-        if not isinstance(payload, dict) or set(payload) != required:
+        extended = legacy | {
+            "decision_id", "task_id", "risk_class", "failed_gates", "pending_gates",
+            "evidence_refs", "policy_id", "policy_hash",
+        }
+        if not isinstance(payload, dict) or set(payload) not in (legacy, extended):
             raise SchedulerJournalError("inbox schema is invalid")
+        if set(payload) == legacy:
+            payload = {
+                **payload, "decision_id": "", "task_id": "", "risk_class": "",
+                "failed_gates": (), "pending_gates": (), "evidence_refs": (),
+                "policy_id": "", "policy_hash": "",
+            }
+        else:
+            payload = {
+                **payload,
+                "failed_gates": tuple(payload["failed_gates"]),
+                "pending_gates": tuple(payload["pending_gates"]),
+                "evidence_refs": tuple(payload["evidence_refs"]),
+            }
         item = InboxItem(**payload)
         self._validate_inbox(item)
         return item
@@ -184,6 +217,30 @@ class SchedulerJournal:
             raise SchedulerJournalError("inbox status is invalid")
         for value in (item.title, item.summary, item.required_action):
             self._bounded_text(value)
+        structured = any((item.decision_id, item.task_id, item.risk_class,
+                          item.failed_gates, item.pending_gates, item.evidence_refs,
+                          item.policy_id, item.policy_hash))
+        if structured and not item.decision_id:
+            raise SchedulerJournalError("inbox decision identity is required")
+        if item.decision_id:
+            if not re.fullmatch(r"decision-[a-f0-9]{32}", item.decision_id):
+                raise SchedulerJournalError("inbox decision identity is invalid")
+            if not item.task_id or item.risk_class != "MEDIUM":
+                raise SchedulerJournalError("inbox decision context is invalid")
+            if item.policy_hash and not re.fullmatch(r"[a-f0-9]{64}", item.policy_hash):
+                raise SchedulerJournalError("inbox policy hash is invalid")
+            self._bounded_list(item.failed_gates)
+            self._bounded_list(item.pending_gates)
+            self._bounded_list(item.evidence_refs)
+            self._bounded_text(item.task_id)
+            self._bounded_text(item.policy_id)
+
+    @classmethod
+    def _bounded_list(cls, values: tuple[str, ...]) -> None:
+        if not isinstance(values, tuple) or len(values) > _MAX_RECORDS:
+            raise SchedulerJournalError("inbox evidence list is invalid")
+        for value in values:
+            cls._bounded_text(value)
 
     @staticmethod
     def _bounded_text(value: str) -> None:
