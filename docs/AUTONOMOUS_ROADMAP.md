@@ -230,13 +230,41 @@ demonstrate autonomous continuation.
 
 E8 had no previously defined executable tasks. This deterministic
 decomposition derives only from the approved E8 scope and acceptance criteria;
-it adds no release, production, or constitutional authority. E8-T1 is `READY`.
-E8-T2 through E8-T4 remain `PLANNED`, and the activation/transfer boundaries
+it adds no release, production, or constitutional authority. E8-T1 is now
+`COMPLETED`; E8-T2 through E8-T4 remain `PLANNED`, and the activation/transfer boundaries
 are explicitly CRITICAL until separately authorized.
+
+#### E8-T1 candidate validation evidence
+
+Candidate pin: `0ced6a433cdd7650cc91bcfcc214884031a9a959` (the reconciled main
+commit before this evidence record). The candidate is identified by its
+immutable full Git commit and canonical repository identity;
+`git fsck --strict` and exact commit resolution establish integrity. No
+artifact was activated and no repository was mutated in place.
+
+The disposable canary evidence is explicit: the successful isolated delivery
+path is covered by `test_bootstrap_delivery_keeps_caller_main_clean_and_never_merges`,
+the failure path by `test_failed_validation_prevents_completed`, restart and
+idempotency by `test_put_is_atomic_restartable_and_idempotent`, integrity and
+activation rejection by `test_tampered_policy_hash_fails_closed` and
+`test_invalid_activation_signature_fails_closed`, and secret safety by
+`test_secret_redaction`. The side-effect-free restart/dry-run
+boundary is covered by `test_bootstrap_dry_run_is_side_effect_free`.
+
+Compatibility evidence is the 400-test passing baseline, Ruff PASS,
+`git diff --check` PASS, Compliance PASS, and these disposable canaries
+proving isolated branch/worktree delivery, caller-main cleanliness, failure
+blocking, restart/idempotency, integrity rejection, secret-safe evidence, and
+no merge action.
+
+The candidate remains inactive, the known-good pin is retained, and the
+provisional Director remains authoritative. E8-T2 is a CRITICAL activation and
+rollback boundary requiring separate owner authorization; it is not performed
+by this task.
 
 | ID | Objective | Scope | Dependencies | Expected files/components | Acceptance criteria | Validation requirements | Risk | Rollback |
 |---|---|---|---|---|---|---|---|---|
-| E8-T1 (`READY`) | Validate immutable self-hosting candidates. | Define candidate identity, artifact integrity, compatibility evidence, known-good pin, and isolated validation without in-place mutation. | E7-T3 | `docs/AUTONOMOUS_ROADMAP.md`; candidate validation evidence. | Candidate validation is deterministic and restart-safe; current Director remains authoritative; no activation or production mutation occurs. | Full repository validation; Ruff; `git diff --check`; disposable candidate success/failure, restart, integrity and secret-scan canaries; independent review and Compliance PASS. | HIGH: invalid candidates could corrupt self-hosting. | Revert candidate evidence; retain known-good version. |
+| E8-T1 (`COMPLETED`) | Validate immutable self-hosting candidates. | Define candidate identity, artifact integrity, compatibility evidence, known-good pin, and isolated validation without in-place mutation. | E7-T3 | `docs/AUTONOMOUS_ROADMAP.md`; candidate validation evidence. | Candidate validation is deterministic and restart-safe; current Director remains authoritative; no activation or production mutation occurs. | Full repository validation; Ruff; `git diff --check`; disposable candidate success/failure, restart, integrity and secret-scan canaries; independent review and Compliance PASS. | HIGH: invalid candidates could corrupt self-hosting. | Revert candidate evidence; retain known-good version. |
 | E8-T2 (`PLANNED`) | Prove atomic candidate activation and rollback. | Specify reversible activation transaction, pinned rollback target, generation and crash recovery without self-mutation. | E8-T1 | `docs/AUTONOMOUS_ROADMAP.md`; activation/rollback evidence. | Activation and rollback are atomic, crash-safe and owner-controlled; Constitution/policy changes cannot self-activate. | Crash/race/restart/idempotency/security canaries; independent review and Compliance PASS. | CRITICAL: activation changes the execution authority boundary. | HUMAN_REQUIRED; restore pinned known-good candidate. |
 | E8-T3 (`PLANNED`) | Record directing version and kill-switch behavior. | Bind directing-version evidence to verified candidate state and preserve immediate owner kill-switch control. | E8-T2 | `docs/AUTONOMOUS_ROADMAP.md`; directing-version/kill-switch evidence. | Stale or mismatched directing versions fail closed; kill switch remains owner-controlled and auditable. | Stale-generation, replay, fail-closed and race canaries; independent review and Compliance PASS. | CRITICAL: modifies the self-hosting authority boundary. | HUMAN_REQUIRED; retain provisional Director. |
 | E8-T4 (`PLANNED`) | Demonstrate controlled transfer to AGF. | Run only disposable/controlled pilots proving restart, isolation, rollback and autonomous continuation after verified transfer. | E8-T1, E8-T2, E8-T3 | `docs/AUTONOMOUS_ROADMAP.md`; pilot evidence. | No real production mutation; transfer is reversible, kill-switchable and constitutionally bounded; all pilot failures checkpoint safely. | Controlled success/failure pilots; full validation; independent review and Compliance PASS. | CRITICAL: transfer changes the directing authority. | HUMAN_REQUIRED; abort pilot and restore provisional Director. |
@@ -448,7 +476,7 @@ implemented in the current delivery.
   and blocks when required risk evidence is absent.
 - E5 is complete through E5-T3 and PR #61. E6-T1 through E6-T8 are complete
   through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 through E7-T3
-  are complete; E8-T1 is the next approved executable task and is `READY`.
-  E8-T2 through E8-T4 remain `PLANNED` and CRITICAL boundaries require
+  are complete; E8-T1 is complete and E8-T2 is the next approved executable
+  task. E8-T2 through E8-T4 remain `PLANNED` and CRITICAL boundaries require
   separate owner authorization. Final readiness remains
   `NOT_READY_FOR_ROADMAP_COMPLETE`.
