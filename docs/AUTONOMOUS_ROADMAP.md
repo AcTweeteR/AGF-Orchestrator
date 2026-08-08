@@ -157,14 +157,37 @@ audits create tasks without changing objective/constitution.
 
 E7 has no previously defined executable tasks. The following decomposition is
 deterministic from the approved E7 scope and acceptance criteria; it adds no
-product scope or authority. E7-T1 is `READY`; later tasks remain `PLANNED`
-until their dependencies and evidence are complete.
+product scope or authority. E7-T2 is now `READY`; E7-T3 remains `PLANNED`
+after the completed E7-T1 audit.
 
 | ID | Objective | Scope | Dependencies | Expected files/components | Acceptance criteria | Validation requirements | Risk | Rollback |
 |---|---|---|---|---|---|---|---|---|
-| E7-T1 (`READY`) | Audit approved requirements and retained evidence. | Reconcile roadmap, Constitution, ADRs, task evidence, validation and delivery records; identify only deterministic gaps. | E6-T8 | `docs/AUTONOMOUS_ROADMAP.md`; completion audit documentation. | Every approved task is classified with traceable evidence; unresolved high/critical blockers remain explicit; no protected source is changed. | Link/terminology checks; `git diff --check`; deterministic audit and secret-scan canary. | MEDIUM: omitted evidence could falsely signal completion. | Revert audit documentation; retain source records. |
-| E7-T2 (`PLANNED`) | Record technical debt and authorized deferred work. | Convert E7-T1 gaps and existing bounded debt into an attributable register without silently removing work. | E7-T1 | `docs/AUTONOMOUS_ROADMAP.md`; technical-debt documentation. | Every deferred item has owner/status/evidence/next action; no item weakens policy or changes objective; unknown status remains blocked. | Link/terminology checks; `git diff --check`; deterministic restart/readback and secret-scan canary. | MEDIUM: untracked debt can hide blockers. | Revert debt register; preserve audit findings. |
+| E7-T1 (`COMPLETED`) | Audit approved requirements and retained evidence. | Reconcile roadmap, Constitution, ADRs, task evidence, validation and delivery records; identify only deterministic gaps. | E6-T8 | `docs/AUTONOMOUS_ROADMAP.md`; completion audit documentation. | Every approved task is classified with traceable evidence; unresolved high/critical blockers remain explicit; no protected source is changed. | Link/terminology checks; `git diff --check`; deterministic audit and secret-scan canary. | MEDIUM: omitted evidence could falsely signal completion. | Revert audit documentation; retain source records. |
+| E7-T2 (`READY`) | Record technical debt and authorized deferred work. | Convert E7-T1 gaps and existing bounded debt into an attributable register without silently removing work. | E7-T1 | `docs/AUTONOMOUS_ROADMAP.md`; technical-debt documentation. | Every deferred item has owner/status/evidence/next action; no item weakens policy or changes objective; unknown status remains blocked. | Link/terminology checks; `git diff --check`; deterministic restart/readback and secret-scan canary. | MEDIUM: untracked debt can hide blockers. | Revert debt register; preserve audit findings. |
 | E7-T3 (`PLANNED`) | Produce the controlled release-readiness and completion report. | Summarize architecture, security, tests, Compliance, delivery, residual debt and remaining roadmap state. | E7-T1, E7-T2 | `docs/AUTONOMOUS_ROADMAP.md`; final readiness documentation. | Completion is claimed only when no READY/PLANNED work or blocking findings remain; Constitution is VERIFIED and main is clean/aligned. | Full repository validation; Ruff; `git diff --check`; deterministic readiness and secret-scan canaries; independent review and Compliance PASS. | HIGH: premature completion could hide unsafe residual work. | Revert readiness report; retain non-terminal roadmap state. |
+
+#### E7-T1 completion audit
+
+The deterministic audit reconciles the approved backlog against the retained
+delivery evidence. E0 through E5 are complete through their recorded PRs;
+E6-T1 through E6-T8 are complete through PRs #65, #69, #74, #76, #78, #80,
+#82, and #84. The current validation baseline is 400 passing tests, Ruff
+passing, `git diff --check` passing, and Compliance passing. Constitution
+Authority remains VERIFIED; ADR-0002 and active ADR-0003 remain unchanged.
+
+Task-to-delivery traceability is: E0-T1/#14 and E0-T2/#17; E1-T1/#19,
+E1-T2/#21, E1-T3/#23 and E1-T4/#25; E2-T1/#27, E2-T2/#29, E2-T3/#31 and
+E2-T4/#33; E3-T1/#35, E3-T2/#37 and E3-T3/#39; E4-T1/#41, E4-T2/#43,
+E4-T3/#45, E4-T4/#47, E4-T5/#49, E4-T6/#51, E4-T7/#53 and E4-T8/#55;
+E5-T1/#57, E5-T2/#59 and E5-T3/#61; and E6-T1/#65, E6-T2/#69, E6-T3/#74,
+E6-T4/#76, E6-T5/#78, E6-T6/#80, E6-T7/#82 and E6-T8/#84. Each reference
+resolves to the merged delivery record and its associated validation, review,
+and Compliance evidence.
+
+No unresolved HIGH or CRITICAL blocker was found in the reconciled records.
+The only remaining approved work is the explicitly listed E7-T2 technical-debt
+register and E7-T3 readiness report, so this audit does not claim final project
+completion. E7-T2 is promoted to `READY` and E7-T3 remains `PLANNED`.
 
 ### E8 — Staged self-hosting and transfer
 
@@ -375,5 +398,6 @@ implemented in the current delivery.
   deterministic Reviewer and Compliance checks, rejects invalid assessments,
   and blocks when required risk evidence is absent.
 - E5 is complete through E5-T3 and PR #61. E6-T1 through E6-T8 are complete
-  through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 is the next
-  approved executable task and is `READY`; E7-T2 and E7-T3 are `PLANNED`.
+  through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 is complete
+  and E7-T2 is the next approved executable task and is `READY`; E7-T3 is
+  `PLANNED`.
