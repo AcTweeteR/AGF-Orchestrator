@@ -64,6 +64,28 @@ class MediumRiskSummary:
         }
 
 
+@dataclass(frozen=True)
+class HumanEscalation:
+    """Bounded, non-authorizing escalation for unresolved risk."""
+
+    inbox_id: str
+    decision_id: str
+    project_id: str
+    task_id: str
+    risk_class: str
+    failed_gates: tuple[str, ...]
+    pending_gates: tuple[str, ...]
+    evidence_refs: tuple[str, ...]
+    policy_id: str
+    policy_hash: str
+    summary: str
+    required_action: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {key: (list(value) if isinstance(value, tuple) else value)
+                for key, value in self.__dict__.items()}
+
+
 def build_medium_risk_summary(
     decision: MergeDecision,
     *,
@@ -129,6 +151,68 @@ def persist_medium_risk_summary(
         policy_id=summary.policy_id, policy_hash=summary.policy_hash,
     ))
     return summary
+
+
+def build_human_escalation(
+    decision: MergeDecision,
+    *,
+    inbox_id: str,
+    scheduler_id: str,
+) -> HumanEscalation:
+    """Route HIGH, CRITICAL, and UNKNOWN decisions to explicit human action."""
+    decision.validate()
+    if decision.risk_class.value not in {"HIGH", "CRITICAL", "UNKNOWN"}:
+        raise MergeValidationError("only HIGH, CRITICAL, or UNKNOWN decisions escalate")
+    if not re.fullmatch(r"inbox-[0-9]{6,80}", inbox_id):
+        raise MergeValidationError("inbox identity is invalid")
+    if not re.fullmatch(r"scheduler-[a-z0-9][a-z0-9-]{0,79}", scheduler_id):
+        raise MergeValidationError("scheduler identity is invalid")
+    failed = tuple(sorted(
+        gate.name for gate in decision.gates
+        if gate.status in {
+            GateStatus.FAIL, GateStatus.STALE, GateStatus.CONTRADICTORY,
+            GateStatus.UNKNOWN,
+        }
+    ))
+    pending = tuple(sorted(gate.name for gate in decision.gates
+                           if gate.status is GateStatus.MISSING))
+    refs = tuple(sorted({ref for gate in decision.gates for ref in gate.evidence_refs}))
+    summary = (
+        f"{decision.risk_class.value} decision {decision.decision_id} for task "
+        f"{decision.task_id} requires explicit human escalation; failed gates: "
+        f"{', '.join(failed) or 'none'}; pending gates: {', '.join(pending) or 'none'}."
+    )
+    if len(summary) > 4000:
+        raise MergeValidationError("human escalation exceeds bounded size")
+    return HumanEscalation(
+        inbox_id=inbox_id, decision_id=decision.decision_id,
+        project_id=decision.project_id, task_id=decision.task_id,
+        risk_class=decision.risk_class.value, failed_gates=failed,
+        pending_gates=pending, evidence_refs=refs, policy_id=decision.policy_id,
+        policy_hash=decision.policy_hash, summary=summary,
+        required_action="A human must review the bounded evidence and explicitly decide.",
+    )
+
+
+def persist_human_escalation(
+    journal: SchedulerJournal,
+    decision: MergeDecision,
+    *,
+    inbox_id: str,
+) -> HumanEscalation:
+    escalation = build_human_escalation(
+        decision, inbox_id=inbox_id, scheduler_id=journal.scheduler_id
+    )
+    journal.add_inbox(JournalInboxItem(
+        inbox_id=escalation.inbox_id, project_id=escalation.project_id,
+        scheduler_id=journal.scheduler_id, title="Human risk escalation",
+        summary=escalation.summary, required_action=escalation.required_action,
+        decision_id=escalation.decision_id, task_id=escalation.task_id,
+        risk_class=escalation.risk_class, failed_gates=escalation.failed_gates,
+        pending_gates=escalation.pending_gates, evidence_refs=escalation.evidence_refs,
+        policy_id=escalation.policy_id, policy_hash=escalation.policy_hash,
+    ))
+    return escalation
 
 
 def build_inbox(store: SessionStore, registry: ProjectRegistry) -> list[InboxItem]:
