@@ -107,8 +107,8 @@ class RiskAssessment:
             raise RiskValidationError("incident_count is invalid")
         self._bounded_list("protected_paths", self.protected_paths, allow_empty=True)
         self._bounded_list("evidence_refs", self.evidence_refs, allow_empty=True)
-        if self.protected_paths and self.level < RiskLevel.HIGH:
-            raise RiskValidationError("protected paths require HIGH or CRITICAL risk")
+        if self.protected_paths and self.level is not RiskLevel.CRITICAL:
+            raise RiskValidationError("protected paths require CRITICAL risk")
         if not self.signals or len(self.signals) > _MAX_ITEMS:
             raise RiskValidationError("signals must contain 1 to 200 items")
         signal_ids: set[str] = set()

@@ -8,8 +8,10 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from .executor import _changed_paths, _run_validations, _status_lines
 from .merge_models import (
@@ -22,6 +24,8 @@ from .merge_models import (
 )
 from .merge_policy import REQUIRED_GATES
 from .models import Task
+from .policy_authority import PolicyActivationError, PolicyAuthority
+from .risk_models import risk_from_dict
 
 
 class GitDeliveryError(RuntimeError):
@@ -217,6 +221,7 @@ class GitDelivery:
         task: Task,
         *,
         merge_decision: MergeDecision | dict[str, object] | None = None,
+        project_id: str | None = None,
         expected_patch_sha256: str | None = None,
         validation_timeout: float = 60.0,
     ) -> GitDeliveryResult:
@@ -229,12 +234,25 @@ class GitDelivery:
             raise GitDeliveryError("patch hash mismatch")
         if task.task_id == "E6-T2" and merge_decision is None:
             raise GitDeliveryError("fully evidenced LOW merge decision is required")
+        if merge_decision is None and project_id is not None:
+            try:
+                active = PolicyAuthority().resolve_or_none(project_id)
+            except PolicyActivationError as exc:
+                raise GitDeliveryError("active policy is not verified") from exc
+            if active is not None:
+                raise GitDeliveryError("active policy requires an integrity-bound MergeDecision")
+        if merge_decision is None and project_id is None:
+            if (PolicyAuthority().state_dir / "policy-state.sqlite3").exists():
+                raise GitDeliveryError("delivery project identity is required")
         if merge_decision is not None:
+            if project_id is None:
+                raise GitDeliveryError("delivery project identity is required")
             _validate_delivery_authorization(
                 merge_decision,
                 task_id=task.task_id,
                 base_sha=base_sha,
                 delivery_sha=hashlib.sha256(patch_bytes).hexdigest(),
+                project_id=project_id,
             )
 
         worktree = tempfile.mkdtemp(prefix="agf-delivery-")
@@ -286,6 +304,7 @@ def _validate_delivery_authorization(
     task_id: str,
     base_sha: str,
     delivery_sha: str,
+    project_id: str | None = None,
 ) -> MergeDecision:
     """Require an intact, complete LOW decision before patch mutation."""
     try:
@@ -299,8 +318,40 @@ def _validate_delivery_authorization(
         raise GitDeliveryError(f"invalid merge authorization: {exc}") from exc
     if not validated.verify_integrity():
         raise GitDeliveryError("merge authorization integrity check failed")
-    if validated.risk_class is not RiskClass.LOW:
-        raise GitDeliveryError("only LOW-risk delivery is authorized")
+    if project_id is not None and validated.project_id != project_id:
+        raise GitDeliveryError("merge authorization project does not match delivery")
+    if validated.risk_class in {RiskClass.CRITICAL, RiskClass.UNKNOWN}:
+        raise GitDeliveryError("CRITICAL/UNKNOWN delivery requires human approval")
+    if validated.risk_class in {RiskClass.MEDIUM, RiskClass.HIGH} and not validated.policy_hash:
+        raise GitDeliveryError(
+            "active policy hash is required for MEDIUM/HIGH delivery; legacy path is LOW-only"
+        )
+    try:
+        active = PolicyAuthority().resolve_or_none(validated.project_id)
+    except PolicyActivationError as exc:
+        raise GitDeliveryError("active policy is not verified") from exc
+    if active is None and validated.policy_hash:
+        raise GitDeliveryError("merge authorization policy was superseded or rolled back")
+    if active is not None:
+        if not validated.policy_hash:
+            raise GitDeliveryError("legacy authorization is stale under active policy")
+        if (
+            active.policy_id != validated.policy_id
+            or active.version != validated.policy_version
+            or active.policy_hash != validated.policy_hash
+        ):
+            raise GitDeliveryError("merge authorization policy identity is stale")
+        _validate_freshness(validated, active.freshness_limits)
+        if validated.risk_assessment is None:
+            raise GitDeliveryError("Risk Engine assessment is required")
+        try:
+            assessment = risk_from_dict(validated.risk_assessment)
+        except (TypeError, ValueError) as exc:
+            raise GitDeliveryError("Risk Engine assessment is invalid") from exc
+        if assessment.project_id != validated.project_id or assessment.task_id != validated.task_id:
+            raise GitDeliveryError("Risk Engine assessment identity is stale")
+        if assessment.level.name != validated.risk_class.value:
+            raise GitDeliveryError("Risk Engine assessment does not match decision")
     human_blocked = (
         validated.decision_status is DecisionStatus.BLOCKED
         and validated.authorization_status is AuthorizationStatus.NOT_AUTHORIZED
@@ -330,3 +381,30 @@ def _validate_delivery_authorization(
             "merge authorization evidence is incomplete (" + "; ".join(details) + ")"
         )
     return validated
+
+
+def _validate_freshness(decision: MergeDecision, limits: dict[str, Any]) -> None:
+    try:
+        gate_seconds = int(limits["gate_seconds"])
+        policy_seconds = int(limits["policy_seconds"])
+        expiry = datetime.fromisoformat(decision.expiry)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GitDeliveryError("active policy freshness evidence is invalid") from exc
+    now = datetime.now(UTC)
+    if (
+        expiry.tzinfo is None
+        or expiry <= now
+        or expiry - now > timedelta(seconds=policy_seconds)
+    ):
+        raise GitDeliveryError("merge authorization is expired")
+    for gate in decision.gates:
+        try:
+            observed = datetime.fromisoformat(gate.observed_at)
+        except (TypeError, ValueError) as exc:
+            raise GitDeliveryError("gate freshness evidence is invalid") from exc
+        if (
+            observed.tzinfo is None
+            or observed > now
+            or now - observed > timedelta(seconds=gate_seconds)
+        ):
+            raise GitDeliveryError(f"gate evidence is stale: {gate.name}")

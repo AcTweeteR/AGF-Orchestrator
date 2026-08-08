@@ -33,7 +33,7 @@ def test_risk_engine_escalates_protected_paths_and_review_blockers():
             "reviewer_blockers": 1,
         }
     )
-    assert assessment.level is RiskLevel.HIGH
+    assert assessment.level is RiskLevel.CRITICAL
 
 
 def test_risk_engine_treats_unknown_rollback_conservatively():

@@ -21,6 +21,7 @@ from .merge_models import (
     RiskClass,
     canonical_hash,
 )
+from .risk_models import RiskAssessment
 
 REQUIRED_GATES = (
     "constitution",
@@ -52,6 +53,7 @@ class MergePolicy:
         RiskClass.CRITICAL,
         RiskClass.UNKNOWN,
     )
+    policy_hash: str = ""
 
     def validate(self) -> None:
         if not self.policy_id.strip() or not self.version.strip():
@@ -68,6 +70,8 @@ class MergePolicy:
             raise MergeValidationError("permanently_forbidden is invalid")
         if set(self.allowed_risk_classes) & set(self.permanently_forbidden):
             raise MergeValidationError("forbidden risk classes cannot be allowed")
+        if self.policy_hash and len(self.policy_hash) != 64:
+            raise MergeValidationError("policy hash is invalid")
 
 
 class MergePolicyEngine:
@@ -88,6 +92,7 @@ class MergePolicyEngine:
         delivery_sha: str,
         constitution_id: str,
         risk_class: RiskClass,
+        risk_assessment: RiskAssessment | None = None,
         gates: Iterable[GateEvidence] | Mapping[str, GateEvidence | Mapping[str, Any]],
         expiry: str = "",
     ) -> MergeDecision:
@@ -97,6 +102,21 @@ class MergePolicyEngine:
                 risk_class = RiskClass(risk_class)
             except ValueError as exc:
                 raise MergeValidationError("risk_class is invalid") from exc
+        if risk_assessment is not None:
+            risk_assessment.validate()
+            if (
+                risk_assessment.project_id != project_id
+                or risk_assessment.task_id != task_id
+            ):
+                raise MergeValidationError(
+                    "Risk Engine assessment identity does not match decision"
+                )
+            assessed = RiskClass(risk_assessment.level.name)
+            if assessed is not risk_class:
+                raise MergeValidationError("risk class does not match Risk Engine assessment")
+        elif self.policy.policy_hash:
+            raise MergeValidationError("active policy decisions require Risk Engine assessment")
+            risk_class = assessed
         if not _SHA.fullmatch(base_sha) or not _SHA.fullmatch(delivery_sha):
             raise MergeValidationError("revision identity is invalid")
         normalized = _normalize_gates(gates)
@@ -134,6 +154,7 @@ class MergePolicyEngine:
             "policy_version": self.policy.version,
             "constitution_id": constitution_id,
             "expiry": expiry,
+            "policy_hash": self.policy.policy_hash,
         }
         decision_id = f"decision-{canonical_hash(identity_payload)[:32]}"
         decision = MergeDecision(
@@ -154,10 +175,32 @@ class MergePolicyEngine:
             evidence_hash=evidence_hash,
             integrity_hash="",
             expiry=expiry,
+            policy_hash=self.policy.policy_hash,
+            risk_assessment=None if risk_assessment is None else risk_assessment.to_dict(),
         )
         decision = _with_integrity(decision)
         decision.validate()
         return decision
+
+
+def merge_policy_from_verified_active(project_id: str) -> MergePolicy:
+    """Load and verify the external policy before enabling its risk matrix."""
+    from .policy_authority import PolicyActivationError, PolicyAuthority
+
+    try:
+        active_policy = PolicyAuthority().resolve(project_id)
+    except PolicyActivationError as exc:
+        raise MergeValidationError("verified active policy is required") from exc
+    if not active_policy.allows_autonomous_merge("HIGH"):
+        raise MergeValidationError("active policy does not authorize autonomous HIGH")
+    return MergePolicy(
+        policy_id=active_policy.policy_id,
+        version=active_policy.version,
+        allowed_risk_classes=(RiskClass.LOW, RiskClass.MEDIUM, RiskClass.HIGH),
+        require_human_merge=False,
+        permanently_forbidden=(RiskClass.CRITICAL, RiskClass.UNKNOWN),
+        policy_hash=active_policy.policy_hash,
+    )
 
 
 def aggregate_merge_gates(**kwargs: Any) -> MergeDecision:
