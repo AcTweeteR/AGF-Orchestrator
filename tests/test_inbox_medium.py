@@ -1,12 +1,16 @@
+from dataclasses import replace
+
 import pytest
 
 from agf_orchestrator.inbox import (
+    build_executive_summary,
     build_human_escalation,
     build_medium_risk_summary,
+    persist_executive_summary,
     persist_human_escalation,
     persist_medium_risk_summary,
 )
-from agf_orchestrator.merge_models import GateEvidence, GateStatus, RiskClass
+from agf_orchestrator.merge_models import GateEvidence, GateStatus, RiskClass, canonical_hash
 from agf_orchestrator.merge_policy import REQUIRED_GATES, MergePolicy, MergePolicyEngine
 from agf_orchestrator.risk_models import (
     RiskAssessment,
@@ -120,4 +124,69 @@ def test_unknown_escalation_and_medium_rejection():
     with pytest.raises(ValueError, match="only HIGH"):
         build_human_escalation(
             decision(), inbox_id="inbox-000004", scheduler_id="scheduler-main"
+        )
+
+
+def test_executive_summary_is_bounded_deterministic_and_non_authorizing():
+    first = build_executive_summary(
+        decision(GateStatus.FAIL), inbox_id="inbox-000005", scheduler_id="scheduler-main"
+    )
+    second = build_executive_summary(
+        decision(GateStatus.FAIL), inbox_id="inbox-000005", scheduler_id="scheduler-other"
+    )
+    assert first.to_dict() == second.to_dict()
+    assert first.risk_class == "MEDIUM"
+    assert first.decision_status == "BLOCKED"
+    assert first.authorization_status == "NOT_AUTHORIZED"
+    assert set(first.failed_gates) == set(REQUIRED_GATES)
+    assert first.pending_gates == ()
+    assert "transcript" not in first.summary.lower()
+    assert "secret" not in first.summary.lower()
+    assert "blockers=" in first.summary
+    assert "merge authority" not in first.required_action.lower()
+
+
+def test_executive_summary_persists_restart_and_project_isolation(tmp_path):
+    summary = persist_executive_summary(
+        SchedulerJournal(tmp_path, PROJECT, "scheduler-main"),
+        decision(GateStatus.FAIL), inbox_id="inbox-000006",
+    )
+    retried = persist_executive_summary(
+        SchedulerJournal(tmp_path, PROJECT, "scheduler-main"),
+        decision(GateStatus.FAIL), inbox_id="inbox-000006",
+    )
+    assert summary == retried
+    reopened = SchedulerJournal(tmp_path, PROJECT, "scheduler-main")
+    stored = reopened.open_inbox()[0]
+    assert stored.decision_id == summary.decision_id
+    assert stored.risk_class == "MEDIUM"
+    assert stored.failed_gates == tuple(sorted(REQUIRED_GATES))
+    assert stored.decision_status == summary.decision_status
+    assert stored.authorization_status == summary.authorization_status
+    assert stored.blocking_reasons == summary.blocking_reasons
+    with pytest.raises(SchedulerJournalError, match="identity"):
+        persist_executive_summary(
+            SchedulerJournal(tmp_path, "project-other", "scheduler-main"),
+            decision(GateStatus.FAIL), inbox_id="inbox-000007",
+        )
+
+
+def test_executive_summary_rejects_bad_integrity_secret_and_oversize_blockers():
+    base = decision(GateStatus.FAIL)
+    bad = replace(base, integrity_hash="0" * 64)
+    with pytest.raises(ValueError, match="integrity"):
+        build_executive_summary(bad, inbox_id="inbox-000008", scheduler_id="scheduler-main")
+
+    secret = replace(base, blocking_reasons=("token: hidden",))
+    secret = replace(secret, integrity_hash=canonical_hash(secret.integrity_payload()))
+    with pytest.raises(ValueError, match="invalid"):
+        build_executive_summary(
+            secret, inbox_id="inbox-000009", scheduler_id="scheduler-main"
+        )
+
+    oversized = replace(base, blocking_reasons=("x" * 3900,))
+    oversized = replace(oversized, integrity_hash=canonical_hash(oversized.integrity_payload()))
+    with pytest.raises(ValueError, match="exceeds bounded"):
+        build_executive_summary(
+            oversized, inbox_id="inbox-000010", scheduler_id="scheduler-main"
         )

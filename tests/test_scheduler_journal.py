@@ -99,4 +99,8 @@ def test_e6_t3_extended_journal_migrates_to_open_resolution(tmp_path):
     })
     store.path.parent.mkdir(parents=True, exist_ok=True)
     store.path.write_text(json.dumps({"schema_version": "1.0", "events": [], "inbox": [old]}))
-    assert store.open_inbox()[0].status == "OPEN"
+    migrated = store.open_inbox()[0]
+    assert migrated.status == "OPEN"
+    assert migrated.decision_status == ""
+    assert migrated.authorization_status == ""
+    assert migrated.blocking_reasons == ()

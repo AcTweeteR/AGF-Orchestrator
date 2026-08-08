@@ -86,6 +86,111 @@ class HumanEscalation:
                 for key, value in self.__dict__.items()}
 
 
+@dataclass(frozen=True)
+class ExecutiveDecisionSummary:
+    """Stable, bounded summary of one persisted merge decision."""
+
+    inbox_id: str
+    decision_id: str
+    project_id: str
+    task_id: str
+    risk_class: str
+    decision_status: str
+    authorization_status: str
+    blocking_reasons: tuple[str, ...]
+    failed_gates: tuple[str, ...]
+    pending_gates: tuple[str, ...]
+    evidence_refs: tuple[str, ...]
+    policy_id: str
+    policy_hash: str
+    summary: str
+    required_action: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            key: list(value) if isinstance(value, tuple) else value
+            for key, value in self.__dict__.items()
+        }
+
+
+def build_executive_summary(
+    decision: MergeDecision,
+    *,
+    inbox_id: str,
+    scheduler_id: str,
+) -> ExecutiveDecisionSummary:
+    """Build a deterministic, secret-safe summary without merge authority."""
+    decision.validate()
+    if not decision.verify_integrity():
+        raise MergeValidationError("decision integrity is invalid")
+    if not re.fullmatch(r"inbox-[0-9]{6,80}", inbox_id):
+        raise MergeValidationError("inbox identity is invalid")
+    if not re.fullmatch(r"scheduler-[a-z0-9][a-z0-9-]{0,79}", scheduler_id):
+        raise MergeValidationError("scheduler identity is invalid")
+    failed = tuple(sorted(
+        gate.name for gate in decision.gates
+        if gate.status in {
+            GateStatus.FAIL, GateStatus.STALE, GateStatus.CONTRADICTORY,
+            GateStatus.UNKNOWN,
+        }
+    ))
+    pending = tuple(sorted(
+        gate.name for gate in decision.gates if gate.status is GateStatus.MISSING
+    ))
+    blockers = tuple(sorted(set(decision.blocking_reasons)))
+    refs = tuple(sorted({ref for gate in decision.gates for ref in gate.evidence_refs}))
+    blockers_text = ", ".join(blockers) or "none"
+    failed_text = ", ".join(failed) or "none"
+    pending_text = ", ".join(pending) or "none"
+    summary = (
+        f"{decision.risk_class.value} decision {decision.decision_id} for task "
+        f"{decision.task_id}: status={decision.decision_status.value}; "
+        f"authorization status {decision.authorization_status.value}; blockers={blockers_text}; "
+        f"failed gates={failed_text}; pending gates={pending_text}."
+    )
+    if len(summary) > 4000:
+        raise MergeValidationError("executive summary exceeds bounded size")
+    if decision.authorization_status.value == "AUTHORIZED":
+        action = "Retain the decision record; delivery remains separately governed."
+    else:
+        action = "Review the bounded evidence and resolve all blockers before proceeding."
+    return ExecutiveDecisionSummary(
+        inbox_id=inbox_id, decision_id=decision.decision_id,
+        project_id=decision.project_id, task_id=decision.task_id,
+        risk_class=decision.risk_class.value,
+        decision_status=decision.decision_status.value,
+        authorization_status=decision.authorization_status.value,
+        blocking_reasons=blockers, failed_gates=failed, pending_gates=pending,
+        evidence_refs=refs, policy_id=decision.policy_id,
+        policy_hash=decision.policy_hash, summary=summary, required_action=action,
+    )
+
+
+def persist_executive_summary(
+    journal: SchedulerJournal,
+    decision: MergeDecision,
+    *,
+    inbox_id: str,
+) -> ExecutiveDecisionSummary:
+    """Persist an idempotent project-isolated executive decision summary."""
+    summary = build_executive_summary(
+        decision, inbox_id=inbox_id, scheduler_id=journal.scheduler_id
+    )
+    journal.add_inbox(JournalInboxItem(
+        inbox_id=summary.inbox_id, project_id=summary.project_id,
+        scheduler_id=journal.scheduler_id, title="Executive merge decision summary",
+        summary=summary.summary, required_action=summary.required_action,
+        decision_id=summary.decision_id, task_id=summary.task_id,
+        risk_class=summary.risk_class, failed_gates=summary.failed_gates,
+        pending_gates=summary.pending_gates, evidence_refs=summary.evidence_refs,
+        policy_id=summary.policy_id, policy_hash=summary.policy_hash,
+        decision_status=summary.decision_status,
+        authorization_status=summary.authorization_status,
+        blocking_reasons=summary.blocking_reasons,
+    ))
+    return summary
+
+
 def build_medium_risk_summary(
     decision: MergeDecision,
     *,
