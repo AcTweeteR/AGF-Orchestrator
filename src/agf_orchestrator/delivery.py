@@ -372,6 +372,7 @@ class DeliveryPipeline:
         *,
         execute: bool,
         merge_decision: MergeDecision | dict[str, object] | None = None,
+        project_id: str | None = None,
     ) -> DeliveryReport:
         task = _task(plan, task_id)
         delivery_id = _delivery_id(plan.plan_id, task_id)
@@ -525,6 +526,7 @@ class DeliveryPipeline:
                 attempt.patch.path,
                 task,
                 merge_decision=merge_decision,
+                project_id=project_id,
                 expected_patch_sha256=attempt.patch.sha256,
                 validation_timeout=self.validation_timeout,
             )

@@ -84,9 +84,11 @@ cannot substitute for that record.
    protected classes, and fail-closed behavior.
 4. Runtime support is implemented and reviewed in isolation without changing
    the active policy pointer.
-5. The external controller atomically updates the active-policy pointer, keeps
-   the previous version as the rollback target, and signs the activation
-   record binding that pointer update to the approved policy hash.
+5. The external controller records policy artifacts, activation, rollback
+   tombstones, and the anti-replay journal in one SQLite transactional store.
+   A single `BEGIN IMMEDIATE` transaction updates the active state, generation,
+   signed evidence, and journal; the previous version remains the pinned
+   rollback target.
 6. AGF verifies both the active policy and the activation record before any
    autonomous merge can occur.
 

@@ -78,6 +78,8 @@ def assess_risk(
         ),
     ]
     level = _aggregate_level(signals)
+    if protected_paths:
+        level = RiskLevel.CRITICAL
     assessment = RiskAssessment(
         "1.0", assessment_id, project_id, task_id, level, tuple(signals),
         rollback_difficulty, incident_count, protected_paths, evidence_refs,

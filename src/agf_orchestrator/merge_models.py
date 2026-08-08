@@ -10,8 +10,11 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Mapping
+
+from .risk_models import risk_from_dict
 
 
 class MergeValidationError(ValueError):
@@ -100,6 +103,13 @@ class GateEvidence:
             raise MergeValidationError(f"gate {self.name} status is invalid")
         _strings("evidence_refs", self.evidence_refs, allow_empty=False)
         _text("observed_at", self.observed_at, allow_empty=True)
+        if self.observed_at:
+            try:
+                observed = datetime.fromisoformat(self.observed_at)
+            except ValueError as exc:
+                raise MergeValidationError("observed_at is invalid") from exc
+            if observed.tzinfo is None or observed > datetime.now(UTC):
+                raise MergeValidationError("observed_at is invalid")
         _text("freshness", self.freshness, allow_empty=True)
         _text("detail", self.detail, allow_empty=True)
 
@@ -125,6 +135,8 @@ class MergeDecision:
     evidence_hash: str
     integrity_hash: str
     expiry: str = ""
+    policy_hash: str = ""
+    risk_assessment: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -145,6 +157,8 @@ class MergeDecision:
             "evidence_hash": self.evidence_hash,
             "integrity_hash": self.integrity_hash,
             "expiry": self.expiry,
+            "policy_hash": self.policy_hash,
+            "risk_assessment": self.risk_assessment,
         }
 
     def validate(self) -> None:
@@ -183,6 +197,17 @@ class MergeDecision:
         if not _HEX.fullmatch(self.evidence_hash) or not _HEX.fullmatch(self.integrity_hash):
             raise MergeValidationError("decision hashes are invalid")
         _text("expiry", self.expiry, allow_empty=True)
+        if self.policy_hash and not _HEX.fullmatch(self.policy_hash):
+            raise MergeValidationError("policy hash is invalid")
+        if self.risk_assessment is not None:
+            try:
+                assessment = risk_from_dict(self.risk_assessment)
+            except (TypeError, ValueError) as exc:
+                raise MergeValidationError("risk assessment is invalid") from exc
+            if assessment.project_id != self.project_id or assessment.task_id != self.task_id:
+                raise MergeValidationError("risk assessment identity does not match decision")
+            if RiskClass(assessment.level.name) is not self.risk_class:
+                raise MergeValidationError("risk assessment does not match decision risk")
         if self.decision_status is DecisionStatus.BLOCKED:
             if self.authorization_status is AuthorizationStatus.AUTHORIZED:
                 raise MergeValidationError("blocked decisions cannot authorize")
@@ -210,6 +235,8 @@ def decision_from_dict(payload: Mapping[str, Any]) -> MergeDecision:
         "delivery_sha", "risk_class", "gates", "policy_id", "policy_version",
         "constitution_id", "decision_status", "authorization_status",
         "blocking_reasons", "evidence_hash", "integrity_hash", "expiry",
+        "policy_hash",
+        "risk_assessment",
     }
     if not isinstance(payload, Mapping) or set(payload) != required:
         raise MergeValidationError("decision schema is missing or contains unknown fields")
@@ -242,6 +269,8 @@ def decision_from_dict(payload: Mapping[str, Any]) -> MergeDecision:
             evidence_hash=payload["evidence_hash"],
             integrity_hash=payload["integrity_hash"],
             expiry=payload["expiry"],
+            policy_hash=payload["policy_hash"],
+            risk_assessment=payload["risk_assessment"],
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise MergeValidationError(f"invalid decision structure: {exc}") from exc

@@ -31,12 +31,13 @@ def test_protected_path_and_rollback_unknown_require_conservative_level():
     payload = load_fixture("valid_assessment.json")
     payload["protected_paths"] = ["src/agf_orchestrator/constitution.py"]
     payload["level"] = "HIGH"
-    assessment = risk_from_dict(payload)
-    assert assessment.level is RiskLevel.HIGH
-
-    payload["rollback_difficulty"] = "UNKNOWN"
     with pytest.raises(RiskValidationError, match="CRITICAL"):
         risk_from_dict(payload)
+
+    payload["level"] = "CRITICAL"
+    payload["rollback_difficulty"] = "UNKNOWN"
+    assessment = risk_from_dict(payload)
+    assert assessment.level is RiskLevel.CRITICAL
 
 
 def test_secret_and_unknown_schema_fields_are_rejected():

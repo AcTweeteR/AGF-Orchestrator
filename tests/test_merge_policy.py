@@ -3,6 +3,8 @@ import pytest
 from agf_orchestrator.git_delivery import GitDeliveryError, _validate_delivery_authorization
 from agf_orchestrator.merge_models import GateEvidence, GateStatus, RiskClass
 from agf_orchestrator.merge_policy import REQUIRED_GATES, MergePolicy, MergePolicyEngine
+from agf_orchestrator.risk_engine import assess_risk
+from agf_orchestrator.risk_models import RollbackDifficulty
 
 BASE = "a" * 40
 DELIVERY = "b" * 40
@@ -21,7 +23,7 @@ def engine():
 
 def evaluate(gate_values=None, risk=RiskClass.LOW):
     return engine().evaluate(
-        project_id="project-agf-orchestrator",
+        project_id="project-efc8e8ef7be7050b",
         task_id="task-e6-t1",
         base_sha=BASE,
         delivery_sha=DELIVERY,
@@ -77,6 +79,22 @@ def test_human_merge_policy_blocks_even_complete_evidence():
     )
     assert item.decision_status.value == "BLOCKED"
     assert "human merge approval is required by policy" in item.blocking_reasons
+
+
+def test_risk_engine_assessment_cannot_be_lowered_by_caller():
+    assessment = assess_risk(
+        assessment_id="risk-protected", project_id="project-efc8e8ef7be7050b",
+        task_id="task-e6-t1", changed_paths=("constitution.py",),
+        protected_paths=("constitution.py",), rollback_difficulty=RollbackDifficulty.EASY,
+        incident_count=0, reviewer_blockers=0, validation_passed=True,
+        evidence_refs=("risk-evidence",),
+    )
+    with pytest.raises(ValueError, match="does not match Risk Engine"):
+        engine().evaluate(
+            project_id="project-efc8e8ef7be7050b", task_id="task-e6-t1",
+            base_sha=BASE, delivery_sha=DELIVERY, constitution_id="constitution-v1",
+            risk_class=RiskClass.LOW, gates=gates(), risk_assessment=assessment,
+        )
 
 
 def test_low_risk_authorization_is_accepted_only_with_complete_evidence():

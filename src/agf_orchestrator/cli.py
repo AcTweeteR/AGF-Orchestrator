@@ -25,6 +25,7 @@ from .git_delivery import DraftPRCreator
 from .inbox import build_inbox
 from .locking import LockError
 from .models import PlanStatus
+from .policy_authority import EffectiveRisk, PolicyActivationError, PolicyAuthority
 from .preflight import PreflightError, collect_repository
 from .project_models import ProjectPolicy
 from .project_registry import ProjectRegistry, ProjectRegistryError, parse_remote_url
@@ -160,6 +161,11 @@ def build_parser() -> argparse.ArgumentParser:
     lock.add_argument("--json", action="store_true")
     inbox = commands.add_parser("inbox", help="show only items requiring attention")
     inbox.add_argument("--json", action="store_true")
+    policy = commands.add_parser("policy", help="verify owner-signed policy state")
+    policy_commands = policy.add_subparsers(dest="policy_command", required=True)
+    policy_verify = policy_commands.add_parser("verify")
+    policy_verify.add_argument("--project", required=True)
+    policy_verify.add_argument("--json", action="store_true")
     return parser
 
 
@@ -315,6 +321,32 @@ def run_inbox(args: argparse.Namespace) -> int:
         return 2
 
 
+def run_policy(args: argparse.Namespace) -> int:
+    try:
+        project, _ = _resolve_project(argparse.Namespace(project=args.project))
+        active = PolicyAuthority().resolve(project.project_id)
+        _output(
+            {
+                "project_id": active.project_id,
+                "policy_id": active.policy_id,
+                "version": active.version,
+                "policy_hash": active.policy_hash,
+                "activation_hash": active.activation_hash,
+                "rollback_target": active.rollback_target,
+                "key_id": active.key_id,
+                "human_merge": {
+                    risk.value: active.requires_human_merge(risk)
+                    for risk in EffectiveRisk
+                },
+            },
+            args.json,
+        )
+        return 0
+    except (PolicyActivationError, ProjectRegistryError, OSError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+
 def _write_plan(plan, output: str, repository_root: str) -> None:
     target = Path(output).expanduser().resolve()
     root = Path(repository_root).resolve()
@@ -415,6 +447,7 @@ def run_execute(args: argparse.Namespace) -> int:
     except (
         ProjectRegistryError,
         ExecutionValidationError,
+        PolicyActivationError,
         OSError,
         ValueError,
         json.JSONDecodeError,
@@ -449,9 +482,17 @@ def run_deliver(args: argparse.Namespace) -> int:
         if args.execute:
             if not project.policy.allow_live_execution or not project.policy.allow_delivery:
                 raise ProjectRegistryError("project policy denies live delivery")
-            if not project.policy.require_human_merge:
-                raise ProjectRegistryError("delivery requires human merge approval")
             _verify_constitution(project)
+            active_policy = PolicyAuthority().resolve_or_none(project.project_id)
+            if active_policy is None and not project.policy.require_human_merge:
+                raise ProjectRegistryError("delivery requires human merge approval")
+            task = next((item for item in plan.tasks if item.task_id == args.task), None)
+            if task is None:
+                raise ExecutionValidationError(f"task does not exist: {args.task}")
+            if active_policy is not None and active_policy.requires_human_merge(task.risk_level):
+                raise ProjectRegistryError(
+                    f"active policy requires human merge for risk {task.risk_level}"
+                )
         output = Path(args.output).expanduser().resolve()
         if output == target_root or target_root in output.parents:
             raise ExecutionValidationError(
@@ -484,11 +525,15 @@ def run_deliver(args: argparse.Namespace) -> int:
             pr_creator=DraftPRCreator(simulate=args.simulate_pr),
             max_correction_rounds=project.policy.maximum_correction_rounds,
         )
-        report = pipeline.deliver(plan, args.task, str(target_root), execute=args.execute)
+        report = pipeline.deliver(
+            plan, args.task, str(target_root), execute=args.execute,
+            project_id=project.project_id,
+        )
         write_delivery_report(report, output)
     except (
         ProjectRegistryError,
         ExecutionValidationError,
+        PolicyActivationError,
         OSError,
         ValueError,
         json.JSONDecodeError,
@@ -516,6 +561,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_session(args)
     if args.command == "inbox":
         return run_inbox(args)
+    if args.command == "policy":
+        return run_policy(args)
     return 2
 
 
