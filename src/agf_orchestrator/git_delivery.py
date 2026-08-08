@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -25,6 +27,7 @@ from .merge_models import (
 from .merge_policy import REQUIRED_GATES
 from .models import Task
 from .policy_authority import PolicyActivationError, PolicyAuthority
+from .policy_state_store import PolicyStateError, PolicyStateStore
 from .risk_models import risk_from_dict
 
 
@@ -244,10 +247,11 @@ class GitDelivery:
         if merge_decision is None and project_id is None:
             if (PolicyAuthority().state_dir / "policy-state.sqlite3").exists():
                 raise GitDeliveryError("delivery project identity is required")
+        validated_decision: MergeDecision | None = None
         if merge_decision is not None:
             if project_id is None:
                 raise GitDeliveryError("delivery project identity is required")
-            _validate_delivery_authorization(
+            validated_decision = _validate_delivery_authorization(
                 merge_decision,
                 task_id=task.task_id,
                 base_sha=base_sha,
@@ -255,12 +259,14 @@ class GitDelivery:
                 project_id=project_id,
             )
 
-        worktree = tempfile.mkdtemp(prefix="agf-delivery-")
-        shutil.rmtree(worktree)
+        authority_stack = ExitStack()
+        worktree: str | None = None
         commit_sha: str | None = None
         validation_results: list[str] = []
         changed_files: list[str] = []
         try:
+            worktree = tempfile.mkdtemp(prefix="agf-delivery-")
+            shutil.rmtree(worktree)
             _git(repository, "worktree", "add", "-b", branch, worktree, base_sha)
             check = subprocess.run(
                 ["git", "-C", worktree, "apply", "--check", patch_path],
@@ -280,6 +286,27 @@ class GitDelivery:
                 raise GitDeliveryError(
                     "validation failed after patch application: " + "; ".join(blockers)
                 )
+            if validated_decision is not None and project_id is not None:
+                store = PolicyStateStore(Path.home() / ".agf-orchestrator")
+                store.reserve_delivery(
+                    project_id,
+                    operation_id=validated_decision.decision_id,
+                    expected_generation=validated_decision.authority_generation,
+                )
+                commit_token = store.begin_delivery_commit(
+                    project_id,
+                    operation_id=validated_decision.decision_id,
+                    expected_generation=validated_decision.authority_generation,
+                )
+                authority_stack.enter_context(
+                    store.delivery_transaction(
+                        project_id,
+                        operation_id=validated_decision.decision_id,
+                        expected_generation=validated_decision.authority_generation,
+                        commit_token=commit_token,
+                    )
+                )
+            _ensure_emergency_stop_clear(project_id)
             _git(worktree, "add", "--", *changed_files)
             _git(worktree, "commit", "-m", f"AGF: {task.title}")
             commit_sha = _git(worktree, "rev-parse", "HEAD").stdout.strip()
@@ -295,7 +322,9 @@ class GitDelivery:
         except (OSError, subprocess.CalledProcessError) as exc:
             raise GitDeliveryError("git delivery command failed") from exc
         finally:
-            _git(repository, "worktree", "remove", "--force", worktree, check=False)
+            authority_stack.close()
+            if worktree is not None:
+                _git(repository, "worktree", "remove", "--force", worktree, check=False)
 
 
 def _validate_delivery_authorization(
@@ -307,6 +336,7 @@ def _validate_delivery_authorization(
     project_id: str | None = None,
 ) -> MergeDecision:
     """Require an intact, complete LOW decision before patch mutation."""
+    _ensure_emergency_stop_clear(project_id)
     try:
         validated = (
             decision
@@ -320,6 +350,18 @@ def _validate_delivery_authorization(
         raise GitDeliveryError("merge authorization integrity check failed")
     if project_id is not None and validated.project_id != project_id:
         raise GitDeliveryError("merge authorization project does not match delivery")
+    if project_id is not None:
+        try:
+            store = PolicyStateStore(Path.home() / ".agf-orchestrator", read_only=True)
+            snapshot = store.authority_snapshot(project_id)
+        except (PolicyStateError, sqlite3.Error) as exc:
+            raise GitDeliveryError("authority state is unreadable") from exc
+        if snapshot is None:
+            raise GitDeliveryError("authority state is not bootstrapped")
+        if int(snapshot["generation"]) != validated.authority_generation:
+            raise GitDeliveryError("authorization generation is stale")
+        if int(snapshot["kill_switch_active"]):
+            raise GitDeliveryError("kill switch is active")
     if validated.risk_class in {RiskClass.CRITICAL, RiskClass.UNKNOWN}:
         raise GitDeliveryError("CRITICAL/UNKNOWN delivery requires human approval")
     if validated.risk_class in {RiskClass.MEDIUM, RiskClass.HIGH} and not validated.policy_hash:
@@ -381,6 +423,27 @@ def _validate_delivery_authorization(
             "merge authorization evidence is incomplete (" + "; ".join(details) + ")"
         )
     return validated
+
+
+def _ensure_emergency_stop_clear(project_id: str | None) -> None:
+    """Re-read the owner signal at each consequential delivery boundary."""
+    if project_id is None:
+        if (PolicyAuthority().state_dir / "policy-state.sqlite3").exists():
+            raise GitDeliveryError("delivery project identity is required")
+        return
+    try:
+        snapshot = PolicyStateStore(
+            Path.home() / ".agf-orchestrator", read_only=True
+        ).authority_snapshot(project_id)
+    except (PolicyStateError, sqlite3.Error) as exc:
+        raise GitDeliveryError("authority state is unreadable") from exc
+    if snapshot is None:
+        raise GitDeliveryError("authority state is not bootstrapped")
+    if int(snapshot["kill_switch_active"]):
+        raise GitDeliveryError(
+            "emergency stop is active: "
+            f"stop-{snapshot['operation_id']} generation {snapshot['generation']}"
+        )
 
 
 def _validate_freshness(decision: MergeDecision, limits: dict[str, Any]) -> None:

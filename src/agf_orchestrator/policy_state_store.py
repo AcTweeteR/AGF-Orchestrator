@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -13,6 +15,21 @@ from typing import Any, Callable, Iterator
 
 class PolicyStateError(RuntimeError):
     """Raised when transactional policy state is missing or inconsistent."""
+
+
+@dataclass(frozen=True)
+class KillSwitchSnapshot:
+    """Verified snapshot of the sole transactional kill-switch authority."""
+
+    active: bool
+    generation: int
+    event_id: str
+    changed_at: str
+    reason: str
+
+    @classmethod
+    def disabled(cls) -> "KillSwitchSnapshot":
+        return cls(False, 0, "stop-bootstrap", "", "")
 
 
 SCHEMA = "1"
@@ -47,6 +64,11 @@ CREATE TABLE IF NOT EXISTS operation_journal (
 );
 CREATE INDEX IF NOT EXISTS journal_project_generation
   ON operation_journal(project_id, generation);
+CREATE TABLE IF NOT EXISTS authority_state (
+  project_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
+  kill_switch_active INTEGER NOT NULL CHECK(kill_switch_active IN (0, 1)),
+  operation_id TEXT NOT NULL, changed_at TEXT NOT NULL, reason TEXT NOT NULL
+);
 """
 
 
@@ -100,6 +122,165 @@ class PolicyStateStore:
                     policy["signature"], policy["key_id"], _json(policy), _now(),
                 ),
             )
+
+    def bootstrap_authority(self, project_id: str, *, generation: int) -> None:
+        """Create the initial inactive authority state from verified policy state."""
+        self.initialize()
+        with self.transaction() as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO authority_state
+                   (project_id, generation, kill_switch_active, operation_id, changed_at, reason)
+                   VALUES (?, ?, 0, 'bootstrap', ?, 'initial authoritative state')""",
+                (project_id, generation, _now()),
+            )
+
+    def authority_snapshot(self, project_id: str) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            try:
+                row = connection.execute(
+                    "SELECT * FROM authority_state WHERE project_id=?", (project_id,)
+                ).fetchone()
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc):
+                    return None
+                raise PolicyStateError("authority state is unreadable") from exc
+            return None if row is None else dict(row)
+
+    def set_kill_switch(
+        self,
+        project_id: str,
+        *,
+        operation_id: str,
+        active: bool,
+        reason: str,
+        authorization: dict[str, Any],
+        expected_generation: int | None = None,
+    ) -> int:
+        """Atomically advance the owner-controlled authority generation."""
+        self.initialize()
+        with self.transaction() as connection:
+            self._check_unused(connection, operation_id)
+            self._verify_owner_operation(
+                authorization, project_id, operation_id, active, reason
+            )
+            row = connection.execute(
+                "SELECT generation, kill_switch_active FROM authority_state WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+            if row is None:
+                raise PolicyStateError("authority state is not bootstrapped")
+            current = int(row[0])
+            if expected_generation is not None and current != expected_generation:
+                raise PolicyStateError("stale authority generation")
+            generation = current + 1
+            payload = _json({"active": active, "reason": reason, "generation": generation})
+            connection.execute(
+                """UPDATE authority_state SET generation=?, kill_switch_active=?,
+                   operation_id=?, changed_at=?, reason=? WHERE project_id=?""",
+                (generation, int(active), operation_id, _now(), reason, project_id),
+            )
+            connection.execute(
+                """INSERT INTO operation_journal
+                   (operation_id, project_id, operation_type, generation,
+                    payload_hash, committed_at)
+                   VALUES (?, ?, 'kill_switch', ?, ?, ?)""",
+                (operation_id, project_id, generation, _hash_text(payload), _now()),
+            )
+            return generation
+
+    def reserve_delivery(
+        self, project_id: str, *, operation_id: str, expected_generation: int
+    ) -> None:
+        """Durably reserve one decision before entering the final commit lock."""
+        self.initialize()
+        with self.transaction() as connection:
+            self._check_unused(connection, operation_id)
+            row = connection.execute(
+                "SELECT generation, kill_switch_active FROM authority_state WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+            if row is None:
+                raise PolicyStateError("authority state is not bootstrapped")
+            if int(row[0]) != expected_generation:
+                raise PolicyStateError("authorization generation is stale")
+            if int(row[1]):
+                raise PolicyStateError("kill switch is active")
+            connection.execute(
+                """INSERT INTO operation_journal
+                   (operation_id, project_id, operation_type, generation,
+                    payload_hash, committed_at)
+                   VALUES (?, ?, 'delivery_reserved', ?, ?, ?)""",
+                (operation_id, project_id, expected_generation,
+                 _hash_text(operation_id), _now()),
+            )
+
+    @contextmanager
+    def delivery_transaction(
+        self,
+        project_id: str,
+        *,
+        operation_id: str,
+        expected_generation: int,
+        commit_token: str,
+    ) -> Iterator[sqlite3.Connection]:
+        """Hold the authority write lock through the irreversible delivery commit."""
+        if self.read_only:
+            raise PolicyStateError("read-only policy store cannot authorize delivery")
+        self.initialize()
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT generation, kill_switch_active FROM authority_state WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+            if row is None:
+                raise PolicyStateError("authority state is not bootstrapped")
+            if int(row[0]) != expected_generation:
+                raise PolicyStateError("authorization generation is stale")
+            if int(row[1]):
+                raise PolicyStateError("kill switch is active")
+            journal = connection.execute(
+                "SELECT generation, operation_type, payload_hash "
+                "FROM operation_journal WHERE operation_id=?",
+                (operation_id,),
+            ).fetchone()
+            if journal is None or journal[1] != "delivery_committing":
+                raise PolicyStateError("delivery authorization is not in commit state")
+            if int(journal[0]) != expected_generation:
+                raise PolicyStateError("authorization generation is stale")
+            if journal[2] != commit_token:
+                raise PolicyStateError("delivery commit token is invalid")
+            yield connection
+            connection.execute(
+                "UPDATE operation_journal SET operation_type='delivery_committed', "
+                "committed_at=? WHERE operation_id=?", (_now(), operation_id)
+            )
+
+    def begin_delivery_commit(
+        self, project_id: str, *, operation_id: str, expected_generation: int
+    ) -> str:
+        """Durably enter a non-replayable commit state before Git mutation."""
+        self.initialize()
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT generation, kill_switch_active FROM authority_state WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+            journal = connection.execute(
+                "SELECT generation, operation_type FROM operation_journal WHERE operation_id=?",
+                (operation_id,),
+            ).fetchone()
+            if row is None or journal is None or journal[1] != "delivery_reserved":
+                raise PolicyStateError("delivery authorization is not reservable")
+            if int(row[0]) != expected_generation or int(journal[0]) != expected_generation:
+                raise PolicyStateError("authorization generation is stale")
+            if int(row[1]):
+                raise PolicyStateError("kill switch is active")
+            commit_token = uuid.uuid4().hex
+            connection.execute(
+                "UPDATE operation_journal SET operation_type='delivery_committing', "
+                "payload_hash=? WHERE operation_id=?", (commit_token, operation_id)
+            )
+            return commit_token
 
     def activate(
         self,
@@ -283,6 +464,37 @@ class PolicyStateStore:
         ).fetchone():
             raise PolicyStateError("operation identity has already been consumed")
 
+    def _verify_owner_operation(
+        self, authorization: dict[str, Any], project_id: str,
+        operation_id: str, active: bool, reason: str,
+    ) -> None:
+        required = {"project_id", "operation_id", "active", "reason", "key_id", "signature"}
+        if set(authorization) != required or authorization["project_id"] != project_id:
+            raise PolicyStateError("owner authorization is invalid")
+        if (
+            authorization["operation_id"] != operation_id
+            or authorization["active"] is not active
+            or authorization["reason"] != reason
+            or authorization["key_id"] != "owner-key-1"
+        ):
+            raise PolicyStateError("owner authorization is invalid")
+        signature = authorization["signature"]
+        if not isinstance(signature, str):
+            raise PolicyStateError("owner authorization is invalid")
+        unsigned = {key: value for key, value in authorization.items() if key != "signature"}
+        try:
+            import base64
+            import hashlib
+            import hmac
+
+            key_path = self.state_dir / "constitution-authority" / "owner.key"
+            key = base64.b64decode(key_path.read_text(encoding="ascii"), validate=True)
+            expected = hmac.new(key, _json_bytes(unsigned), hashlib.sha256).hexdigest()
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise PolicyStateError("owner authorization is invalid") from exc
+        if not hmac.compare_digest(signature, expected):
+            raise PolicyStateError("owner authorization is invalid")
+
     def _connection(self) -> sqlite3.Connection:
         if self.read_only:
             if not self.path.exists():
@@ -303,5 +515,15 @@ def _json(value: dict[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def _json_bytes(value: dict[str, Any]) -> bytes:
+    return _json(value).encode("utf-8")
+
+
 def _now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
+
+
+def _hash_text(value: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()

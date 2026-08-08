@@ -1,5 +1,10 @@
+import base64
+import hashlib
+import hmac
+import json
 import sqlite3
 import threading
+import time
 
 import pytest
 
@@ -12,6 +17,21 @@ POLICY = {
     "key_id": "key", "created_at": "2026-08-08T00:00:00+00:00",
 }
 POLICY_HASH = "a" * 64
+OWNER_KEY = b"owner-key-material-that-is-at-least-32-bytes-long"
+
+
+def owner_authorization(root, operation_id, active, reason):
+    authority = root / "constitution-authority"
+    authority.mkdir(parents=True, exist_ok=True)
+    (authority / "owner.key").write_text(base64.b64encode(OWNER_KEY).decode("ascii"))
+    unsigned = {
+        "project_id": PROJECT, "operation_id": operation_id, "active": active,
+        "reason": reason, "key_id": "owner-key-1",
+    }
+    payload = json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    return {
+        **unsigned, "signature": hmac.new(OWNER_KEY, payload, hashlib.sha256).hexdigest()
+    }
 
 
 def activation(operation_id="operation-activation-one", policy_hash=POLICY_HASH):
@@ -111,3 +131,98 @@ def test_concurrent_activation_has_one_committed_winner(tmp_path):
         thread.join()
     assert sum(isinstance(value, int) for _, value in results) == 1
     assert store.snapshot(PROJECT)["generation"] == 1
+
+
+def test_kill_switch_generation_and_clear_invalidate_old_state(tmp_path):
+    store = PolicyStateStore(tmp_path)
+    store.bootstrap_authority(PROJECT, generation=1)
+    assert store.authority_snapshot(PROJECT)["generation"] == 1
+    authorization = owner_authorization(tmp_path, "operation-stop-on", True, "owner incident")
+    assert store.set_kill_switch(
+        PROJECT, operation_id="operation-stop-on", active=True,
+        reason="owner incident", authorization=authorization, expected_generation=1,
+    ) == 2
+    active = store.authority_snapshot(PROJECT)
+    assert active["kill_switch_active"] == 1
+    with pytest.raises(PolicyStateError, match="stale authority"):
+        store.set_kill_switch(
+            PROJECT, operation_id="operation-stop-clear", active=False,
+            reason="owner cleared", authorization=owner_authorization(
+                tmp_path, "operation-stop-clear", False, "owner cleared"
+            ), expected_generation=1,
+        )
+    clear_auth = owner_authorization(tmp_path, "operation-stop-clear", False, "owner cleared")
+    assert store.set_kill_switch(
+        PROJECT, operation_id="operation-stop-clear", active=False,
+        reason="owner cleared", authorization=clear_auth, expected_generation=2,
+    ) == 3
+    cleared = store.authority_snapshot(PROJECT)
+    assert cleared["kill_switch_active"] == 0
+    with pytest.raises(PolicyStateError, match="already"):
+        store.set_kill_switch(
+            PROJECT, operation_id="operation-stop-clear", active=False,
+            reason="replay", authorization=clear_auth,
+        )
+
+
+def test_delivery_transaction_wins_or_loses_switch_race_deterministically(tmp_path):
+    store = PolicyStateStore(tmp_path)
+    store.bootstrap_authority(PROJECT, generation=1)
+    entered = threading.Event()
+    finished = threading.Event()
+
+    def activate():
+        entered.wait()
+        store.set_kill_switch(
+            PROJECT, operation_id="operation-race-stop", active=True, reason="race",
+            authorization=owner_authorization(
+                tmp_path, "operation-race-stop", True, "race"
+            )
+        )
+        finished.set()
+
+    thread = threading.Thread(target=activate)
+    thread.start()
+    store.reserve_delivery(PROJECT, operation_id="decision-race", expected_generation=1)
+    token = store.begin_delivery_commit(
+        PROJECT, operation_id="decision-race", expected_generation=1
+    )
+    with store.delivery_transaction(
+        PROJECT, operation_id="decision-race", expected_generation=1,
+        commit_token=token,
+    ):
+        entered.set()
+        time.sleep(0.05)
+        assert not finished.is_set()
+    thread.join(timeout=2)
+    assert finished.is_set()
+    assert store.authority_snapshot(PROJECT)["kill_switch_active"] == 1
+    with pytest.raises(PolicyStateError, match="stale|active"):
+        with store.delivery_transaction(
+            PROJECT, operation_id="decision-race-retry", expected_generation=1,
+            commit_token="unused",
+        ):
+            pass
+
+
+def test_delivery_commit_crash_leaves_non_replayable_recovery_state(tmp_path):
+    store = PolicyStateStore(tmp_path)
+    store.bootstrap_authority(PROJECT, generation=1)
+    store.reserve_delivery(PROJECT, operation_id="decision-crash", expected_generation=1)
+    token = store.begin_delivery_commit(
+        PROJECT, operation_id="decision-crash", expected_generation=1
+    )
+    with pytest.raises(RuntimeError, match="crash"):
+        with store.delivery_transaction(
+            PROJECT, operation_id="decision-crash", expected_generation=1,
+            commit_token=token,
+        ):
+            raise RuntimeError("crash")
+    with pytest.raises(PolicyStateError, match="already"):
+        store.reserve_delivery(PROJECT, operation_id="decision-crash", expected_generation=1)
+    with pytest.raises(PolicyStateError, match="not reservable|token is invalid"):
+        with store.delivery_transaction(
+            PROJECT, operation_id="decision-crash", expected_generation=1,
+            commit_token="lost-after-crash",
+        ):
+            pass

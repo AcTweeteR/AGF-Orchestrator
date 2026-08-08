@@ -1,8 +1,13 @@
 import pytest
 
-from agf_orchestrator.git_delivery import GitDeliveryError, _validate_delivery_authorization
+from agf_orchestrator.git_delivery import (
+    GitDeliveryError,
+    _ensure_emergency_stop_clear,
+    _validate_delivery_authorization,
+)
 from agf_orchestrator.merge_models import GateEvidence, GateStatus, RiskClass
 from agf_orchestrator.merge_policy import REQUIRED_GATES, MergePolicy, MergePolicyEngine
+from agf_orchestrator.policy_state_store import KillSwitchSnapshot
 from agf_orchestrator.risk_engine import assess_risk
 from agf_orchestrator.risk_models import RollbackDifficulty
 
@@ -47,7 +52,7 @@ def test_missing_gate_blocks_and_cannot_authorize():
     item = evaluate(gates()[:-1])
     assert item.decision_status.value == "BLOCKED"
     assert item.authorization_status.value == "NOT_AUTHORIZED"
-    assert "missing gate: delivery_branch" in item.blocking_reasons
+    assert "missing gate: kill_switch" in item.blocking_reasons
 
 
 def test_failed_stale_and_contradictory_evidence_block():
@@ -117,3 +122,37 @@ def test_low_risk_authorization_rejects_tampering_and_non_low_decisions():
         _validate_delivery_authorization(
             forbidden, task_id="task-e6-t1", base_sha=BASE, delivery_sha=DELIVERY
         )
+
+
+def test_owner_emergency_stop_blocks_authorization_fail_closed():
+    signal = KillSwitchSnapshot(True, 4, "stop-owner-004", "2026-08-08T10:00:00Z", "incident")
+    policy = MergePolicy._from_verified_authority(
+        policy_id="policy-agf", version="1", require_human_merge=False,
+        stop_signal=signal, authority_generation=4,
+    )
+    item = MergePolicyEngine(policy).evaluate(
+        project_id="project-efc8e8ef7be7050b",
+        task_id="task-e6-t5",
+        base_sha=BASE,
+        delivery_sha=DELIVERY,
+        constitution_id="constitution-v1",
+        risk_class=RiskClass.LOW,
+        gates=gates(),
+    )
+    assert item.authorization_status.value == "NOT_AUTHORIZED"
+    assert "emergency stop is active" in " ".join(item.blocking_reasons)
+    assert item.to_dict() == MergePolicyEngine(policy).evaluate(
+        project_id="project-efc8e8ef7be7050b",
+        task_id="task-e6-t5",
+        base_sha=BASE,
+        delivery_sha=DELIVERY,
+        constitution_id="constitution-v1",
+        risk_class=RiskClass.LOW,
+        gates=list(reversed(gates())),
+    ).to_dict()
+
+
+def test_delivery_rechecks_owner_stop_at_final_boundary():
+    # Missing authoritative state must fail closed at the final boundary.
+    with pytest.raises(GitDeliveryError, match="authority state is (not bootstrapped|unreadable)"):
+        _ensure_emergency_stop_clear("project-efc8e8ef7be7050b")
