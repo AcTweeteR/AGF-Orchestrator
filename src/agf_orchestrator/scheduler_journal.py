@@ -47,6 +47,9 @@ class InboxItem:
     policy_id: str = ""
     policy_hash: str = ""
     uncertainty_kind: str = ""
+    decision_status: str = ""
+    authorization_status: str = ""
+    blocking_reasons: tuple[str, ...] = ()
     resolution_actor: str = ""
     resolution_outcome: str = ""
     resolved_at: str = ""
@@ -69,6 +72,9 @@ class InboxItem:
             "policy_id": self.policy_id,
             "policy_hash": self.policy_hash,
             "uncertainty_kind": self.uncertainty_kind,
+            "decision_status": self.decision_status,
+            "authorization_status": self.authorization_status,
+            "blocking_reasons": list(self.blocking_reasons),
             "resolution_actor": self.resolution_actor,
             "resolution_outcome": self.resolution_outcome,
             "resolved_at": self.resolved_at,
@@ -226,10 +232,15 @@ class SchedulerJournal:
         extended = old_extended | {
             "uncertainty_kind",
         }
+        executive = extended | {
+            "decision_status", "authorization_status", "blocking_reasons",
+        }
         old_resolved = old_extended | {"resolution_actor", "resolution_outcome", "resolved_at"}
         resolved = extended | {"resolution_actor", "resolution_outcome", "resolved_at"}
+        executive_resolved = executive | {"resolution_actor", "resolution_outcome", "resolved_at"}
         if not isinstance(payload, dict) or set(payload) not in (
-            legacy, old_extended, extended, old_resolved, resolved
+            legacy, old_extended, extended, executive, old_resolved, resolved,
+            executive_resolved,
         ):
             raise SchedulerJournalError("inbox schema is invalid")
         if set(payload) == legacy:
@@ -238,19 +249,29 @@ class SchedulerJournal:
                 "failed_gates": (), "pending_gates": (), "evidence_refs": (),
                 "policy_id": "", "policy_hash": "", "resolution_actor": "",
                 "uncertainty_kind": "", "resolution_outcome": "", "resolved_at": "",
+                "decision_status": "", "authorization_status": "", "blocking_reasons": (),
             }
         elif set(payload) == old_extended:
             payload = {
                 **payload, "uncertainty_kind": "", "resolution_actor": "",
-                "resolution_outcome": "", "resolved_at": "",
+                "resolution_outcome": "", "resolved_at": "", "decision_status": "",
+                "authorization_status": "", "blocking_reasons": (),
             }
         elif set(payload) == old_resolved:
-            payload = {**payload, "uncertainty_kind": ""}
+            payload = {
+                **payload, "uncertainty_kind": "", "decision_status": "",
+                "authorization_status": "", "blocking_reasons": (),
+            }
         elif set(payload) == extended:
             payload = {
                 **payload, "resolution_actor": "", "resolution_outcome": "", "resolved_at": "",
+                "decision_status": "", "authorization_status": "", "blocking_reasons": (),
             }
-        for field in ("failed_gates", "pending_gates", "evidence_refs"):
+        elif set(payload) == executive:
+            payload = {
+                **payload, "resolution_actor": "", "resolution_outcome": "", "resolved_at": "",
+            }
+        for field in ("failed_gates", "pending_gates", "evidence_refs", "blocking_reasons"):
             value = payload[field]
             if isinstance(value, list):
                 if any(not isinstance(entry, str) for entry in value):
@@ -273,7 +294,8 @@ class SchedulerJournal:
             self._bounded_text(value)
         structured = any((item.decision_id, item.task_id, item.risk_class,
                           item.failed_gates, item.pending_gates, item.evidence_refs,
-                          item.policy_id, item.policy_hash))
+                          item.policy_id, item.policy_hash, item.decision_status,
+                          item.authorization_status, item.blocking_reasons))
         if structured and not item.decision_id:
             raise SchedulerJournalError("inbox decision identity is required")
         if item.decision_id:
@@ -281,11 +303,18 @@ class SchedulerJournal:
                 raise SchedulerJournalError("inbox decision identity is invalid")
             if not item.task_id or item.risk_class not in {"MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"}:
                 raise SchedulerJournalError("inbox decision context is invalid")
+            if item.decision_status and item.decision_status not in {"ELIGIBLE", "BLOCKED"}:
+                raise SchedulerJournalError("inbox decision status is invalid")
+            if item.authorization_status and item.authorization_status not in {
+                "AUTHORIZED", "NOT_AUTHORIZED"
+            }:
+                raise SchedulerJournalError("inbox authorization status is invalid")
             if item.policy_hash and not re.fullmatch(r"[a-f0-9]{64}", item.policy_hash):
                 raise SchedulerJournalError("inbox policy hash is invalid")
             self._bounded_list(item.failed_gates)
             self._bounded_list(item.pending_gates)
             self._bounded_list(item.evidence_refs)
+            self._bounded_list(item.blocking_reasons)
             self._bounded_text(item.task_id)
             self._bounded_text(item.policy_id)
             if item.uncertainty_kind and item.uncertainty_kind not in {
