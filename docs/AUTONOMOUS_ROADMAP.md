@@ -157,14 +157,14 @@ audits create tasks without changing objective/constitution.
 
 E7 has no previously defined executable tasks. The following decomposition is
 deterministic from the approved E7 scope and acceptance criteria; it adds no
-product scope or authority. E7-T1 and E7-T2 are complete; E7-T3 is now
-`READY`.
+product scope or authority. E7-T1 through E7-T3 are complete; E8 is the next
+approved epic requiring deterministic decomposition.
 
 | ID | Objective | Scope | Dependencies | Expected files/components | Acceptance criteria | Validation requirements | Risk | Rollback |
 |---|---|---|---|---|---|---|---|---|
 | E7-T1 (`COMPLETED`) | Audit approved requirements and retained evidence. | Reconcile roadmap, Constitution, ADRs, task evidence, validation and delivery records; identify only deterministic gaps. | E6-T8 | `docs/AUTONOMOUS_ROADMAP.md`; completion audit documentation. | Every approved task is classified with traceable evidence; unresolved high/critical blockers remain explicit; no protected source is changed. | Link/terminology checks; `git diff --check`; deterministic audit and secret-scan canary. | MEDIUM: omitted evidence could falsely signal completion. | Revert audit documentation; retain source records. |
 | E7-T2 (`COMPLETED`) | Record technical debt and authorized deferred work. | Convert E7-T1 gaps and existing bounded debt into an attributable register without silently removing work. | E7-T1 | `docs/AUTONOMOUS_ROADMAP.md`; technical-debt documentation. | Every deferred item has owner/status/evidence/next action; no item weakens policy or changes objective; unknown status remains blocked. | Link/terminology checks; `git diff --check`; deterministic restart/readback and secret-scan canary. | MEDIUM: untracked debt can hide blockers. | Revert debt register; preserve audit findings. |
-| E7-T3 (`READY`) | Produce the controlled release-readiness and completion report. | Summarize architecture, security, tests, Compliance, delivery, residual debt and remaining roadmap state. | E7-T1, E7-T2 | `docs/AUTONOMOUS_ROADMAP.md`; final readiness documentation. | Completion is claimed only when no READY/PLANNED work or blocking findings remain; Constitution is VERIFIED and main is clean/aligned. | Full repository validation; Ruff; `git diff --check`; deterministic readiness and secret-scan canaries; independent review and Compliance PASS. | HIGH: premature completion could hide unsafe residual work. | Revert readiness report; retain non-terminal roadmap state. |
+| E7-T3 (`COMPLETED`) | Produce the controlled release-readiness and completion report. | Summarize architecture, security, tests, Compliance, delivery, residual debt and remaining roadmap state. | E7-T1, E7-T2 | `docs/AUTONOMOUS_ROADMAP.md`; final readiness documentation. | Completion is claimed only when no READY/PLANNED work or blocking findings remain; Constitution is VERIFIED and main is clean/aligned. | Full repository validation; Ruff; `git diff --check`; deterministic readiness and secret-scan canaries; independent review and Compliance PASS. | HIGH: premature completion could hide unsafe residual work. | Revert readiness report; retain non-terminal roadmap state. |
 
 #### E7-T1 completion audit
 
@@ -185,15 +185,14 @@ resolves to the merged delivery record and its associated validation, review,
 and Compliance evidence.
 
 No unresolved HIGH or CRITICAL blocker was found in the reconciled records.
-The only remaining E7 work is the explicitly listed E7-T3 readiness report,
-so this audit does not claim final project completion. E7-T3 is promoted to
-`READY`.
+At the time of this audit, E7-T3 was the remaining E7 task; its readiness
+report below is now complete and explicitly leaves the project non-terminal.
 
 #### E7-T2 technical-debt and deferred-work register
 
 | Item | Owner | Status | Evidence | Next action |
 |---|---|---|---|---|
-| E7-T3 controlled readiness report | Release Manager | READY | E7-T1 audit; E6-T1–E6-T8 PR evidence | Produce the final bounded readiness report after this register is merged. |
+| E7-T3 controlled readiness report | Release Manager | COMPLETED | E7-T1 audit; E6-T1–E6-T8 PR evidence | Preserve the non-terminal readiness result and continue with E8 decomposition. |
 | E8 staged self-hosting and transfer | Director | PLANNED | E8 scope and acceptance above; no implementation evidence | Decompose only after E7 completion and required architecture/policy gates. |
 | E9 dynamic capability discovery | Director | PLANNED; local Qwen remains diagnostic-only | E9 scope and acceptance above; no promotion evidence | Decompose only after approved capability interfaces exist; preserve diagnostic-only status. |
 | E10 self-audit and controlled learning | Director | PLANNED | E10 scope and acceptance above; no implementation evidence | Decompose after E9 dependencies and evidence are complete. |
@@ -202,6 +201,20 @@ so this audit does not claim final project completion. E7-T3 is promoted to
 No item in this register changes the objective, Constitution, owner authority,
 protected policy, risk threshold, or merge policy. Unknown evidence remains a
 blocker and no deferred item is silently removed.
+
+#### E7-T3 controlled release-readiness report
+
+| Dimension | Result | Evidence |
+|---|---|---|
+| Architecture and governance | PASS | ConstitutionAuthority VERIFIED; ADR-0002 unchanged; ADR-0003 implementation and external activation controls verified, while the repository ADR remains `Proposed` until its governed activation record is applied. CRITICAL remains human-controlled. |
+| Implemented validation baseline | PASS | 400 tests passing; Ruff PASS; `git diff --check` PASS; Compliance PASS; E6 canaries and reviews recorded by PRs #65, #69, #74, #76, #78, #80, #82, and #84. |
+| Repository delivery state | PASS | Main reconciled with origin/main after merged PR #88; controlled delivery preserves isolated branches and caller cleanliness. |
+| Roadmap completion | NOT READY | E8, E9, E10, and E11 remain PLANNED with no implementation evidence; they must be decomposed and executed before final completion. |
+| Protected boundaries | PASS | No Constitution, owner authority, root of trust, protected policy, or merge threshold was changed. Local Qwen remains diagnostic-only. |
+
+Final readiness status is `NOT_READY_FOR_ROADMAP_COMPLETE`. This report does
+not claim project completion while approved roadmap work remains PLANNED.
+The next action is deterministic decomposition of E8 from its approved scope.
 
 ### E8 — Staged self-hosting and transfer
 
@@ -412,5 +425,6 @@ implemented in the current delivery.
   deterministic Reviewer and Compliance checks, rejects invalid assessments,
   and blocks when required risk evidence is absent.
 - E5 is complete through E5-T3 and PR #61. E6-T1 through E6-T8 are complete
-  through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 and E7-T2
-  are complete; E7-T3 is the next approved executable task and is `READY`.
+  through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 through E7-T3
+  are complete; E8 is the next approved epic requiring deterministic task
+  decomposition. Final readiness remains `NOT_READY_FOR_ROADMAP_COMPLETE`.
