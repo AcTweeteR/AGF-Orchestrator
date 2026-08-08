@@ -172,6 +172,42 @@ class OwnerPolicyController:
         self._validate_project(project_id)
         return PolicyAuthority().resolve(project_id)
 
+    def bootstrap_authority(self, project_id: str) -> dict[str, Any]:
+        """Pin the initial inactive kill-switch generation after policy activation."""
+        self._validate_project(project_id)
+        ConstitutionAuthority().resolve(project_id)
+        snapshot = PolicyStateStore(self.state_dir, read_only=True).snapshot(project_id)
+        if snapshot is None or snapshot.get("active_policy_hash") is None:
+            raise OwnerControllerError("active policy is required before authority bootstrap")
+        generation = int(snapshot["generation"])
+        self.store.bootstrap_authority(project_id, generation=generation)
+        return {"project_id": project_id, "generation": generation, "kill_switch_active": False}
+
+    def set_kill_switch(
+        self, project_id: str, operation_id: str, *, active: bool, reason: str
+    ) -> dict[str, Any]:
+        """Owner-only atomic activation or clearing of the emergency stop."""
+        self._validate_project(project_id)
+        if not OPERATION_RE.fullmatch(operation_id):
+            raise OwnerControllerError("invalid kill-switch operation identity")
+        ConstitutionAuthority().resolve(project_id)
+        try:
+            unsigned = {
+                "project_id": project_id, "operation_id": operation_id,
+                "active": active, "reason": reason, "key_id": KEY_ID,
+            }
+            signed = self._signed(unsigned)
+            generation = self.store.set_kill_switch(
+                project_id, operation_id=operation_id, active=active,
+                reason=reason, authorization=signed,
+            )
+        except PolicyStateError as exc:
+            raise OwnerControllerError(str(exc)) from exc
+        return {
+            "project_id": project_id, "generation": generation,
+            "kill_switch_active": active,
+        }
+
     def rollback(self, project_id: str, operation_id: str) -> dict[str, Any]:
         self._validate_project(project_id)
         if not OPERATION_RE.fullmatch(operation_id):
@@ -241,20 +277,29 @@ class OwnerPolicyController:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="explicit owner policy controller")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("inspect", "prepare", "verify"):
+    for name in ("inspect", "prepare", "verify", "bootstrap-authority"):
         command = commands.add_parser(name)
         command.add_argument("--project", required=True)
     for name in ("activate", "rollback"):
         command = commands.add_parser(name)
         command.add_argument("--project", required=True)
         command.add_argument("--operation-id", required=True)
+    switch = commands.add_parser("set-kill-switch")
+    switch.add_argument("--project", required=True)
+    switch.add_argument("--operation-id", required=True)
+    switch.add_argument("--reason", required=True)
+    switch.add_argument("--active", action="store_true")
     args = parser.parse_args(argv)
     controller = OwnerPolicyController()
-    result = (
-        getattr(controller, args.command)(args.project, args.operation_id)
-        if args.command in {"activate", "rollback"}
-        else getattr(controller, args.command)(args.project)
-    )
+    if args.command in {"activate", "rollback"}:
+        result = getattr(controller, args.command)(args.project, args.operation_id)
+    elif args.command == "set-kill-switch":
+        result = controller.set_kill_switch(
+            args.project, args.operation_id, active=args.active, reason=args.reason
+        )
+    else:
+        method = "bootstrap_authority" if args.command == "bootstrap-authority" else args.command
+        result = getattr(controller, method)(args.project)
     if hasattr(result, "__dict__"):
         result = result.__dict__
     print(json.dumps(result, indent=2, sort_keys=True, default=str))

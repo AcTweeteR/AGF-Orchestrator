@@ -137,6 +137,8 @@ class MergeDecision:
     expiry: str = ""
     policy_hash: str = ""
     risk_assessment: dict[str, Any] | None = None
+    authority_generation: int = 0
+    kill_switch_active: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -159,6 +161,8 @@ class MergeDecision:
             "expiry": self.expiry,
             "policy_hash": self.policy_hash,
             "risk_assessment": self.risk_assessment,
+            "authority_generation": self.authority_generation,
+            "kill_switch_active": self.kill_switch_active,
         }
 
     def validate(self) -> None:
@@ -199,6 +203,14 @@ class MergeDecision:
         _text("expiry", self.expiry, allow_empty=True)
         if self.policy_hash and not _HEX.fullmatch(self.policy_hash):
             raise MergeValidationError("policy hash is invalid")
+        if (
+            not isinstance(self.authority_generation, int)
+            or isinstance(self.authority_generation, bool)
+            or self.authority_generation < 0
+        ):
+            raise MergeValidationError("authority generation is invalid")
+        if not isinstance(self.kill_switch_active, bool):
+            raise MergeValidationError("kill switch state is invalid")
         if self.risk_assessment is not None:
             try:
                 assessment = risk_from_dict(self.risk_assessment)
@@ -218,6 +230,8 @@ class MergeDecision:
                 raise MergeValidationError("only eligible decisions can authorize")
             if self.blocking_reasons:
                 raise MergeValidationError("authorized decisions cannot have blockers")
+            if self.policy_hash and self.authority_generation < 1:
+                raise MergeValidationError("authorized decisions need authority generation")
 
     def integrity_payload(self) -> dict[str, Any]:
         value = self.to_dict()
@@ -238,7 +252,8 @@ def decision_from_dict(payload: Mapping[str, Any]) -> MergeDecision:
         "policy_hash",
         "risk_assessment",
     }
-    if not isinstance(payload, Mapping) or set(payload) != required:
+    extended = required | {"authority_generation", "kill_switch_active"}
+    if not isinstance(payload, Mapping) or set(payload) not in (required, extended):
         raise MergeValidationError("decision schema is missing or contains unknown fields")
     try:
         decision = MergeDecision(
@@ -271,6 +286,8 @@ def decision_from_dict(payload: Mapping[str, Any]) -> MergeDecision:
             expiry=payload["expiry"],
             policy_hash=payload["policy_hash"],
             risk_assessment=payload["risk_assessment"],
+            authority_generation=payload.get("authority_generation", 0),
+            kill_switch_active=payload.get("kill_switch_active", False),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise MergeValidationError(f"invalid decision structure: {exc}") from exc
