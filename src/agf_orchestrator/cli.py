@@ -13,6 +13,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .adapters.codex import CodexAdapter
+from .adapters.ollama import OllamaOpenHandsAdapter
 from .adapters.openhands import OpenHandsSDKAdapter
 from .compliance import ComplianceChecker
 from .constitution import ConstitutionAuthority, ConstitutionVerificationError
@@ -92,7 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
     execute.add_argument("--task", required=True, help="selected task ID")
     execute.add_argument("--repository", help="target Git repository")
     execute.add_argument("--project", help="registered project name or ID")
-    execute.add_argument("--adapter", choices=["codex", "openhands"], default="codex")
+    execute.add_argument("--adapter", choices=["codex", "openhands", "ollama"], default="codex")
     execute.add_argument("--allow-openhands-llm-env", action="store_true")
     execute.add_argument("--dry-run", action="store_true", help="explicitly request dry-run")
     execute.add_argument("--execute", action="store_true", help="allow live execution")
@@ -108,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     deliver.add_argument("--task", required=True)
     deliver.add_argument("--repository")
     deliver.add_argument("--project", help="registered project name or ID")
-    deliver.add_argument("--adapter", choices=["codex", "openhands"], default="codex")
+    deliver.add_argument("--adapter", choices=["codex", "openhands", "ollama"], default="codex")
     deliver.add_argument("--allow-openhands-llm-env", action="store_true")
     deliver.add_argument("--output", required=True)
     deliver.add_argument("--execute", action="store_true")
@@ -390,7 +391,13 @@ def run_execute(args: argparse.Namespace) -> int:
                     "execution report must not be written inside the target repository"
                 )
         adapter = (
-            OpenHandsSDKAdapter(
+            OllamaOpenHandsAdapter(
+                executable=args.openhands_path,
+                timeout=args.timeout,
+                allow_llm_env=True,
+            )
+            if args.adapter == "ollama"
+            else OpenHandsSDKAdapter(
                 executable=args.openhands_path,
                 timeout=args.timeout,
                 allow_llm_env=args.allow_openhands_llm_env,
@@ -451,7 +458,13 @@ def run_deliver(args: argparse.Namespace) -> int:
                 "delivery report must not be written inside the target repository"
             )
         adapter = (
-            OpenHandsSDKAdapter(
+            OllamaOpenHandsAdapter(
+                executable=args.openhands_path,
+                timeout=args.timeout,
+                allow_llm_env=True,
+            )
+            if args.adapter == "ollama"
+            else OpenHandsSDKAdapter(
                 executable=args.openhands_path,
                 timeout=args.timeout,
                 allow_llm_env=args.allow_openhands_llm_env,
