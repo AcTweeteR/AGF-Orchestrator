@@ -207,9 +207,9 @@ blocker and no deferred item is silently removed.
 | Dimension | Result | Evidence |
 |---|---|---|
 | Architecture and governance | PASS | ConstitutionAuthority VERIFIED; ADR-0002 unchanged; ADR-0003 implementation and external activation controls verified, while the repository ADR remains `Proposed` until its governed activation record is applied. CRITICAL remains human-controlled. |
-| Implemented validation baseline | PASS | 400 tests passing; Ruff PASS; `git diff --check` PASS; Compliance PASS; E6 canaries and reviews recorded by PRs #65, #69, #74, #76, #78, #80, #82, and #84. |
+| Implemented validation baseline | PASS | 415 tests passing; Ruff PASS; `git diff --check` PASS; Compliance PASS; E6 canaries and reviews recorded by PRs #65, #69, #74, #76, #78, #80, #82, and #84. |
 | Repository delivery state | PASS | Main reconciled with origin/main after merged PR #88; controlled delivery preserves isolated branches and caller cleanliness. |
-| Roadmap completion | NOT READY | E8 controlled evidence is complete; E9-T1 is COMPLETED, E9-T2 is READY but blocked on profile-specific evidence, and E9-T3–E9-T5 remain PLANNED; E10 and E11 remain PLANNED. |
+| Roadmap completion | NOT READY | E8 controlled evidence is complete; E9-T1 and E9-T2 are COMPLETED, E9-T3 is READY, and E9-T4–E9-T5 remain PLANNED; E10 and E11 remain PLANNED. |
 | Protected boundaries | PASS | No Constitution, owner authority, root of trust, protected policy, or merge threshold was changed. Local Qwen remains diagnostic-only. |
 
 Final readiness status is `NOT_READY_FOR_ROADMAP_COMPLETE`. This report does
@@ -459,8 +459,8 @@ probing or credential use.
 | ID | Objective | Scope | Dependencies | Expected files/components | Acceptance criteria | Validation requirements | Risk | Rollback |
 |---|---|---|---|---|---|---|---|---|
 | E9-T1 (`COMPLETED`) | Discover approved capability interfaces. | Enumerate only explicitly approved local/provider interfaces and immutable metadata without network scanning or credential disclosure. | E8, E1 | `docs/AUTONOMOUS_ROADMAP.md`; capability-discovery evidence. | Discovery is deterministic, bounded, secret-safe, project-isolated, and records UNKNOWN rather than inferring capability. | Inventory success/failure, no-network, secret-scan, restart, idempotency, and isolation canaries; independent review and Compliance PASS. | MEDIUM: unsafe discovery could disclose metadata or credentials. | Revert discovery evidence; preserve diagnostic-only profiles. |
-| E9-T2 (`READY`) | Record versioned capability profiles. | Store verified tool/context/code/health/privacy/budget evidence with immutable profile identity and provenance. | E9-T1, E3, E5 | `docs/AUTONOMOUS_ROADMAP.md`; capability registry evidence. | Profiles are versioned, attributable, bounded, project-isolated, and reject unverified claims. | Schema, provenance, restart, conflict, size-bound, and secret-scan canaries; independent review and Compliance PASS. | HIGH: false profiles could select unsafe providers. | Invalidate new profiles; retain last known-good evidence. |
-| E9-T3 (`PLANNED`) | Select eligible capabilities and safe fallback. | Apply policy, privacy, independence, budget, health, context/tool, and empirical evidence gates without provider self-selection authority. | E9-T2, E5, active policies | `docs/AUTONOMOUS_ROADMAP.md`; selection/fallback evidence. | Selection is explainable and deterministic; unknown, stale, conflicting, or ineligible evidence blocks or falls back only when permitted. | Eligibility, fallback, policy, privacy, independence, budget, and uncertainty canaries; independent review and Compliance PASS. | HIGH: bad selection could bypass capability or policy gates. | Revert selector evidence; fail closed to no eligible provider. |
+| E9-T2 (`COMPLETED`) | Record versioned capability profiles. | Store verified tool/context/code/health/privacy/budget evidence with immutable profile identity, provenance, and deterministic content hashing. | E9-T1, E3, E5 | `src/agf_orchestrator/capability_profiles.py`; `tests/test_capability_profiles.py`; `docs/AUTONOMOUS_ROADMAP.md`. | Profiles are versioned, attributable, bounded, project-isolated, reject unverified claims, and expose explicit SUPPORTED/UNSUPPORTED/UNKNOWN values without provider promotion. | Schema, provenance/hash, version, freshness, conflict, size-bound, UNKNOWN-rejection, and secret-scan canaries; independent review and Compliance PASS. | HIGH: false profiles could select unsafe providers. | Invalidate new profiles; retain last known-good evidence. |
+| E9-T3 (`READY`) | Select eligible capabilities and safe fallback. | Apply policy, privacy, independence, budget, health, context/tool, and empirical evidence gates without provider self-selection authority. | E9-T2, E5, active policies | `docs/AUTONOMOUS_ROADMAP.md`; selection/fallback evidence. | Selection is explainable and deterministic; unknown, stale, conflicting, or ineligible evidence blocks or falls back only when permitted. | Eligibility, fallback, policy, privacy, independence, budget, and uncertainty canaries; independent review and Compliance PASS. | HIGH: bad selection could bypass capability or policy gates. | Revert selector evidence; fail closed to no eligible provider. |
 | E9-T4 (`PLANNED`) | Invalidate stale or changed capability evidence. | Bind freshness, provider upgrades, health changes, and cross-project boundaries to deterministic invalidation. | E9-T2, E9-T3, E4 | `docs/AUTONOMOUS_ROADMAP.md`; freshness/invalidation evidence. | Stale, changed, contradictory, or cross-project profiles become ineligible and cannot be resurrected by retry. | Staleness, upgrade, contradiction, restart, replay, and project-isolation canaries; independent review and Compliance PASS. | HIGH: stale evidence could cause unsafe reuse. | Invalidate affected profiles; retain known-good baseline. |
 | E9-T5 (`PLANNED`) | Prove capability intelligence end to end. | Run disposable capability discovery, selection, fallback, failure, restart, and audit pilots under current governance. | E9-T1, E9-T2, E9-T3, E9-T4 | `docs/AUTONOMOUS_ROADMAP.md`; end-to-end capability evidence. | No real external effect; every choice is attributable, reviewable, Compliance-gated, reversible, and project-isolated. | Full validation, deterministic pilots, security canaries, independent review and Compliance PASS. | HIGH: integration errors could compose unsafe evidence. | Revert pilot evidence; disable new capability profiles. |
 
@@ -494,10 +494,32 @@ created by E9-T1; versioned profiles and empirical selection remain E9-T2 and
 E9-T3 scope.
 
 E9-T1 is complete with full validation, independent review APPROVE, and
-Compliance PASS. E9-T2 remains READY because profile-specific schema,
-provenance/content-hash, versioning, and UNKNOWN-rejection canaries do not
-exist in the current documentation-only repository. Existing generic storage
-and adapter tests are not substituted for that missing evidence.
+Compliance PASS. E9-T2 is complete with 15 focused tests, full validation,
+independent review APPROVE, and Compliance PASS. The original E9-T2 metadata incorrectly limited the task to
+documentation-only evidence even though its approved acceptance criteria
+require executable profile schema, provenance/content-hash, versioning, and
+UNKNOWN-rejection evidence. Owner authorization corrected that inconsistency
+without changing E9-T2 behavior, authority, provider eligibility, or policy
+scope. The minimum support is the provider-neutral
+`CapabilityProfile`/`CapabilityObservation` model and deterministic tests;
+selection, provider promotion, and empirical fallback remain later E9 scope.
+
+#### E9-T2 versioned capability-profile evidence
+
+The provider-neutral `CapabilityProfile` and `CapabilityObservation` models
+record project/provider identity, schema and profile versions, attributable
+provenance, canonical content hashes, observed capabilities, and bounded
+freshness metadata. `SUPPORTED`, `UNSUPPORTED`, and `UNKNOWN` are explicit;
+`require_supported` rejects both unsupported and unknown values. The
+project-isolated `CapabilityProfileRegistry` enforces exact project binding
+and monotonic profile-version transitions, rejecting replayed or regressed
+versions. Deterministic JSON canonicalization and SHA-256 binding reject
+content or provenance mutation, unsupported schema/version values, malformed
+timestamps, stale evidence, secret-shaped values, and malformed profiles.
+
+E9-T2 is complete with focused tests, 415-test full-suite validation, Ruff,
+`git diff --check`, independent review APPROVE, and Compliance PASS. No
+provider is promoted, selected, or granted authority by this evidence.
 
 ### E10 — Self-audit and controlled learning
 
@@ -679,7 +701,6 @@ implemented in the current delivery.
 - E5 is complete through E5-T3 and PR #61. E6-T1 through E6-T8 are complete
   through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 through E7-T3
   are complete; E8-T1 through E8-T4 are complete as controlled evidence.
-  E9 is decomposed; E9-T1 is complete and E9-T2 is the next READY task but
-  lacks profile-specific implementation evidence. E9-T3 through E9-T5 remain
-  PLANNED. Final readiness remains
+  E9 is decomposed; E9-T1 and E9-T2 are complete, and E9-T3 is the next READY
+  task. E9-T4 and E9-T5 remain PLANNED. Final readiness remains
   `NOT_READY_FOR_ROADMAP_COMPLETE`.
