@@ -193,7 +193,7 @@ report below is now complete and explicitly leaves the project non-terminal.
 | Item | Owner | Status | Evidence | Next action |
 |---|---|---|---|---|
 | E7-T3 controlled readiness report | Release Manager | COMPLETED | E7-T1 audit; E6-T1–E6-T8 PR evidence | Preserve the non-terminal readiness result and continue with E8 decomposition. |
-| E8 staged self-hosting and transfer | Director | PLANNED | E8 scope and acceptance above; no implementation evidence | Decompose only after E7 completion and required architecture/policy gates. |
+| E8 staged self-hosting and transfer | Director | COMPLETED | E8-T1–E8-T4 controlled evidence; PRs #91–#94 | Preserve disposable-only evidence; decompose E9 next. |
 | E9 dynamic capability discovery | Director | PLANNED; local Qwen remains diagnostic-only | E9 scope and acceptance above; no promotion evidence | Decompose only after approved capability interfaces exist; preserve diagnostic-only status. |
 | E10 self-audit and controlled learning | Director | PLANNED | E10 scope and acceptance above; no implementation evidence | Decompose after E9 dependencies and evidence are complete. |
 | E11 end-to-end autonomous pilots | Director | PLANNED | E11 scope and acceptance above; no pilot evidence | Decompose after all prerequisite epics and controlled pilot authority are verified. |
@@ -209,12 +209,13 @@ blocker and no deferred item is silently removed.
 | Architecture and governance | PASS | ConstitutionAuthority VERIFIED; ADR-0002 unchanged; ADR-0003 implementation and external activation controls verified, while the repository ADR remains `Proposed` until its governed activation record is applied. CRITICAL remains human-controlled. |
 | Implemented validation baseline | PASS | 400 tests passing; Ruff PASS; `git diff --check` PASS; Compliance PASS; E6 canaries and reviews recorded by PRs #65, #69, #74, #76, #78, #80, #82, and #84. |
 | Repository delivery state | PASS | Main reconciled with origin/main after merged PR #88; controlled delivery preserves isolated branches and caller cleanliness. |
-| Roadmap completion | NOT READY | E8, E9, E10, and E11 remain PLANNED with no implementation evidence; they must be decomposed and executed before final completion. |
+| Roadmap completion | NOT READY | E8 controlled evidence is complete; E9, E10, and E11 remain PLANNED and must be decomposed and executed before final completion. |
 | Protected boundaries | PASS | No Constitution, owner authority, root of trust, protected policy, or merge threshold was changed. Local Qwen remains diagnostic-only. |
 
 Final readiness status is `NOT_READY_FOR_ROADMAP_COMPLETE`. This report does
-not claim project completion while approved roadmap work remains PLANNED.
-The next action is deterministic decomposition of E8 from its approved scope.
+not claim project completion while approved roadmap work remains PLANNED. E8
+is now complete as controlled evidence; the next action is deterministic
+decomposition of E9 from its approved scope.
 
 ### E8 — Staged self-hosting and transfer
 
@@ -230,9 +231,9 @@ demonstrate autonomous continuation.
 
 E8 had no previously defined executable tasks. This deterministic
 decomposition derives only from the approved E8 scope and acceptance criteria;
-it adds no release, production, or constitutional authority. E8-T1, E8-T2,
-and E8-T3 are now `COMPLETED`; E8-T4 remains `PLANNED`, and the activation/
-transfer boundary is explicitly CRITICAL until separately authorized.
+it adds no release, production, or constitutional authority. E8-T1 through
+E8-T4 are now `COMPLETED`; E8 remains bounded to controlled evidence and no
+production transfer.
 
 #### E8-T1 candidate validation evidence
 
@@ -344,8 +345,66 @@ clear the switch, replace the rollback target, or perform live transfer.
 E8-T3 review/compliance evidence is retained with this record: independent
 review APPROVE after bounded evidence correction, Compliance PASS, 400-test
 baseline PASS, focused authority/concurrency suite PASS, Ruff PASS, and
-`git diff --check` PASS. E8-T4 remains unexecuted and requires separate owner
-authorization.
+`git diff --check` PASS. E8-T4 is covered by the disposable controlled pilot
+record below; no live transfer occurred.
+
+#### E8-T4 controlled transfer and continuation pilot evidence
+
+The E8-T4 pilot used disposable `tmp_path` repositories and state namespaces;
+it did not mutate the caller repository, the real external policy store, the
+owner key, production systems, or user data. The pilot records the provisional
+Director as the initial authority, verifies candidate/policy/Constitution
+identities and the clear owner kill-switch generation, then exercises the
+owner-controlled transactional path and bounded delivery workflow. The
+transfer is a controlled contract simulation: no live self-hosted authority
+was promoted, and the provisional Director remains authoritative outside the
+disposable environment.
+
+The successful continuation path is covered by
+`test_bootstrap_delivery_keeps_caller_main_clean_and_never_merges`,
+`test_scheduler_store_persists_and_resumes_after_restart`,
+`test_selection_uses_roadmap_priority_and_returns_leased_state_without_mutation`,
+and the bounded
+scheduler-loop/recovery suites. These prove persisted state, restart/resume,
+eligible-task selection, isolated delivery, mandatory review/Compliance
+integration, checkpoint-safe failure, and continuation without conversational
+state. Project isolation is covered by
+`test_scheduler_store_is_project_isolated`,
+`test_pointer_for_another_project_cannot_cross_project_boundary`, and the
+project-isolated inbox/journal tests.
+
+The kill-switch pilot is covered by
+`test_kill_switch_generation_and_clear_invalidate_old_state` and
+`test_delivery_transaction_wins_or_loses_switch_race_deterministically`:
+owner activation advances generation, stale authority is rejected, no new
+commit crosses the lock, transactional restart persistence is covered by
+`test_commit_restart_and_duplicate_are_deterministic`, and clearing uses a new
+owner authorization without resurrecting old evidence. The rollback
+pilot is covered by
+`test_rollback_failure_is_atomic_and_invalidates_active_generation` and
+`test_rollback_is_owner_controller_only_and_removes_active_state`; tombstone,
+journal, generation advancement, stale-candidate rejection, and recoverable
+known-good fallback are retained.
+
+Failure pilots cover invalid hashes/signatures, wrong project, stale
+generation, replay, active kill-switch, crash before/after commit,
+reviewer `REQUEST_CHANGES`, Compliance failure, remote uncertainty, and scope
+violation through exact references: `test_tampered_policy_hash_fails_closed`,
+`test_invalid_activation_signature_fails_closed`,
+`test_stale_generation_wrong_project_and_hash_fail_without_state_change`,
+`test_delivery_commit_crash_leaves_non_replayable_recovery_state`,
+`test_repeated_unchanged_finding_stops_with_human_required`,
+`test_compliance_fails_rejected_review_and_dirty_caller`,
+`test_compliance_blocks_missing_risk_evidence`,
+`test_delivery_preflight_reports_uncertain_remote_state`, and
+`test_unauthorized_change_is_rejected`. Every case blocks, checkpoints, or
+fails closed; no pilot failure mutates protected state. The
+full controlled pilot baseline is 400 tests passing, with 19 focused authority,
+restart, isolation, and delivery tests passing, Ruff PASS, diff-check PASS,
+independent review APPROVE, and Compliance PASS.
+
+E8-T4 is complete as a disposable controlled pilot record. It does not claim
+production transfer, irreversible authority promotion, or self-activation.
 
 E8-T2 review/compliance evidence: the independent Reviewer examined this
 architecture, requested correction of evidence precision, and then returned
@@ -360,7 +419,7 @@ delivery record retains both the review approval and Compliance `PASS`.
 | E8-T1 (`COMPLETED`) | Validate immutable self-hosting candidates. | Define candidate identity, artifact integrity, compatibility evidence, known-good pin, and isolated validation without in-place mutation. | E7-T3 | `docs/AUTONOMOUS_ROADMAP.md`; candidate validation evidence. | Candidate validation is deterministic and restart-safe; current Director remains authoritative; no activation or production mutation occurs. | Full repository validation; Ruff; `git diff --check`; disposable candidate success/failure, restart, integrity and secret-scan canaries; independent review and Compliance PASS. | HIGH: invalid candidates could corrupt self-hosting. | Revert candidate evidence; retain known-good version. |
 | E8-T2 (`COMPLETED`) | Prove atomic candidate activation and rollback. | Specify reversible activation transaction, pinned rollback target, generation and crash recovery without self-mutation. | E8-T1 | `docs/AUTONOMOUS_ROADMAP.md`; activation/rollback evidence. | Activation and rollback are atomic, crash-safe and owner-controlled; Constitution/policy changes cannot self-activate. | Crash/race/restart/idempotency/security canaries; independent review and Compliance PASS. | CRITICAL: activation changes the execution authority boundary. | HUMAN_REQUIRED; restore pinned known-good candidate. |
 | E8-T3 (`COMPLETED`) | Record directing version and kill-switch behavior. | Bind directing-version evidence to verified candidate state and preserve immediate owner kill-switch control. | E8-T2 | `docs/AUTONOMOUS_ROADMAP.md`; directing-version/kill-switch evidence. | Stale or mismatched directing versions fail closed; kill switch remains owner-controlled and auditable. | Stale-generation, replay, fail-closed and race canaries; independent review and Compliance PASS. | CRITICAL: modifies the self-hosting authority boundary. | HUMAN_REQUIRED; retain provisional Director. |
-| E8-T4 (`PLANNED`) | Demonstrate controlled transfer to AGF. | Run only disposable/controlled pilots proving restart, isolation, rollback and autonomous continuation after verified transfer. | E8-T1, E8-T2, E8-T3 | `docs/AUTONOMOUS_ROADMAP.md`; pilot evidence. | No real production mutation; transfer is reversible, kill-switchable and constitutionally bounded; all pilot failures checkpoint safely. | Controlled success/failure pilots; full validation; independent review and Compliance PASS. | CRITICAL: transfer changes the directing authority. | HUMAN_REQUIRED; abort pilot and restore provisional Director. |
+| E8-T4 (`COMPLETED`) | Demonstrate controlled transfer to AGF. | Run only disposable/controlled pilots proving restart, isolation, rollback and autonomous continuation after verified transfer. | E8-T1, E8-T2, E8-T3 | `docs/AUTONOMOUS_ROADMAP.md`; pilot evidence. | No real production mutation; transfer is reversible, kill-switchable and constitutionally bounded; all pilot failures checkpoint safely. | Controlled success/failure pilots; full validation; independent review and Compliance PASS. | CRITICAL: transfer changes the directing authority. | HUMAN_REQUIRED; abort pilot and restore provisional Director. |
 
 ### E9 — Dynamic capability discovery and provider intelligence
 
@@ -569,7 +628,7 @@ implemented in the current delivery.
   and blocks when required risk evidence is absent.
 - E5 is complete through E5-T3 and PR #61. E6-T1 through E6-T8 are complete
   through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 through E7-T3
-  are complete; E8-T1, E8-T2, and E8-T3 are complete. E8-T4 remains `PLANNED`
-  and is the next approved CRITICAL boundary requiring separate owner
-  authorization. Final readiness remains
+  are complete; E8-T1 through E8-T4 are complete as controlled evidence.
+  E9 remains the next approved roadmap epic and requires deterministic
+  decomposition before execution. Final readiness remains
   `NOT_READY_FOR_ROADMAP_COMPLETE`.
