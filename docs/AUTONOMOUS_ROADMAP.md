@@ -196,7 +196,7 @@ report below is now complete and explicitly leaves the project non-terminal.
 | E8 staged self-hosting and transfer | Director | COMPLETED | E8-T1–E8-T4 controlled evidence; PRs #91–#94 | Preserve disposable-only evidence; decompose E9 next. |
 | E9 dynamic capability discovery | Director | COMPLETED | E9-T1 through E9-T5 evidence and independent reviews; local Qwen remains diagnostic-only | Preserve disposable-only pilots; decompose E10 next. |
 | E10 self-audit and controlled learning | Director | COMPLETED | E10-T1 through E10-T4 bounded evidence and pilot complete; no authority mutation | Preserve non-authoritative learning and decompose E11 next. |
-| E11 end-to-end autonomous pilots | Director | READY; E11-T1 next | E10 complete; E11 deterministic decomposition below; no pilot evidence yet | Execute disposable pilot work only; preserve human-controlled boundaries. |
+| E11 end-to-end autonomous pilots | Director | READY; E11-T2 next | E10 complete; E11-T1 intake boundary complete; no external pilot execution | Execute disposable pilot work only; preserve human-controlled boundaries. |
 
 No item in this register changes the objective, Constitution, owner authority,
 protected policy, risk threshold, or merge policy. Unknown evidence remains a
@@ -207,9 +207,9 @@ blocker and no deferred item is silently removed.
 | Dimension | Result | Evidence |
 |---|---|---|
 | Architecture and governance | PASS | ConstitutionAuthority VERIFIED; ADR-0002 unchanged; ADR-0003 implementation and external activation controls verified, while the repository ADR remains `Proposed` until its governed activation record is applied. CRITICAL remains human-controlled. |
-| Implemented validation baseline | PASS | 471 tests passing; Ruff PASS; `git diff --check` PASS; Compliance PASS; E6 canaries and reviews recorded by PRs #65, #69, #74, #76, #78, #80, #82, and #84. |
+| Implemented validation baseline | PASS | 479 tests passing; Ruff PASS; `git diff --check` PASS; Compliance PASS; E6 canaries and reviews recorded by PRs #65, #69, #74, #76, #78, #80, #82, and #84. |
 | Repository delivery state | PASS | Main reconciled with origin/main after merged PR #88; controlled delivery preserves isolated branches and caller cleanliness. |
-| Roadmap completion | NOT READY | E8 controlled evidence and E9-T1 through E9-T5 are COMPLETED; E10-T1 through E10-T4 are COMPLETED; E11 is decomposed and E11-T1 is READY. |
+| Roadmap completion | NOT READY | E8 controlled evidence and E9-T1 through E9-T5 are COMPLETED; E10-T1 through E10-T4 are COMPLETED; E11-T1 is COMPLETED and E11-T2 is READY. |
 | Protected boundaries | PASS | No Constitution, owner authority, root of trust, protected policy, or merge threshold was changed. Local Qwen remains diagnostic-only. |
 
 Final readiness status is `NOT_READY_FOR_ROADMAP_COMPLETE`. This report does
@@ -607,8 +607,8 @@ provider, authority, policy, objective, permission, or constitutional scope.
 
 | ID | Objective | Scope | Dependencies | Expected files/components | Acceptance criteria | Validation requirements | Risk | Rollback |
 |---|---|---|---|---|---|---|---|---|
-| E11-T1 (`READY`) | Define disposable pilot intake and evidence boundary. | Accept a bounded objective, project identity, policy identity, and pilot budget; emit attributable intake evidence without executing external work. | E10-T4, E2, E4, E5 | `src/agf_orchestrator/project_pilot.py`; `tests/test_project_pilot.py`; `docs/AUTONOMOUS_ROADMAP.md` | Malformed, missing, cross-project, secret-shaped, or policy-mismatched intake fails closed; valid intake is disposable and non-authoritative. | Schema, bounds, project isolation, policy binding, idempotency, restart/readback, secret-scan, independent review, and Compliance PASS. | MEDIUM: invalid intake could contaminate pilot evidence. | Reject intake; retain no active pilot state. |
-| E11-T2 (`PLANNED`) | Prove restart, idempotency, isolation, and failure handling. | Exercise bounded pilot state transitions and evidence recovery without external mutation. | E11-T1 | `src/agf_orchestrator/project_pilot.py`; `tests/test_project_pilot.py`; `docs/AUTONOMOUS_ROADMAP.md` | Repeated operations are deterministic; restart preserves only valid state; failure and cross-project access fail closed. | Failure injection, restart, idempotency, isolation, bounded-state, independent review, and Compliance PASS. | HIGH: state leakage could corrupt pilot conclusions. | Discard failed pilot state; preserve last valid snapshot. |
+| E11-T1 (`COMPLETED`) | Define disposable pilot intake and evidence boundary. | Accept a bounded objective, project identity, policy identity, and pilot budget; emit attributable intake evidence without executing external work. | E10-T4, E2, E4, E5 | `src/agf_orchestrator/project_pilot.py`; `tests/test_project_pilot.py`; `docs/AUTONOMOUS_ROADMAP.md` | Malformed, missing, cross-project, secret-shaped, or policy-mismatched intake fails closed; valid intake is disposable and non-authoritative. | Schema, bounds, project isolation, policy binding, idempotency, restart/readback, secret-scan, independent review, and Compliance PASS. | MEDIUM: invalid intake could contaminate pilot evidence. | Reject intake; retain no active pilot state. |
+| E11-T2 (`READY`) | Prove restart, idempotency, isolation, and failure handling. | Exercise bounded pilot state transitions and evidence recovery without external mutation. | E11-T1 | `src/agf_orchestrator/project_pilot.py`; `tests/test_project_pilot.py`; `docs/AUTONOMOUS_ROADMAP.md` | Repeated operations are deterministic; restart preserves only valid state; failure and cross-project access fail closed. | Failure injection, restart, idempotency, isolation, bounded-state, independent review, and Compliance PASS. | HIGH: state leakage could corrupt pilot conclusions. | Discard failed pilot state; preserve last valid snapshot. |
 | E11-T3 (`PLANNED`) | Prove rollback and human-controlled boundary evidence. | Exercise disposable rollback, kill-switch observation, and owner-boundary checks without changing active policy or production state. | E11-T2, E6-T5, ADR-0003 | `src/agf_orchestrator/project_pilot.py`; `tests/test_project_pilot.py`; `docs/AUTONOMOUS_ROADMAP.md` | Rollback is bounded and auditable; kill-switch and CRITICAL boundaries remain authoritative; uncertainty stops the pilot, preserves the last valid state, and requires deterministic human resolution. | Rollback, stale-state, kill-switch, CRITICAL, uncertainty, and authorization-boundary canaries; independent review and Compliance PASS. | CRITICAL: boundary evidence could be mistaken for authority. | Stop pilot and retain authoritative baseline; owner action remains required for CRITICAL operations. |
 | E11-T4 (`PLANNED`) | Run the end-to-end disposable project pilot. | Compose intake, bounded execution simulation, restart/failure/isolation evidence, rollback evidence, and final attributable report. | E11-T1, E11-T2, E11-T3 | `src/agf_orchestrator/project_pilot.py`; `tests/test_project_pilot.py`; `docs/AUTONOMOUS_ROADMAP.md` | No real project or external system changes; every required gate and boundary remains enforced; report is deterministic and non-authoritative. | Full pilot, failure/restart/idempotency/isolation/rollback canaries; full suite, Ruff, diff check, independent review, and Compliance PASS. | HIGH: composition defects could falsely signal readiness. | Disable disposable pilot; retain known-good baseline and non-terminal roadmap state. |
 
@@ -658,6 +658,17 @@ cross-project evidence fails closed; no score, policy, authority, objective,
 permission, provider, or external state is changed.
 
 E10-T4 is complete with 3 focused tests, 471-test full-suite validation, Ruff,
+`git diff --check`, independent review APPROVE, and Compliance PASS.
+
+#### E11-T1 disposable pilot-intake boundary evidence
+
+`PilotIntakeLedger` accepts only bounded, hash-bound intake records with exact
+project and active-policy identity. It rejects malformed, cross-project,
+conflicting, replayed, tampered, and secret-shaped state; restart/readback is
+deterministic. The ledger emits attributable evidence only and has no execute,
+activate, delivery, external-mutation, or authority API.
+
+E11-T1 is complete with 8 focused tests, 479-test full-suite validation, Ruff,
 `git diff --check`, independent review APPROVE, and Compliance PASS.
 
 ## Capability gate template
@@ -821,5 +832,5 @@ implemented in the current delivery.
   through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 through E7-T3
   are complete; E8-T1 through E8-T4 are complete as controlled evidence.
   E9 is complete through E9-T5. E10-T1 through E10-T4 are complete. E11
-  is decomposed with E11-T1 READY. Final readiness remains
+  is decomposed with E11-T1 complete and E11-T2 READY. Final readiness remains
   `NOT_READY_FOR_ROADMAP_COMPLETE`.
