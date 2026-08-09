@@ -194,7 +194,7 @@ report below is now complete and explicitly leaves the project non-terminal.
 |---|---|---|---|---|
 | E7-T3 controlled readiness report | Release Manager | COMPLETED | E7-T1 audit; E6-T1–E6-T8 PR evidence | Preserve the non-terminal readiness result and continue with E8 decomposition. |
 | E8 staged self-hosting and transfer | Director | COMPLETED | E8-T1–E8-T4 controlled evidence; PRs #91–#94 | Preserve disposable-only evidence; decompose E9 next. |
-| E9 dynamic capability discovery | Director | PLANNED; local Qwen remains diagnostic-only | E9 scope and acceptance above; no promotion evidence | Decompose only after approved capability interfaces exist; preserve diagnostic-only status. |
+| E9 dynamic capability discovery | Director | READY; E9-T1 decomposed | E9 scope and acceptance above; deterministic decomposition below; local Qwen remains diagnostic-only | Execute E9-T1 only after normal plan/review gates; preserve diagnostic-only status. |
 | E10 self-audit and controlled learning | Director | PLANNED | E10 scope and acceptance above; no implementation evidence | Decompose after E9 dependencies and evidence are complete. |
 | E11 end-to-end autonomous pilots | Director | PLANNED | E11 scope and acceptance above; no pilot evidence | Decompose after all prerequisite epics and controlled pilot authority are verified. |
 
@@ -209,7 +209,7 @@ blocker and no deferred item is silently removed.
 | Architecture and governance | PASS | ConstitutionAuthority VERIFIED; ADR-0002 unchanged; ADR-0003 implementation and external activation controls verified, while the repository ADR remains `Proposed` until its governed activation record is applied. CRITICAL remains human-controlled. |
 | Implemented validation baseline | PASS | 400 tests passing; Ruff PASS; `git diff --check` PASS; Compliance PASS; E6 canaries and reviews recorded by PRs #65, #69, #74, #76, #78, #80, #82, and #84. |
 | Repository delivery state | PASS | Main reconciled with origin/main after merged PR #88; controlled delivery preserves isolated branches and caller cleanliness. |
-| Roadmap completion | NOT READY | E8 controlled evidence is complete; E9, E10, and E11 remain PLANNED and must be decomposed and executed before final completion. |
+| Roadmap completion | NOT READY | E8 controlled evidence is complete; E9-T1 is READY and E9-T2–E9-T5 remain PLANNED; E10 and E11 remain PLANNED. |
 | Protected boundaries | PASS | No Constitution, owner authority, root of trust, protected policy, or merge threshold was changed. Local Qwen remains diagnostic-only. |
 
 Final readiness status is `NOT_READY_FOR_ROADMAP_COMPLETE`. This report does
@@ -449,6 +449,21 @@ credential, budget, privacy, review, and Compliance policies. E10 is not
 eligible for implementation before those dependencies provide their
 required policy and evidence interfaces.
 
+#### E9 deterministic execution backlog
+
+E9 had no executable tasks. This decomposition derives only from the approved
+E9 scope and acceptance criteria, adds no provider authority, does not promote
+the local Qwen diagnostic profile, and does not authorize arbitrary network
+probing or credential use.
+
+| ID | Objective | Scope | Dependencies | Expected files/components | Acceptance criteria | Validation requirements | Risk | Rollback |
+|---|---|---|---|---|---|---|---|---|
+| E9-T1 (`READY`) | Discover approved capability interfaces. | Enumerate only explicitly approved local/provider interfaces and immutable metadata without network scanning or credential disclosure. | E8, E1 | `docs/AUTONOMOUS_ROADMAP.md`; capability-discovery evidence. | Discovery is deterministic, bounded, secret-safe, project-isolated, and records UNKNOWN rather than inferring capability. | Inventory success/failure, no-network, secret-scan, restart, idempotency, and isolation canaries; independent review and Compliance PASS. | MEDIUM: unsafe discovery could disclose metadata or credentials. | Revert discovery evidence; preserve diagnostic-only profiles. |
+| E9-T2 (`PLANNED`) | Record versioned capability profiles. | Store verified tool/context/code/health/privacy/budget evidence with immutable profile identity and provenance. | E9-T1, E3, E5 | `docs/AUTONOMOUS_ROADMAP.md`; capability registry evidence. | Profiles are versioned, attributable, bounded, project-isolated, and reject unverified claims. | Schema, provenance, restart, conflict, size-bound, and secret-scan canaries; independent review and Compliance PASS. | HIGH: false profiles could select unsafe providers. | Invalidate new profiles; retain last known-good evidence. |
+| E9-T3 (`PLANNED`) | Select eligible capabilities and safe fallback. | Apply policy, privacy, independence, budget, health, context/tool, and empirical evidence gates without provider self-selection authority. | E9-T2, E5, active policies | `docs/AUTONOMOUS_ROADMAP.md`; selection/fallback evidence. | Selection is explainable and deterministic; unknown, stale, conflicting, or ineligible evidence blocks or falls back only when permitted. | Eligibility, fallback, policy, privacy, independence, budget, and uncertainty canaries; independent review and Compliance PASS. | HIGH: bad selection could bypass capability or policy gates. | Revert selector evidence; fail closed to no eligible provider. |
+| E9-T4 (`PLANNED`) | Invalidate stale or changed capability evidence. | Bind freshness, provider upgrades, health changes, and cross-project boundaries to deterministic invalidation. | E9-T2, E9-T3, E4 | `docs/AUTONOMOUS_ROADMAP.md`; freshness/invalidation evidence. | Stale, changed, contradictory, or cross-project profiles become ineligible and cannot be resurrected by retry. | Staleness, upgrade, contradiction, restart, replay, and project-isolation canaries; independent review and Compliance PASS. | HIGH: stale evidence could cause unsafe reuse. | Invalidate affected profiles; retain known-good baseline. |
+| E9-T5 (`PLANNED`) | Prove capability intelligence end to end. | Run disposable capability discovery, selection, fallback, failure, restart, and audit pilots under current governance. | E9-T1, E9-T2, E9-T3, E9-T4 | `docs/AUTONOMOUS_ROADMAP.md`; end-to-end capability evidence. | No real external effect; every choice is attributable, reviewable, Compliance-gated, reversible, and project-isolated. | Full validation, deterministic pilots, security canaries, independent review and Compliance PASS. | HIGH: integration errors could compose unsafe evidence. | Revert pilot evidence; disable new capability profiles. |
+
 ### E10 — Self-audit and controlled learning
 
 Scope: bounded outcome analysis, confidence updates, regression detection,
@@ -629,6 +644,6 @@ implemented in the current delivery.
 - E5 is complete through E5-T3 and PR #61. E6-T1 through E6-T8 are complete
   through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 through E7-T3
   are complete; E8-T1 through E8-T4 are complete as controlled evidence.
-  E9 remains the next approved roadmap epic and requires deterministic
-  decomposition before execution. Final readiness remains
+  E9 is decomposed; E9-T1 is the next READY task and E9-T2 through E9-T5
+  remain PLANNED. Final readiness remains
   `NOT_READY_FOR_ROADMAP_COMPLETE`.
