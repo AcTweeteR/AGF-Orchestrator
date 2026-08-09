@@ -195,7 +195,7 @@ report below is now complete and explicitly leaves the project non-terminal.
 | E7-T3 controlled readiness report | Release Manager | COMPLETED | E7-T1 audit; E6-T1–E6-T8 PR evidence | Preserve the non-terminal readiness result and continue with E8 decomposition. |
 | E8 staged self-hosting and transfer | Director | COMPLETED | E8-T1–E8-T4 controlled evidence; PRs #91–#94 | Preserve disposable-only evidence; decompose E9 next. |
 | E9 dynamic capability discovery | Director | COMPLETED | E9-T1 through E9-T5 evidence and independent reviews; local Qwen remains diagnostic-only | Preserve disposable-only pilots; decompose E10 next. |
-| E10 self-audit and controlled learning | Director | READY; E10-T1 next | Deterministic E10 decomposition below; E9 complete; no authority mutation | Execute E10-T1 only after normal plan/review gates; preserve attributable, reversible learning. |
+| E10 self-audit and controlled learning | Director | READY; E10-T2 next | E10-T1 bounded evidence complete; deterministic decomposition below; no authority mutation | Execute E10-T2 only after normal plan/review gates; preserve attributable, reversible learning. |
 | E11 end-to-end autonomous pilots | Director | PLANNED | E11 scope and acceptance above; no pilot evidence | Decompose after all prerequisite epics and controlled pilot authority are verified. |
 
 No item in this register changes the objective, Constitution, owner authority,
@@ -207,9 +207,9 @@ blocker and no deferred item is silently removed.
 | Dimension | Result | Evidence |
 |---|---|---|
 | Architecture and governance | PASS | ConstitutionAuthority VERIFIED; ADR-0002 unchanged; ADR-0003 implementation and external activation controls verified, while the repository ADR remains `Proposed` until its governed activation record is applied. CRITICAL remains human-controlled. |
-| Implemented validation baseline | PASS | 444 tests passing; Ruff PASS; `git diff --check` PASS; Compliance PASS; E6 canaries and reviews recorded by PRs #65, #69, #74, #76, #78, #80, #82, and #84. |
+| Implemented validation baseline | PASS | 455 tests passing; Ruff PASS; `git diff --check` PASS; Compliance PASS; E6 canaries and reviews recorded by PRs #65, #69, #74, #76, #78, #80, #82, and #84. |
 | Repository delivery state | PASS | Main reconciled with origin/main after merged PR #88; controlled delivery preserves isolated branches and caller cleanliness. |
-| Roadmap completion | NOT READY | E8 controlled evidence and E9-T1 through E9-T5 are COMPLETED; E10-T1 is READY, E10-T2 through E10-T4 remain PLANNED, and E11 remains PLANNED. |
+| Roadmap completion | NOT READY | E8 controlled evidence and E9-T1 through E9-T5 are COMPLETED; E10-T1 is COMPLETED, E10-T2 is READY, E10-T3–E10-T4 and E11 remain PLANNED. |
 | Protected boundaries | PASS | No Constitution, owner authority, root of trust, protected policy, or merge threshold was changed. Local Qwen remains diagnostic-only. |
 
 Final readiness status is `NOT_READY_FOR_ROADMAP_COMPLETE`. This report does
@@ -593,10 +593,22 @@ mutation, or automatic objective/permission change.
 
 | ID | Objective | Scope | Dependencies | Expected files/components | Acceptance criteria | Validation requirements | Risk | Rollback |
 |---|---|---|---|---|---|---|---|---|
-| E10-T1 (`READY`) | Record bounded outcome evidence. | Store attributable, project-isolated outcome observations with bounded values and immutable content identity. | E9, E3, E5 | `src/agf_orchestrator/learning_evidence.py`; `tests/test_learning_evidence.py`; `docs/AUTONOMOUS_ROADMAP.md` | One result cannot create authority, policy, objective, or permission changes; malformed, secret-shaped, contradictory, or cross-project evidence is rejected. | Schema, bounds, hashing, restart/readback, idempotency, contradiction, isolation, and secret-scan canaries; independent review and Compliance PASS. | MEDIUM: bad evidence could distort later analysis. | Reject new evidence; retain last known-good records. |
-| E10-T2 (`PLANNED`) | Compute bounded confidence and regression summaries. | Derive attributable summaries with bounded updates, uncertainty handling, and deterministic regression detection from accepted evidence. | E10-T1, E5 | `docs/AUTONOMOUS_ROADMAP.md`; summary evidence. | A single result cannot create an extreme permanent score; stale or contradictory evidence blocks unsafe summaries. | Deterministic aggregation, bounds, stale/conflict, restart, idempotency, and fail-closed canaries; independent review and Compliance PASS. | HIGH: unsafe summaries could influence selection. | Discard affected summary; retain prior baseline. |
+| E10-T1 (`COMPLETED`) | Record bounded outcome evidence. | Store attributable, project-isolated outcome observations with bounded values and immutable content identity. | E9, E3, E5 | `src/agf_orchestrator/learning_evidence.py`; `tests/test_learning_evidence.py`; `docs/AUTONOMOUS_ROADMAP.md` | One result cannot create authority, policy, objective, or permission changes; malformed, secret-shaped, contradictory, or cross-project evidence is rejected. | Schema, bounds, hashing, restart/readback, idempotency, contradiction, isolation, and secret-scan canaries; independent review and Compliance PASS. | MEDIUM: bad evidence could distort later analysis. | Reject new evidence; retain last known-good records. |
+| E10-T2 (`READY`) | Compute bounded confidence and regression summaries. | Derive attributable summaries with bounded updates, uncertainty handling, and deterministic regression detection from accepted evidence. | E10-T1, E5 | `docs/AUTONOMOUS_ROADMAP.md`; summary evidence. | A single result cannot create an extreme permanent score; stale or contradictory evidence blocks unsafe summaries. | Deterministic aggregation, bounds, stale/conflict, restart, idempotency, and fail-closed canaries; independent review and Compliance PASS. | HIGH: unsafe summaries could influence selection. | Discard affected summary; retain prior baseline. |
 | E10-T3 (`PLANNED`) | Produce owner-visible learning proposals. | Create attributable, reversible proposals without applying authority, objective, permission, risk, or merge-policy changes. | E10-T2, active policies | `docs/AUTONOMOUS_ROADMAP.md`; proposal evidence. | Proposals are non-authoritative, reviewable, reversible, and cannot activate themselves. | Proposal schema, protected-field rejection, signature/authority boundary, restart, isolation, and secret-scan canaries; independent review and Compliance PASS. | HIGH: proposals could be mistaken for authority. | Withdraw proposal; preserve active policy and baseline. |
 | E10-T4 (`PLANNED`) | Prove self-audit and controlled learning end to end. | Run disposable analysis, regression, proposal, failure, restart, and rollback pilots under existing governance. | E10-T1, E10-T2, E10-T3 | `docs/AUTONOMOUS_ROADMAP.md`; disposable pilot evidence. | No external mutation; every update is bounded, attributable, reversible, Compliance-gated, and project-isolated. | Full validation, deterministic pilots, failure/restart/idempotency/rollback canaries, independent review and Compliance PASS. | HIGH: composed learning defects could distort future decisions. | Disable pilot evidence; retain known-good baseline. |
+
+#### E10-T1 bounded outcome-evidence record
+
+`LearningEvidence` records one bounded, attributable outcome with explicit
+SUCCESS/FAILURE/BLOCKED status, bounded score delta, source, timestamp, project
+and subject identity, and canonical content hashing. `LearningEvidenceLedger`
+enforces project isolation, idempotent replay, contradiction rejection, secret
+safety, schema/version bounds, and hash-bound restart/readback. It does not
+compute scores, alter authority, or apply learning changes.
+
+E10-T1 is complete with 11 focused tests, 455-test full-suite validation,
+Ruff, `git diff --check`, independent review APPROVE, and Compliance PASS.
 
 ## Capability gate template
 
@@ -758,6 +770,6 @@ implemented in the current delivery.
 - E5 is complete through E5-T3 and PR #61. E6-T1 through E6-T8 are complete
   through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 through E7-T3
   are complete; E8-T1 through E8-T4 are complete as controlled evidence.
-  E9 is complete through E9-T5. E10 is decomposed with E10-T1 as the next
-  READY task; E10-T2 through E10-T4 and E11 remain PLANNED. Final readiness remains
+  E9 is complete through E9-T5. E10-T1 is complete and E10-T2 is the next
+  READY task; E10-T3 through E10-T4 and E11 remain PLANNED. Final readiness remains
   `NOT_READY_FOR_ROADMAP_COMPLETE`.
