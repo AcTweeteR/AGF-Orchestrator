@@ -196,7 +196,7 @@ report below is now complete and explicitly leaves the project non-terminal.
 | E8 staged self-hosting and transfer | Director | COMPLETED | E8-T1–E8-T4 controlled evidence; PRs #91–#94 | Preserve disposable-only evidence; decompose E9 next. |
 | E9 dynamic capability discovery | Director | COMPLETED | E9-T1 through E9-T5 evidence and independent reviews; local Qwen remains diagnostic-only | Preserve disposable-only pilots; decompose E10 next. |
 | E10 self-audit and controlled learning | Director | COMPLETED | E10-T1 through E10-T4 bounded evidence and pilot complete; no authority mutation | Preserve non-authoritative learning and decompose E11 next. |
-| E11 end-to-end autonomous pilots | Director | PLANNED | E11 scope and acceptance above; no pilot evidence | Decompose after all prerequisite epics and controlled pilot authority are verified. |
+| E11 end-to-end autonomous pilots | Director | READY; E11-T1 next | E10 complete; E11 deterministic decomposition below; no pilot evidence yet | Execute disposable pilot work only; preserve human-controlled boundaries. |
 
 No item in this register changes the objective, Constitution, owner authority,
 protected policy, risk threshold, or merge policy. Unknown evidence remains a
@@ -209,7 +209,7 @@ blocker and no deferred item is silently removed.
 | Architecture and governance | PASS | ConstitutionAuthority VERIFIED; ADR-0002 unchanged; ADR-0003 implementation and external activation controls verified, while the repository ADR remains `Proposed` until its governed activation record is applied. CRITICAL remains human-controlled. |
 | Implemented validation baseline | PASS | 471 tests passing; Ruff PASS; `git diff --check` PASS; Compliance PASS; E6 canaries and reviews recorded by PRs #65, #69, #74, #76, #78, #80, #82, and #84. |
 | Repository delivery state | PASS | Main reconciled with origin/main after merged PR #88; controlled delivery preserves isolated branches and caller cleanliness. |
-| Roadmap completion | NOT READY | E8 controlled evidence and E9-T1 through E9-T5 are COMPLETED; E10-T1 through E10-T4 are COMPLETED; E11 remains PLANNED and requires deterministic decomposition. |
+| Roadmap completion | NOT READY | E8 controlled evidence and E9-T1 through E9-T5 are COMPLETED; E10-T1 through E10-T4 are COMPLETED; E11 is decomposed and E11-T1 is READY. |
 | Protected boundaries | PASS | No Constitution, owner authority, root of trust, protected policy, or merge threshold was changed. Local Qwen remains diagnostic-only. |
 
 Final readiness status is `NOT_READY_FOR_ROADMAP_COMPLETE`. This report does
@@ -583,7 +583,8 @@ isolation, and rollback evidence.
 
 Acceptance: no pilot changes a real production project or external system;
 all required gates pass; human-controlled boundaries remain intact; any
-uncertainty checkpoints safely.
+uncertainty stops the pilot, preserves the last valid state, and requires
+deterministic human resolution before continuation.
 
 #### E10 deterministic execution backlog
 
@@ -597,6 +598,19 @@ mutation, or automatic objective/permission change.
 | E10-T2 (`COMPLETED`) | Compute bounded confidence and regression summaries. | Derive attributable summaries with bounded updates, uncertainty handling, and deterministic regression detection from accepted evidence. | E10-T1, E5 | `src/agf_orchestrator/learning_summary.py`; `tests/test_learning_summary.py`; `docs/AUTONOMOUS_ROADMAP.md` | A single result cannot create an extreme permanent score; stale or contradictory evidence blocks unsafe summaries. | Deterministic aggregation, bounds, stale/conflict, restart, idempotency, and fail-closed canaries; independent review and Compliance PASS. | HIGH: unsafe summaries could influence selection. | Discard affected summary; retain prior baseline. |
 | E10-T3 (`COMPLETED`) | Produce owner-visible learning proposals. | Create attributable, reversible proposals without applying authority, objective, permission, risk, or merge-policy changes. | E10-T2, active policies | `src/agf_orchestrator/learning_proposals.py`; `tests/test_learning_proposals.py`; `docs/AUTONOMOUS_ROADMAP.md` | Proposals are non-authoritative, reviewable, reversible, and cannot activate themselves. | Proposal schema, protected-field rejection, signature/authority boundary, restart, isolation, and secret-scan canaries; independent review and Compliance PASS. | HIGH: proposals could be mistaken for authority. | Withdraw proposal; preserve active policy and baseline. |
 | E10-T4 (`COMPLETED`) | Prove self-audit and controlled learning end to end. | Run disposable analysis, regression, proposal, failure, restart, and rollback pilots under existing governance. | E10-T1, E10-T2, E10-T3 | `src/agf_orchestrator/learning_pilot.py`; `tests/test_learning_pilot.py`; `docs/AUTONOMOUS_ROADMAP.md` | No external mutation; every update is bounded, attributable, Compliance-gated, reversible, and project-isolated. | Full validation, deterministic pilots, failure/restart/idempotency/rollback canaries, independent review and Compliance PASS. | HIGH: composed learning defects could distort future decisions. | Disable pilot evidence; retain known-good baseline. |
+
+#### E11 deterministic execution backlog
+
+E11 is decomposed directly from its approved scope and acceptance criteria.
+The decomposition is disposable-only and adds no production, deployment,
+provider, authority, policy, objective, permission, or constitutional scope.
+
+| ID | Objective | Scope | Dependencies | Expected files/components | Acceptance criteria | Validation requirements | Risk | Rollback |
+|---|---|---|---|---|---|---|---|---|
+| E11-T1 (`READY`) | Define disposable pilot intake and evidence boundary. | Accept a bounded objective, project identity, policy identity, and pilot budget; emit attributable intake evidence without executing external work. | E10-T4, E2, E4, E5 | `src/agf_orchestrator/project_pilot.py`; `tests/test_project_pilot.py`; `docs/AUTONOMOUS_ROADMAP.md` | Malformed, missing, cross-project, secret-shaped, or policy-mismatched intake fails closed; valid intake is disposable and non-authoritative. | Schema, bounds, project isolation, policy binding, idempotency, restart/readback, secret-scan, independent review, and Compliance PASS. | MEDIUM: invalid intake could contaminate pilot evidence. | Reject intake; retain no active pilot state. |
+| E11-T2 (`PLANNED`) | Prove restart, idempotency, isolation, and failure handling. | Exercise bounded pilot state transitions and evidence recovery without external mutation. | E11-T1 | `src/agf_orchestrator/project_pilot.py`; `tests/test_project_pilot.py`; `docs/AUTONOMOUS_ROADMAP.md` | Repeated operations are deterministic; restart preserves only valid state; failure and cross-project access fail closed. | Failure injection, restart, idempotency, isolation, bounded-state, independent review, and Compliance PASS. | HIGH: state leakage could corrupt pilot conclusions. | Discard failed pilot state; preserve last valid snapshot. |
+| E11-T3 (`PLANNED`) | Prove rollback and human-controlled boundary evidence. | Exercise disposable rollback, kill-switch observation, and owner-boundary checks without changing active policy or production state. | E11-T2, E6-T5, ADR-0003 | `src/agf_orchestrator/project_pilot.py`; `tests/test_project_pilot.py`; `docs/AUTONOMOUS_ROADMAP.md` | Rollback is bounded and auditable; kill-switch and CRITICAL boundaries remain authoritative; uncertainty stops the pilot, preserves the last valid state, and requires deterministic human resolution. | Rollback, stale-state, kill-switch, CRITICAL, uncertainty, and authorization-boundary canaries; independent review and Compliance PASS. | CRITICAL: boundary evidence could be mistaken for authority. | Stop pilot and retain authoritative baseline; owner action remains required for CRITICAL operations. |
+| E11-T4 (`PLANNED`) | Run the end-to-end disposable project pilot. | Compose intake, bounded execution simulation, restart/failure/isolation evidence, rollback evidence, and final attributable report. | E11-T1, E11-T2, E11-T3 | `src/agf_orchestrator/project_pilot.py`; `tests/test_project_pilot.py`; `docs/AUTONOMOUS_ROADMAP.md` | No real project or external system changes; every required gate and boundary remains enforced; report is deterministic and non-authoritative. | Full pilot, failure/restart/idempotency/isolation/rollback canaries; full suite, Ruff, diff check, independent review, and Compliance PASS. | HIGH: composition defects could falsely signal readiness. | Disable disposable pilot; retain known-good baseline and non-terminal roadmap state. |
 
 #### E10-T1 bounded outcome-evidence record
 
@@ -807,5 +821,5 @@ implemented in the current delivery.
   through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 through E7-T3
   are complete; E8-T1 through E8-T4 are complete as controlled evidence.
   E9 is complete through E9-T5. E10-T1 through E10-T4 are complete. E11
-  remains PLANNED and requires deterministic decomposition. Final readiness remains
+  is decomposed with E11-T1 READY. Final readiness remains
   `NOT_READY_FOR_ROADMAP_COMPLETE`.
