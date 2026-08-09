@@ -209,7 +209,7 @@ blocker and no deferred item is silently removed.
 | Architecture and governance | PASS | ConstitutionAuthority VERIFIED; ADR-0002 unchanged; ADR-0003 implementation and external activation controls verified, while the repository ADR remains `Proposed` until its governed activation record is applied. CRITICAL remains human-controlled. |
 | Implemented validation baseline | PASS | 400 tests passing; Ruff PASS; `git diff --check` PASS; Compliance PASS; E6 canaries and reviews recorded by PRs #65, #69, #74, #76, #78, #80, #82, and #84. |
 | Repository delivery state | PASS | Main reconciled with origin/main after merged PR #88; controlled delivery preserves isolated branches and caller cleanliness. |
-| Roadmap completion | NOT READY | E8 controlled evidence is complete; E9-T1 is COMPLETED, E9-T2 is READY, and E9-T3–E9-T5 remain PLANNED; E10 and E11 remain PLANNED. |
+| Roadmap completion | NOT READY | E8 controlled evidence is complete; E9-T1 is COMPLETED, E9-T2 is READY but blocked on profile-specific evidence, and E9-T3–E9-T5 remain PLANNED; E10 and E11 remain PLANNED. |
 | Protected boundaries | PASS | No Constitution, owner authority, root of trust, protected policy, or merge threshold was changed. Local Qwen remains diagnostic-only. |
 
 Final readiness status is `NOT_READY_FOR_ROADMAP_COMPLETE`. This report does
@@ -494,7 +494,10 @@ created by E9-T1; versioned profiles and empirical selection remain E9-T2 and
 E9-T3 scope.
 
 E9-T1 is complete with full validation, independent review APPROVE, and
-Compliance PASS. E9-T2 is the next READY task.
+Compliance PASS. E9-T2 remains READY because profile-specific schema,
+provenance/content-hash, versioning, and UNKNOWN-rejection canaries do not
+exist in the current documentation-only repository. Existing generic storage
+and adapter tests are not substituted for that missing evidence.
 
 ### E10 — Self-audit and controlled learning
 
@@ -676,6 +679,7 @@ implemented in the current delivery.
 - E5 is complete through E5-T3 and PR #61. E6-T1 through E6-T8 are complete
   through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 through E7-T3
   are complete; E8-T1 through E8-T4 are complete as controlled evidence.
-  E9 is decomposed; E9-T1 is complete and E9-T2 is the next READY task;
-  E9-T3 through E9-T5 remain PLANNED. Final readiness remains
+  E9 is decomposed; E9-T1 is complete and E9-T2 is the next READY task but
+  lacks profile-specific implementation evidence. E9-T3 through E9-T5 remain
+  PLANNED. Final readiness remains
   `NOT_READY_FOR_ROADMAP_COMPLETE`.
