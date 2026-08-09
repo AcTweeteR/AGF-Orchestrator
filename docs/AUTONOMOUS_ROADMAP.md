@@ -230,9 +230,9 @@ demonstrate autonomous continuation.
 
 E8 had no previously defined executable tasks. This deterministic
 decomposition derives only from the approved E8 scope and acceptance criteria;
-it adds no release, production, or constitutional authority. E8-T1 and E8-T2
-are now `COMPLETED`; E8-T3 and E8-T4 remain `PLANNED`, and the activation/transfer boundaries
-are explicitly CRITICAL until separately authorized.
+it adds no release, production, or constitutional authority. E8-T1, E8-T2,
+and E8-T3 are now `COMPLETED`; E8-T4 remains `PLANNED`, and the activation/
+transfer boundary is explicitly CRITICAL until separately authorized.
 
 #### E8-T1 candidate validation evidence
 
@@ -299,6 +299,54 @@ No live self-hosted authority was activated by
 this roadmap evidence task; the provisional Director and known-good fallback
 remain authoritative.
 
+#### E8-T3 directing-version and kill-switch evidence
+
+The immutable directing-version evidence record is bound to project
+`project-efc8e8ef7be7050b`, canonical repository
+`https://github.com/AcTweeteR/AGF-Orchestrator.git`, candidate pin
+`0ced6a433cdd7650cc91bcfcc214884031a9a959`, current reconciled main
+`ecab7c1f4f5099e10a86655feecf155d9623a7c7`, the retained provisional Director
+as known-good authority, Constitution identity `constitution-v1`, constitution
+record hash `75f1fe5bae1bb303fdb7fb6234d9c87a4040cab118076b9470363360eacefa3c`,
+constitution document hash
+`9e9821e161331e26881211d898d063e01e7d416807f14cadfeb2fd191ad03fd6`, active
+ADR-0003 policy generation `1`, evidence generation `1`, and operation identity
+`operation-e8-t3-directing-version-evidence` (a documentary evidence operation,
+not a self-authorizing transfer). No self-hosted activation generation is
+claimed because live transfer is explicitly outside E8-T3.
+
+The evidence is restart-safe because the authoritative generation and event
+identity come from the E8-T2 SQLite state model rather than process memory.
+The external owner controller alone may change kill-switch state. Each change
+increments the authority generation and appends an anti-replay journal entry;
+delivery holds the same transactional authority lock through consequential
+commit. A stale generation, replayed operation, active switch, rollback, or
+candidate/policy mismatch therefore fails closed and requires fresh evidence.
+Clearing the switch requires a new owner-signed operation at the current
+generation and cannot resurrect prior directing evidence.
+
+The verified canary mapping is: valid generation and restart persistence via
+`test_kill_switch_generation_and_clear_invalidate_old_state`; stale-generation
+and replay rejection via the same test plus
+`test_delivery_commit_crash_leaves_non_replayable_recovery_state`; concurrent
+kill-switch/authority ordering via
+`test_delivery_transaction_wins_or_loses_switch_race_deterministically`;
+atomic crash boundaries via `test_activation_failure_at_each_boundary_is_atomic`
+and `test_rollback_failure_is_atomic_and_invalidates_active_generation`;
+project binding and policy-hash/signature fail-closed behavior via the
+policy-authority tests; the candidate/policy mismatch case is covered by the
+same exact hash-bound rejection exercised by
+`test_tampered_policy_hash_fails_closed`; and provisional-authority/no-transfer
+behavior via the existing bootstrap compatibility canaries. No candidate can
+write the owner authorization,
+clear the switch, replace the rollback target, or perform live transfer.
+
+E8-T3 review/compliance evidence is retained with this record: independent
+review APPROVE after bounded evidence correction, Compliance PASS, 400-test
+baseline PASS, focused authority/concurrency suite PASS, Ruff PASS, and
+`git diff --check` PASS. E8-T4 remains unexecuted and requires separate owner
+authorization.
+
 E8-T2 review/compliance evidence: the independent Reviewer examined this
 architecture, requested correction of evidence precision, and then returned
 `APPROVE` after the corrections were limited to this roadmap record. The real
@@ -311,7 +359,7 @@ delivery record retains both the review approval and Compliance `PASS`.
 |---|---|---|---|---|---|---|---|---|
 | E8-T1 (`COMPLETED`) | Validate immutable self-hosting candidates. | Define candidate identity, artifact integrity, compatibility evidence, known-good pin, and isolated validation without in-place mutation. | E7-T3 | `docs/AUTONOMOUS_ROADMAP.md`; candidate validation evidence. | Candidate validation is deterministic and restart-safe; current Director remains authoritative; no activation or production mutation occurs. | Full repository validation; Ruff; `git diff --check`; disposable candidate success/failure, restart, integrity and secret-scan canaries; independent review and Compliance PASS. | HIGH: invalid candidates could corrupt self-hosting. | Revert candidate evidence; retain known-good version. |
 | E8-T2 (`COMPLETED`) | Prove atomic candidate activation and rollback. | Specify reversible activation transaction, pinned rollback target, generation and crash recovery without self-mutation. | E8-T1 | `docs/AUTONOMOUS_ROADMAP.md`; activation/rollback evidence. | Activation and rollback are atomic, crash-safe and owner-controlled; Constitution/policy changes cannot self-activate. | Crash/race/restart/idempotency/security canaries; independent review and Compliance PASS. | CRITICAL: activation changes the execution authority boundary. | HUMAN_REQUIRED; restore pinned known-good candidate. |
-| E8-T3 (`PLANNED`) | Record directing version and kill-switch behavior. | Bind directing-version evidence to verified candidate state and preserve immediate owner kill-switch control. | E8-T2 | `docs/AUTONOMOUS_ROADMAP.md`; directing-version/kill-switch evidence. | Stale or mismatched directing versions fail closed; kill switch remains owner-controlled and auditable. | Stale-generation, replay, fail-closed and race canaries; independent review and Compliance PASS. | CRITICAL: modifies the self-hosting authority boundary. | HUMAN_REQUIRED; retain provisional Director. |
+| E8-T3 (`COMPLETED`) | Record directing version and kill-switch behavior. | Bind directing-version evidence to verified candidate state and preserve immediate owner kill-switch control. | E8-T2 | `docs/AUTONOMOUS_ROADMAP.md`; directing-version/kill-switch evidence. | Stale or mismatched directing versions fail closed; kill switch remains owner-controlled and auditable. | Stale-generation, replay, fail-closed and race canaries; independent review and Compliance PASS. | CRITICAL: modifies the self-hosting authority boundary. | HUMAN_REQUIRED; retain provisional Director. |
 | E8-T4 (`PLANNED`) | Demonstrate controlled transfer to AGF. | Run only disposable/controlled pilots proving restart, isolation, rollback and autonomous continuation after verified transfer. | E8-T1, E8-T2, E8-T3 | `docs/AUTONOMOUS_ROADMAP.md`; pilot evidence. | No real production mutation; transfer is reversible, kill-switchable and constitutionally bounded; all pilot failures checkpoint safely. | Controlled success/failure pilots; full validation; independent review and Compliance PASS. | CRITICAL: transfer changes the directing authority. | HUMAN_REQUIRED; abort pilot and restore provisional Director. |
 
 ### E9 — Dynamic capability discovery and provider intelligence
@@ -521,7 +569,7 @@ implemented in the current delivery.
   and blocks when required risk evidence is absent.
 - E5 is complete through E5-T3 and PR #61. E6-T1 through E6-T8 are complete
   through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 through E7-T3
-  are complete; E8-T1 and E8-T2 are complete and E8-T3 is the next approved
-  executable task. E8-T3 and E8-T4 remain `PLANNED` and CRITICAL boundaries require
-  separate owner authorization. Final readiness remains
+  are complete; E8-T1, E8-T2, and E8-T3 are complete. E8-T4 remains `PLANNED`
+  and is the next approved CRITICAL boundary requiring separate owner
+  authorization. Final readiness remains
   `NOT_READY_FOR_ROADMAP_COMPLETE`.
