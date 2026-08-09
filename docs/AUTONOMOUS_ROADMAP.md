@@ -230,8 +230,8 @@ demonstrate autonomous continuation.
 
 E8 had no previously defined executable tasks. This deterministic
 decomposition derives only from the approved E8 scope and acceptance criteria;
-it adds no release, production, or constitutional authority. E8-T1 is now
-`COMPLETED`; E8-T2 through E8-T4 remain `PLANNED`, and the activation/transfer boundaries
+it adds no release, production, or constitutional authority. E8-T1 and E8-T2
+are now `COMPLETED`; E8-T3 and E8-T4 remain `PLANNED`, and the activation/transfer boundaries
 are explicitly CRITICAL until separately authorized.
 
 #### E8-T1 candidate validation evidence
@@ -262,10 +262,55 @@ provisional Director remains authoritative. E8-T2 is a CRITICAL activation and
 rollback boundary requiring separate owner authorization; it is not performed
 by this task.
 
+#### E8-T2 transactional activation and rollback evidence
+
+E8-T2 is satisfied by the existing owner-controlled transactional architecture.
+The external `OwnerPolicyController` is the mutation authority exposed by the
+AGF architecture: it prepares and signs policy/activation records, while
+`PolicyAuthority` is verifier-only and exposes no activation API. The runtime
+consumption path uses `PolicyAuthority`; the controller lives outside that
+runtime path, and the store mutators are not runtime authorization APIs.
+`PolicyStateStore` uses one SQLite database with
+`BEGIN IMMEDIATE`, foreign-key enforcement, WAL/full durability settings, and
+restrictive state-directory/database permissions. Activation atomically binds
+the prepared policy, signed activation record, active state, generation, and
+anti-replay journal. Rollback atomically records the signed tombstone, journal
+entry, superseded generation, and pinned constitutional fallback target; the
+active ADR policy is cleared so stale authority fails closed until the external
+known-good state is re-established.
+
+The exact verified evidence is the transactional-store and authority suite:
+`test_activation_failure_at_each_boundary_is_atomic`,
+`test_commit_restart_and_duplicate_are_deterministic`,
+`test_rollback_failure_is_atomic_and_invalidates_active_generation`,
+`test_concurrent_activation_has_one_committed_winner`,
+`test_delivery_transaction_wins_or_loses_switch_race_deterministically`,
+`test_delivery_commit_crash_leaves_non_replayable_recovery_state`,
+`test_tampered_policy_hash_fails_closed`,
+`test_invalid_activation_signature_fails_closed`,
+`test_wrong_project_binding_and_missing_activation_fail_closed`, and
+`test_rollback_is_owner_controller_only_and_removes_active_state`. Together
+they cover commit-boundary failure, restart, duplicate/replay, generation and
+project binding, activation/rollback races, crash recovery, integrity, and
+runtime fail-closed behavior. The named binding test covers wrong-project
+rejection; missing activation remains covered by the runtime resolver's
+inactive-state fail-closed contract and is not claimed as a separate fixture.
+No live self-hosted authority was activated by
+this roadmap evidence task; the provisional Director and known-good fallback
+remain authoritative.
+
+E8-T2 review/compliance evidence: the independent Reviewer examined this
+architecture, requested correction of evidence precision, and then returned
+`APPROVE` after the corrections were limited to this roadmap record. The real
+Compliance Officer check returned `PASS` with READY plan/task status, allowed
+path conformity, review approval, passing validation evidence, objective
+traceability, clean caller evidence, and no protected-file changes. The final
+delivery record retains both the review approval and Compliance `PASS`.
+
 | ID | Objective | Scope | Dependencies | Expected files/components | Acceptance criteria | Validation requirements | Risk | Rollback |
 |---|---|---|---|---|---|---|---|---|
 | E8-T1 (`COMPLETED`) | Validate immutable self-hosting candidates. | Define candidate identity, artifact integrity, compatibility evidence, known-good pin, and isolated validation without in-place mutation. | E7-T3 | `docs/AUTONOMOUS_ROADMAP.md`; candidate validation evidence. | Candidate validation is deterministic and restart-safe; current Director remains authoritative; no activation or production mutation occurs. | Full repository validation; Ruff; `git diff --check`; disposable candidate success/failure, restart, integrity and secret-scan canaries; independent review and Compliance PASS. | HIGH: invalid candidates could corrupt self-hosting. | Revert candidate evidence; retain known-good version. |
-| E8-T2 (`PLANNED`) | Prove atomic candidate activation and rollback. | Specify reversible activation transaction, pinned rollback target, generation and crash recovery without self-mutation. | E8-T1 | `docs/AUTONOMOUS_ROADMAP.md`; activation/rollback evidence. | Activation and rollback are atomic, crash-safe and owner-controlled; Constitution/policy changes cannot self-activate. | Crash/race/restart/idempotency/security canaries; independent review and Compliance PASS. | CRITICAL: activation changes the execution authority boundary. | HUMAN_REQUIRED; restore pinned known-good candidate. |
+| E8-T2 (`COMPLETED`) | Prove atomic candidate activation and rollback. | Specify reversible activation transaction, pinned rollback target, generation and crash recovery without self-mutation. | E8-T1 | `docs/AUTONOMOUS_ROADMAP.md`; activation/rollback evidence. | Activation and rollback are atomic, crash-safe and owner-controlled; Constitution/policy changes cannot self-activate. | Crash/race/restart/idempotency/security canaries; independent review and Compliance PASS. | CRITICAL: activation changes the execution authority boundary. | HUMAN_REQUIRED; restore pinned known-good candidate. |
 | E8-T3 (`PLANNED`) | Record directing version and kill-switch behavior. | Bind directing-version evidence to verified candidate state and preserve immediate owner kill-switch control. | E8-T2 | `docs/AUTONOMOUS_ROADMAP.md`; directing-version/kill-switch evidence. | Stale or mismatched directing versions fail closed; kill switch remains owner-controlled and auditable. | Stale-generation, replay, fail-closed and race canaries; independent review and Compliance PASS. | CRITICAL: modifies the self-hosting authority boundary. | HUMAN_REQUIRED; retain provisional Director. |
 | E8-T4 (`PLANNED`) | Demonstrate controlled transfer to AGF. | Run only disposable/controlled pilots proving restart, isolation, rollback and autonomous continuation after verified transfer. | E8-T1, E8-T2, E8-T3 | `docs/AUTONOMOUS_ROADMAP.md`; pilot evidence. | No real production mutation; transfer is reversible, kill-switchable and constitutionally bounded; all pilot failures checkpoint safely. | Controlled success/failure pilots; full validation; independent review and Compliance PASS. | CRITICAL: transfer changes the directing authority. | HUMAN_REQUIRED; abort pilot and restore provisional Director. |
 
@@ -476,7 +521,7 @@ implemented in the current delivery.
   and blocks when required risk evidence is absent.
 - E5 is complete through E5-T3 and PR #61. E6-T1 through E6-T8 are complete
   through PRs #65, #69, #74, #76, #78, #80, #82, and #84. E7-T1 through E7-T3
-  are complete; E8-T1 is complete and E8-T2 is the next approved executable
-  task. E8-T2 through E8-T4 remain `PLANNED` and CRITICAL boundaries require
+  are complete; E8-T1 and E8-T2 are complete and E8-T3 is the next approved
+  executable task. E8-T3 and E8-T4 remain `PLANNED` and CRITICAL boundaries require
   separate owner authorization. Final readiness remains
   `NOT_READY_FOR_ROADMAP_COMPLETE`.
