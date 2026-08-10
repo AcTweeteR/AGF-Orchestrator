@@ -467,3 +467,117 @@ def _validate_event(event: PilotRunEvent, ledger: PilotRunLedger) -> None:
         datetime.strptime(event.observed_at, "%Y-%m-%dT%H:%M:%SZ")
     except ValueError as exc:
         raise PilotRunError("event timestamp is invalid") from exc
+
+
+class BoundaryPilotError(ValueError):
+    """Raised when disposable authority-boundary evidence is unsafe."""
+
+
+@dataclass(frozen=True)
+class BoundaryAuditReport:
+    project_id: str
+    policy_id: str
+    observed_generation: int
+    rollback_verified: bool
+    kill_switch_verified: bool
+    stale_authorization_rejected: bool
+    human_boundary_verified: bool
+    blocked: bool
+
+
+class BoundaryPilot:
+    """Observe rollback and kill-switch evidence without mutating authority."""
+
+    def audit(
+        self,
+        *,
+        project_id: str,
+        policy_id: str,
+        policy_hash: str,
+        authority: dict[str, Any],
+        rollback: dict[str, Any],
+        stale_authorization: dict[str, Any],
+        expected_rollback_hash: str,
+    ) -> BoundaryAuditReport:
+        if not _PROJECT.fullmatch(project_id) or not _POLICY.fullmatch(policy_id):
+            raise BoundaryPilotError("boundary identity is invalid")
+        if not _SHA256.fullmatch(policy_hash) or not _SHA256.fullmatch(expected_rollback_hash):
+            raise BoundaryPilotError("boundary policy hash is invalid")
+        self._validate_authority(authority, project_id)
+        self._validate_rollback(rollback, project_id, authority, expected_rollback_hash)
+        self._validate_stale_authorization(
+            stale_authorization, project_id, rollback, authority, policy_hash,
+        )
+        if rollback["superseded_policy_hash"] != policy_hash:
+            raise BoundaryPilotError("rollback superseded policy does not match")
+        if authority["kill_switch_active"]:
+            blocked = True
+        else:
+            blocked = False
+        return BoundaryAuditReport(
+            project_id, policy_id, authority["generation"], True, True, True, True, blocked,
+        )
+
+    @staticmethod
+    def _validate_authority(authority: dict[str, Any], project_id: str) -> None:
+        required = {"project_id", "generation", "kill_switch_active", "operation_id"}
+        if not isinstance(authority, dict) or not required.issubset(authority):
+            raise BoundaryPilotError("authority evidence is incomplete")
+        if authority["project_id"] != project_id:
+            raise BoundaryPilotError("authority project binding is invalid")
+        if (
+            not isinstance(authority["generation"], int)
+            or isinstance(authority["generation"], bool)
+            or authority["generation"] < 1
+            or not isinstance(authority["kill_switch_active"], bool)
+            or not _ID.fullmatch(authority["operation_id"])
+        ):
+            raise BoundaryPilotError("authority evidence is invalid")
+
+    @staticmethod
+    def _validate_rollback(
+        rollback: dict[str, Any], project_id: str,
+        authority: dict[str, Any], expected_hash: str,
+    ) -> None:
+        required = {
+            "project_id", "operation_id", "superseded_policy_hash", "restored_policy_hash",
+            "previous_generation", "generation", "tombstone_hash",
+        }
+        if not isinstance(rollback, dict) or not required.issubset(rollback):
+            raise BoundaryPilotError("rollback evidence is incomplete")
+        if rollback["project_id"] != project_id:
+            raise BoundaryPilotError("rollback project binding is invalid")
+        hashes = (rollback["superseded_policy_hash"], rollback["restored_policy_hash"],
+                  rollback["tombstone_hash"])
+        if any(not isinstance(value, str) or not _SHA256.fullmatch(value) for value in hashes):
+            raise BoundaryPilotError("rollback hash evidence is invalid")
+        if rollback["restored_policy_hash"] != expected_hash:
+            raise BoundaryPilotError("rollback target is not pinned")
+        if (
+            not isinstance(rollback["previous_generation"], int)
+            or not isinstance(rollback["generation"], int)
+            or rollback["previous_generation"] < 1
+            or rollback["generation"] != rollback["previous_generation"] + 1
+            or rollback["generation"] != authority["generation"]
+        ):
+            raise BoundaryPilotError("rollback generation evidence is invalid")
+
+    @staticmethod
+    def _validate_stale_authorization(
+        authorization: dict[str, Any], project_id: str,
+        rollback: dict[str, Any], authority: dict[str, Any], policy_hash: str,
+    ) -> None:
+        if not isinstance(authorization, dict) or {
+            "project_id", "generation", "policy_hash", "status", "risk_class",
+        } - set(authorization):
+            raise BoundaryPilotError("authorization evidence is incomplete")
+        if authorization["project_id"] != project_id:
+            raise BoundaryPilotError("authorization project binding is invalid")
+        if (
+            authorization["generation"] != rollback["previous_generation"]
+            or authorization["policy_hash"] != policy_hash
+            or authorization["status"] != "HUMAN_REQUIRED"
+            or authorization["risk_class"] != "CRITICAL"
+            or authority["generation"] <= authorization["generation"]
+        ):
+            raise BoundaryPilotError("stale authorization was not invalidated")
