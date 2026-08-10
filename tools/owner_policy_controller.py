@@ -12,7 +12,7 @@ import hashlib
 import hmac
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,7 @@ SCHEMA = "1.0"
 KEY_ID = "owner-key-1"
 COMPATIBILITY = "agf-merge-policy-v1"
 ROLLBACK_TARGET = "project-policy-require-human-merge"
+AGF_0003_POLICY_HASH = "fd31b8964e66d867803020d81552d8c21f76c04a54b34d6a8ef7ede296efd6e4"
 MANDATORY_GATES = (
     "constitution", "policy", "plan", "implementation", "review", "compliance",
     "validation", "risk", "caller_clean", "base_sha", "authorized_paths",
@@ -172,6 +173,84 @@ class OwnerPolicyController:
         self._validate_project(project_id)
         return PolicyAuthority().resolve(project_id)
 
+    def refresh(self, project_id: str, operation_id: str) -> dict[str, Any]:
+        """Renew only the unchanged, owner-approved AGF-0003 activation."""
+        self._validate_project(project_id)
+        if not OPERATION_RE.fullmatch(operation_id):
+            raise OwnerControllerError("invalid refresh operation identity")
+        constitution = ConstitutionAuthority().resolve(project_id)
+        try:
+            snapshot = PolicyStateStore(self.state_dir, read_only=True).snapshot(project_id)
+        except PolicyStateError as exc:
+            raise OwnerControllerError("transactional policy state is unreadable") from exc
+        if snapshot is None or snapshot.get("active_policy_hash") is None:
+            raise OwnerControllerError("no active policy to refresh")
+        policy = snapshot.get("policy")
+        active_hash = snapshot.get("active_policy_hash")
+        if (
+            snapshot.get("active_policy_id") != POLICY_ID
+            or active_hash != AGF_0003_POLICY_HASH
+            or not isinstance(policy, dict)
+            or canonical_hash(policy) != AGF_0003_POLICY_HASH
+        ):
+            raise OwnerControllerError("active policy is not the authorized AGF-0003 artifact")
+        current_activation = snapshot.get("activation")
+        if not isinstance(current_activation, dict):
+            raise OwnerControllerError("active activation evidence is missing")
+        authority = PolicyAuthority()
+        authority._verify_policy(
+            project_id, constitution.constitution_id,
+            {"schema_version": SCHEMA, "project_id": project_id,
+             "policy_id": POLICY_ID, "policy_hash": active_hash,
+             "activation_hash": canonical_hash(current_activation)},
+            policy,
+        )
+        pointer = {
+            "schema_version": SCHEMA, "project_id": project_id,
+            "policy_id": POLICY_ID, "policy_hash": active_hash,
+            "activation_hash": canonical_hash(current_activation),
+        }
+        authority._verify_activation(
+            project_id, pointer, policy, current_activation, enforce_freshness=False
+        )
+        activation_time = datetime.fromisoformat(current_activation["activation_time"])
+        freshness = policy["body"]["freshness_limits"]["policy_seconds"]
+        if activation_time > datetime.now(UTC) or (
+            datetime.now(UTC) - activation_time <= timedelta(seconds=freshness)
+        ):
+            raise OwnerControllerError("active policy is not eligible for refresh")
+        activation_unsigned = {
+            "schema_version": SCHEMA,
+            "project_id": project_id,
+            "policy_id": POLICY_ID,
+            "policy_version": policy["version"],
+            "policy_hash": active_hash,
+            "previous_policy_hash": policy["previous_policy"]["policy_hash"],
+            "active_pointer_value": {
+                "project_id": project_id, "policy_id": POLICY_ID,
+                "policy_hash": active_hash,
+            },
+            "activation_time": self._now(),
+            "compatibility": COMPATIBILITY,
+            "rollback_target": policy["previous_policy"],
+            "key_id": KEY_ID,
+            "operation_id": operation_id,
+        }
+        activation = self._signed(activation_unsigned)
+        try:
+            generation = self.store.refresh(
+                project_id, policy, activation,
+                expected_generation=int(snapshot["generation"]),
+                expected_active_policy_hash=active_hash,
+            )
+        except PolicyStateError as exc:
+            raise OwnerControllerError(str(exc)) from exc
+        return {
+            "project_id": project_id, "policy_id": POLICY_ID,
+            "policy_hash": active_hash, "activation_id": operation_id,
+            "activation_hash": canonical_hash(activation), "generation": generation,
+        }
+
     def bootstrap_authority(self, project_id: str) -> dict[str, Any]:
         """Pin the initial inactive kill-switch generation after policy activation."""
         self._validate_project(project_id)
@@ -271,7 +350,7 @@ class OwnerPolicyController:
 
     @staticmethod
     def _now() -> str:
-        return datetime.now(UTC).replace(microsecond=0).isoformat()
+        return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -280,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("inspect", "prepare", "verify", "bootstrap-authority"):
         command = commands.add_parser(name)
         command.add_argument("--project", required=True)
-    for name in ("activate", "rollback"):
+    for name in ("activate", "refresh", "rollback"):
         command = commands.add_parser(name)
         command.add_argument("--project", required=True)
         command.add_argument("--operation-id", required=True)
@@ -291,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
     switch.add_argument("--active", action="store_true")
     args = parser.parse_args(argv)
     controller = OwnerPolicyController()
-    if args.command in {"activate", "rollback"}:
+    if args.command in {"activate", "refresh", "rollback"}:
         result = getattr(controller, args.command)(args.project, args.operation_id)
     elif args.command == "set-kill-switch":
         result = controller.set_kill_switch(

@@ -189,7 +189,7 @@ class PolicyAuthority:
                 self._invalid("policy rollback target is not the constitutional fallback")
         limits = policy["body"].get("freshness_limits")
         self._validate_limits(limits)
-        self._validate_time(policy["activation_time"], limits["policy_seconds"])
+        self._validate_timestamp(policy["activation_time"])
         self._verify_signature(policy, "policy")
         if pointer["project_id"] != project_id or pointer["policy_id"] != _POLICY_ID:
             self._invalid("active policy pointer identity is invalid")
@@ -217,7 +217,9 @@ class PolicyAuthority:
         if body.get("protected_boundary_uncertainty") != "CRITICAL":
             self._invalid("protected-boundary uncertainty is not CRITICAL")
 
-    def _verify_activation(self, project_id, pointer, policy, activation) -> None:
+    def _verify_activation(
+        self, project_id, pointer, policy, activation, *, enforce_freshness: bool = True
+    ) -> None:
         required = {
             "schema_version", "project_id", "policy_id", "policy_version", "policy_hash",
             "previous_policy_hash", "active_pointer_value", "activation_time",
@@ -250,9 +252,12 @@ class PolicyAuthority:
             self._invalid("activation rollback predecessor does not match policy")
         if activation["rollback_target"] != policy["previous_policy"]:
             self._invalid("activation rollback target is invalid")
-        self._validate_time(
-            activation["activation_time"], policy["body"]["freshness_limits"]["policy_seconds"]
-        )
+        self._validate_timestamp(activation["activation_time"])
+        if enforce_freshness:
+            self._validate_time(
+                activation["activation_time"],
+                policy["body"]["freshness_limits"]["policy_seconds"],
+            )
         if not isinstance(activation["operation_id"], str) or not re.fullmatch(
             r"operation-[a-z0-9][a-z0-9-]{2,127}", activation["operation_id"]
         ):
@@ -317,6 +322,17 @@ class PolicyAuthority:
             or parsed > now
             or now - parsed > timedelta(seconds=max_age_seconds)
         ):
+            raise PolicyActivationError("POLICY_NOT_ACTIVATED: invalid activation time")
+
+    @staticmethod
+    def _validate_timestamp(value: Any) -> None:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except (TypeError, ValueError) as exc:
+            raise PolicyActivationError(
+                "POLICY_NOT_ACTIVATED: invalid activation time"
+            ) from exc
+        if parsed.tzinfo is None or parsed > datetime.now(UTC):
             raise PolicyActivationError("POLICY_NOT_ACTIVATED: invalid activation time")
 
     @staticmethod

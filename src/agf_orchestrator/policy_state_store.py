@@ -355,6 +355,72 @@ class PolicyStateStore:
                 failure_hook("before_commit", connection)
             return generation
 
+    def refresh(
+        self,
+        project_id: str,
+        policy: dict[str, Any],
+        activation: dict[str, Any],
+        *,
+        expected_generation: int,
+        expected_active_policy_hash: str,
+        failure_hook: Callable[[str, sqlite3.Connection], None] | None = None,
+    ) -> int:
+        """Atomically renew the activation of the unchanged active policy."""
+        self.initialize()
+        with self.transaction() as connection:
+            self._check_unused(connection, activation["operation_id"])
+            row = connection.execute(
+                "SELECT generation, active_policy_id, active_policy_hash "
+                "FROM active_state WHERE project_id=?", (project_id,)
+            ).fetchone()
+            if row is None or row[2] is None:
+                raise PolicyStateError("no active policy to refresh")
+            if int(row[0]) != expected_generation:
+                raise PolicyStateError("stale generation")
+            if row[1] != policy["policy_id"] or row[2] != expected_active_policy_hash:
+                raise PolicyStateError("active policy identity is stale")
+            if (
+                activation["project_id"] != project_id
+                or activation["policy_id"] != policy["policy_id"]
+                or activation["policy_hash"] != expected_active_policy_hash
+            ):
+                raise PolicyStateError("refresh activation identity is invalid")
+            policy_row = connection.execute(
+                "SELECT 1 FROM policies WHERE project_id=? AND policy_id=? AND policy_hash=?",
+                (project_id, policy["policy_id"], expected_active_policy_hash),
+            ).fetchone()
+            if policy_row is None:
+                raise PolicyStateError("policy artifact is not prepared")
+            generation = expected_generation + 1
+            if failure_hook:
+                failure_hook("before_journal", connection)
+            connection.execute(
+                "INSERT INTO operation_journal VALUES (?, ?, 'refresh', ?, ?, ?)",
+                (activation["operation_id"], project_id, generation,
+                 expected_active_policy_hash, _now()),
+            )
+            if failure_hook:
+                failure_hook("after_journal", connection)
+            connection.execute(
+                "INSERT INTO activations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    project_id, activation["operation_id"], activation["policy_id"],
+                    activation["policy_hash"], activation["previous_policy_hash"],
+                    activation["activation_time"], activation["signature"],
+                    _json(activation), generation,
+                ),
+            )
+            if failure_hook:
+                failure_hook("after_activation", connection)
+            connection.execute(
+                "UPDATE active_state SET active_activation_id=?, generation=? "
+                "WHERE project_id=?",
+                (activation["operation_id"], generation, project_id),
+            )
+            if failure_hook:
+                failure_hook("before_commit", connection)
+            return generation
+
     def rollback(
         self,
         project_id: str,
