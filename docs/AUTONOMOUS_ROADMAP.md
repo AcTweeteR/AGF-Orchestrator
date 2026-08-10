@@ -207,7 +207,7 @@ blocker and no deferred item is silently removed.
 | Dimension | Result | Evidence |
 |---|---|---|
 | Architecture and governance | PASS | ConstitutionAuthority VERIFIED; ADR-0002 unchanged; ADR-0003 implementation and external activation controls verified, while the repository ADR remains `Proposed` until its governed activation record is applied. CRITICAL remains human-controlled. |
-| Implemented validation baseline | PASS | 498 tests passing; Ruff PASS; `git diff --check` PASS; Compliance PASS; E6 canaries and reviews recorded by PRs #65, #69, #74, #76, #78, #80, #82, and #84. |
+| Implemented validation baseline | PASS | 504 tests passing; Ruff PASS; `git diff --check` PASS; Compliance PASS; E6 canaries and reviews recorded by PRs #65, #69, #74, #76, #78, #80, #82, and #84. |
 | Repository delivery state | PASS | Main reconciled with origin/main after merged PR #88; controlled delivery preserves isolated branches and caller cleanliness. |
 | Roadmap completion | READY | E8 controlled evidence, E9-T1 through E9-T5, E10-T1 through E10-T4, and E11-T1 through E11-T4 are COMPLETED; no READY or PLANNED tasks remain. |
 | Protected boundaries | PASS | No Constitution, owner authority, root of trust, protected policy, or merge threshold was changed. Local Qwen remains diagnostic-only. |
@@ -700,7 +700,7 @@ transitions, restart/readback, rollback evidence, kill-switch observation, and
 explicit CRITICAL human-boundary evidence. The report is deterministic,
 project-isolated, non-authoritative, and records no external mutation path.
 
-E11-T4 is complete with 4 focused tests, 498-test full-suite validation, Ruff,
+E11-T4 is complete with 4 focused tests, 504-test full-suite validation, Ruff,
 `git diff --check`, independent review APPROVE, and Compliance PASS.
 
 ## Capability gate template
