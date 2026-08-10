@@ -218,29 +218,40 @@ class ProjectRegistry:
             project = self._get_unlocked(name_or_id)
             return self._verify_unlocked(project)
 
-    def _verify_unlocked(self, project: Project) -> Project:
+    def verify_read_only(self, name_or_id: str) -> Project:
+        """Verify repository identity without rewriting registry metadata."""
+        with self._lock("registry-verify-read-only"):
+            project = self._get_unlocked(name_or_id)
+            return self._verify_unlocked(project, persist=False)
+
+    def _verify_unlocked(self, project: Project, *, persist: bool = True) -> Project:
         root = Path(project.repository_root)
         try:
             origin = _git(root, "config", "--get", "remote.origin.url")
             head = _git(root, "rev-parse", "HEAD")
             branch = _git(root, "branch", "--show-current")
         except ProjectRegistryError as exc:
-            return self._mark_unlocked(project, ProjectStatus.STALE, str(exc))
+            return self._mark_unlocked(project, ProjectStatus.STALE, str(exc), persist=persist)
         try:
             normalized = _canonical(origin)
         except ProjectRegistryError as exc:
-            return self._mark_unlocked(project, ProjectStatus.STALE, str(exc))
+            return self._mark_unlocked(project, ProjectStatus.STALE, str(exc), persist=persist)
         try:
             stored_identity = _canonical(project.origin_url)
         except ProjectRegistryError as exc:
-            return self._mark_unlocked(project, ProjectStatus.STALE, str(exc))
+            return self._mark_unlocked(project, ProjectStatus.STALE, str(exc), persist=persist)
         if normalized != stored_identity:
-            return self._mark_unlocked(project, ProjectStatus.STALE, "repository origin changed")
+            return self._mark_unlocked(
+                project, ProjectStatus.STALE, "repository origin changed", persist=persist
+            )
         if not branch:
-            return self._mark_unlocked(project, ProjectStatus.STALE, "repository is detached")
+            return self._mark_unlocked(
+                project, ProjectStatus.STALE, "repository is detached", persist=persist
+            )
         if branch != project.default_branch:
             return self._mark_unlocked(
-                project, ProjectStatus.STALE, "registered branch identity changed"
+                project, ProjectStatus.STALE, "registered branch identity changed",
+                persist=persist,
             )
         if head != project.current_head_sha:
             return self._mark_unlocked(
@@ -249,8 +260,11 @@ class ProjectRegistry:
                 "observed HEAD advanced",
                 verified_at=_now(),
                 new_head=head,
+                persist=persist,
             )
-        return self._mark_unlocked(project, ProjectStatus.ACTIVE, None, verified_at=_now())
+        return self._mark_unlocked(
+            project, ProjectStatus.ACTIVE, None, verified_at=_now(), persist=persist
+        )
 
     def _mark_unlocked(
         self,
@@ -260,6 +274,7 @@ class ProjectRegistry:
         *,
         verified_at: str | None = None,
         new_head: str | None = None,
+        persist: bool = True,
     ) -> Project:
         metadata = dict(project.metadata)
         if reason:
@@ -289,7 +304,8 @@ class ProjectRegistry:
             metadata,
         )
         projects = [updated if p.project_id == project.project_id else p for p in self._load()]
-        self._save(projects)
+        if persist:
+            self._save(projects)
         return updated
 
     def remove(self, name_or_id: str) -> None:
