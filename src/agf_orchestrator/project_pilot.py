@@ -581,3 +581,95 @@ class BoundaryPilot:
             or authority["generation"] <= authorization["generation"]
         ):
             raise BoundaryPilotError("stale authorization was not invalidated")
+
+
+class EndToEndPilotError(ValueError):
+    """Raised when the composed disposable project pilot cannot complete safely."""
+
+
+@dataclass(frozen=True)
+class EndToEndPilotReport:
+    project_id: str
+    intake_id: str
+    run_id: str
+    restart_verified: bool
+    failure_verified: bool
+    rollback_verified: bool
+    kill_switch_verified: bool
+    blocked: bool
+    external_mutation: bool
+    authoritative: bool
+
+
+class EndToEndPilot:
+    """Compose the bounded pilot primitives without executing external work."""
+
+    def run(
+        self,
+        intake: PilotIntake,
+        *,
+        expected_policy_id: str,
+        expected_policy_hash: str,
+        authority: dict[str, Any],
+        rollback: dict[str, Any],
+        stale_authorization: dict[str, Any],
+        expected_rollback_hash: str,
+    ) -> EndToEndPilotReport:
+        if intake.budget_steps < 2:
+            raise EndToEndPilotError("end-to-end pilot requires two bounded steps")
+        ledger = PilotIntakeLedger(intake.project_id)
+        ledger.record(
+            intake, expected_policy_id=expected_policy_id,
+            expected_policy_hash=expected_policy_hash,
+        )
+        restored_intake = PilotIntakeLedger.from_state(ledger.export_state())
+        if restored_intake.get(intake.intake_id) != intake:
+            raise EndToEndPilotError("intake restart evidence is invalid")
+        run_ledger = PilotRunLedger(
+            intake.project_id, policy_id=expected_policy_id,
+            policy_hash=expected_policy_hash,
+        )
+        run = run_ledger.start(intake)
+        run_ledger.apply(
+            run.run_id, "operation-pilot-step", "STEP", "bounded step",
+            intake.created_at,
+        )
+        completed = run_ledger.apply(
+            run.run_id, "operation-pilot-complete", "COMPLETE", "pilot complete",
+            intake.created_at,
+        )
+        restored_runs = PilotRunLedger.from_state(run_ledger.export_state())
+        restart_verified = restored_runs.get(run.run_id) == completed
+        if not restart_verified:
+            raise EndToEndPilotError("run restart evidence is invalid")
+        failure_item = replace(intake, intake_id="intake-failure")
+        failure_item = replace(failure_item, content_sha256=intake_hash(failure_item))
+        failure_ledger = PilotRunLedger(
+            intake.project_id, policy_id=expected_policy_id,
+            policy_hash=expected_policy_hash,
+        )
+        failure_run = failure_ledger.start(failure_item)
+        failed = failure_ledger.apply(
+            failure_run.run_id, "operation-pilot-failure", "FAIL", "controlled failure",
+            intake.created_at,
+        )
+        restored_failure = PilotRunLedger.from_state(failure_ledger.export_state())
+        failure_verified = failed.status == "FAILED" and restored_failure.get(
+            failure_run.run_id
+        ) == failed
+        if not failure_verified:
+            raise EndToEndPilotError("failure recovery evidence is invalid")
+        try:
+            boundary = BoundaryPilot().audit(
+                project_id=intake.project_id, policy_id=expected_policy_id,
+                policy_hash=expected_policy_hash, authority=authority,
+                rollback=rollback, stale_authorization=stale_authorization,
+                expected_rollback_hash=expected_rollback_hash,
+            )
+        except BoundaryPilotError as exc:
+            raise EndToEndPilotError(str(exc)) from exc
+        return EndToEndPilotReport(
+            intake.project_id, intake.intake_id, run.run_id, restart_verified,
+            failure_verified, boundary.rollback_verified, boundary.kill_switch_verified,
+            boundary.blocked, False, False,
+        )
