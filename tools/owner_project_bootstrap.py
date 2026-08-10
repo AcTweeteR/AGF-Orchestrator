@@ -33,7 +33,11 @@ class OwnerProjectBootstrapper:
     """Owner-only project registration and authority bootstrap coordinator."""
 
     def __init__(self, state_dir: Path | None = None) -> None:
-        self.state_dir = (state_dir or Path.home() / ".agf-orchestrator").resolve()
+        configured = state_dir or Path.home() / ".agf-orchestrator"
+        self.configured_state_dir = Path(configured).expanduser()
+        if self.configured_state_dir.is_symlink():
+            raise OwnerBootstrapError("AGF state directory symlink is not trusted")
+        self.state_dir = self.configured_state_dir.resolve()
         self.registry = ProjectRegistry(self.state_dir)
         self.policy = OwnerPolicyController(self.state_dir)
         self.authority_dir = self.state_dir / "constitution-authority"
@@ -59,6 +63,9 @@ class OwnerProjectBootstrapper:
         if project is None:
             if not name:
                 raise OwnerBootstrapError("project name is required for unregistered repository")
+            project_id = self._project_id(root)
+            if self._has_existing_project_state(project_id):
+                raise OwnerBootstrapError("unregistered project has pre-existing authority state")
             project = self.registry.add(
                 name, root,
                 policy=ProjectPolicy(
@@ -70,7 +77,9 @@ class OwnerProjectBootstrapper:
         else:
             if Path(project.repository_root).resolve() != root:
                 raise OwnerBootstrapError("registered project repository identity conflicts")
-            project = self.registry.verify(project.project_id)
+            if self._has_incomplete_project_state(project.project_id):
+                raise OwnerBootstrapError("registered project has pre-existing authority state")
+            project = self.registry.verify_read_only(project.project_id)
         try:
             if project.status.value != "ACTIVE":
                 raise OwnerBootstrapError(f"project registration is {project.status.value}")
@@ -97,7 +106,7 @@ class OwnerProjectBootstrapper:
             raise
 
     def verify(self, project_id: str) -> dict[str, Any]:
-        project = self.registry.verify(project_id)
+        project = self.registry.verify_read_only(project_id)
         if project.status.value != "ACTIVE":
             raise OwnerBootstrapError(f"project registration is {project.status.value}")
         constitution = self._verify_constitution(project_id)
@@ -120,9 +129,13 @@ class OwnerProjectBootstrapper:
         }
 
     def _bootstrap_constitution(self, project_id: str) -> None:
+        self._validate_constitution_paths(project_id)
         existing = self._constitution_status(project_id)
         if existing["status"] == "VERIFIED":
             return
+        directory = self.state_dir / "projects" / project_id / "constitution"
+        if directory.exists() or directory.is_symlink():
+            raise OwnerBootstrapError("existing unverified Constitution state must be resolved")
         source_id = "project-efc8e8ef7be7050b"
         try:
             source = ConstitutionAuthority().resolve(source_id)
@@ -148,9 +161,6 @@ class OwnerProjectBootstrapper:
             "constitution_id": source.constitution_id,
             "record_hash": record_hash,
         }
-        directory = self.state_dir / "projects" / project_id / "constitution"
-        if directory.is_symlink() or directory.parent.is_symlink():
-            raise OwnerBootstrapError("project Constitution directory symlink is not trusted")
         directory.mkdir(parents=True, exist_ok=True)
         os.chmod(self.state_dir, 0o700)
         os.chmod(directory, 0o700)
@@ -172,6 +182,91 @@ class OwnerProjectBootstrapper:
         if constitution_root.exists() and not constitution_root.is_symlink():
             shutil.rmtree(constitution_root)
         self.registry.remove(project_id)
+
+    def _has_existing_project_state(self, project_id: str) -> bool:
+        self._validate_constitution_paths(project_id)
+        constitution_root = self.state_dir / "projects" / project_id
+        if constitution_root.exists() or constitution_root.is_symlink():
+            return True
+        if not self.policy.store.path.exists():
+            return False
+        try:
+            reader = type(self.policy.store)(self.state_dir, read_only=True)
+            with reader._connection() as connection:
+                for table in (
+                    "policies", "activations", "rollback_records", "operation_journal",
+                    "active_state", "authority_state",
+                ):
+                    if connection.execute(
+                        f"SELECT 1 FROM {table} WHERE project_id=? LIMIT 1", (project_id,)
+                    ).fetchone():
+                        return True
+            return False
+        except Exception as exc:
+            raise OwnerBootstrapError("existing policy state is unreadable") from exc
+
+    def _has_incomplete_project_state(self, project_id: str) -> bool:
+        if not self.policy.store.path.exists():
+            return False
+        try:
+            reader = type(self.policy.store)(self.state_dir, read_only=True)
+            with reader._connection() as connection:
+                active = connection.execute(
+                    "SELECT active_policy_hash, active_activation_id, generation FROM active_state "
+                    "WHERE project_id=?", (project_id,)
+                ).fetchone()
+                rows = connection.execute(
+                    "SELECT (SELECT count(*) FROM policies WHERE project_id=?), "
+                    "(SELECT count(*) FROM activations WHERE project_id=?), "
+                    "(SELECT count(*) FROM rollback_records WHERE project_id=?), "
+                    "(SELECT count(*) FROM operation_journal WHERE project_id=?), "
+                    "(SELECT count(*) FROM active_state WHERE project_id=?), "
+                    "(SELECT count(*) FROM authority_state WHERE project_id=?)",
+                    (project_id, project_id, project_id, project_id, project_id, project_id),
+                ).fetchone()
+                if not any(rows):
+                    return False
+                if active is None or active[0] is None or active[1] is None:
+                    return True
+                policy = connection.execute(
+                    "SELECT 1 FROM policies WHERE project_id=? AND policy_hash=?",
+                    (project_id, active[0]),
+                ).fetchone()
+                activation = connection.execute(
+                    "SELECT generation FROM activations WHERE project_id=? AND operation_id=?",
+                    (project_id, active[1]),
+                ).fetchone()
+                journal = connection.execute(
+                    "SELECT generation FROM operation_journal "
+                    "WHERE project_id=? AND operation_id=?",
+                    (project_id, active[1]),
+                ).fetchone()
+                authority = connection.execute(
+                    "SELECT generation FROM authority_state WHERE project_id=?",
+                    (project_id,),
+                ).fetchone()
+                generation = active[2]
+                return (
+                    policy is None or activation is None or journal is None or authority is None
+                    or activation[0] != generation or journal[0] != generation
+                    or authority[0] != generation
+                )
+        except Exception as exc:
+            raise OwnerBootstrapError("existing policy state is unreadable") from exc
+
+    def _validate_constitution_paths(self, project_id: str) -> None:
+        paths = list(self.configured_state_dir.parents) + [
+            self.configured_state_dir,
+            self.configured_state_dir / "projects",
+            self.configured_state_dir / "projects" / project_id,
+            self.configured_state_dir / "projects" / project_id / "constitution",
+        ]
+        if any(path.is_symlink() for path in paths):
+            raise OwnerBootstrapError("project Constitution path symlink is not trusted")
+
+    @staticmethod
+    def _project_id(root: Path) -> str:
+        return "project-" + hashlib.sha256(str(root).encode()).hexdigest()[:16]
 
     def _constitution_status(self, project_id: str) -> dict[str, Any]:
         try:
