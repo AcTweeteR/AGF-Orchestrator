@@ -1,6 +1,20 @@
 # Guidance for agents working on AGF-Orchestrator
 
-This repository is documentation-only. Do not add code, scripts, CI, provider SDKs, APIs, or automation as part of documentation changes.
+This repository contains both normative governance documentation and the
+implementation of the AGF orchestrator/runtime and approved external,
+owner-controlled tooling. Code changes are allowed only when they implement
+an approved roadmap item, ADR, or architecture decision; remain within the
+authorized task scope; preserve constitutional and policy boundaries; and
+pass the required tests, independent review, and Compliance gates.
+
+Agents must not modify the Constitution or root of trust without explicit
+authorization, create new authority sources, self-activate protected policy,
+bypass owner-controlled external actions, weaken fail-closed behavior, expose
+secrets, or add unrelated production functionality. External owner-controlled
+controllers may be implemented here when privileged mutation operations are
+unavailable to the AGF runtime, the owner/runtime separation is explicit and
+tested, and no secret material is committed. CRITICAL changes remain
+HUMAN_REQUIRED under the active policy.
 
 ## Governing references
 
