@@ -423,11 +423,15 @@ class SessionManager:
                         )
                         recovered_architecture = ArchitectureDecision(**architecture_payload)
                         recovered_architecture.validate(recovered_assessment)
-                        if architecture_payload.get("provider_selection", {}).get(
-                            "architect_request_hash"
-                        ) != request_payload.get("request_hash"):
+                        provider_state = architecture_payload.get("provider_selection")
+                        if not isinstance(provider_state, dict):
+                            raise SessionManagerError(
+                                "persisted provider selection evidence is invalid"
+                            )
+                        if provider_state.get("architect_request_hash") != request_payload.get(
+                            "request_hash"
+                        ):
                             raise SessionManagerError("provider selection request binding differs")
-                        provider_state = architecture_payload.get("provider_selection", {})
                         authoritative_candidates = None
                         authoritative_gates = None
                         if isinstance(self.architect, ProviderArchitect):
@@ -443,6 +447,39 @@ class SessionManager:
                             )
                         if provider_evidence is None:
                             raise SessionManagerError("provider evidence artifact is missing")
+                        if authoritative_gates is not None:
+                            current_gate_results = {
+                                name: getattr(authoritative_gates, name)
+                                for name in (
+                                    "allow_fallback",
+                                    "budget_eligible",
+                                    "empirical_evidence_eligible",
+                                    "health_eligible",
+                                    "independence_eligible",
+                                    "policy_eligible",
+                                    "privacy_eligible",
+                                )
+                            }
+                            current_profile_evidence = [
+                                {
+                                    "provider_id": candidate.profile.provider_id,
+                                    "profile_id": candidate.profile.profile_id,
+                                    "profile": candidate.profile.to_dict(),
+                                    "priority": candidate.priority,
+                                    "diagnostic_only": candidate.diagnostic_only,
+                                }
+                                for candidate in authoritative_candidates or ()
+                            ]
+                            if (
+                                provider_state.get("gate_results") != current_gate_results
+                                or provider_state.get("profile_evidence")
+                                != current_profile_evidence
+                            ):
+                                return self._mark_retry_required(
+                                    session,
+                                    "persisted provider evidence is stale; fresh retry required",
+                                    str(artifact_paths["provider_evidence"]),
+                                )
                         verify_provider_evidence(
                             provider_evidence,
                             provider_state,
