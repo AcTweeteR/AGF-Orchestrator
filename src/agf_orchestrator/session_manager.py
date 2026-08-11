@@ -19,6 +19,7 @@ from .architect_planning import (
     validate_architect_response,
     verify_provider_evidence,
 )
+from .authority_context import AuthorityContextError
 from .capability_selection import CapabilityCandidate, SelectionGates
 from .constitution import ConstitutionAuthority, ConstitutionVerificationError
 from .director import Director
@@ -795,7 +796,11 @@ class SessionManager:
                 try:
                     ConstitutionAuthority().resolve(project.project_id)
                     PolicyAuthority().resolve(project.project_id)
-                except (ConstitutionVerificationError, PolicyActivationError) as exc:
+                except (
+                    AuthorityContextError,
+                    ConstitutionVerificationError,
+                    PolicyActivationError,
+                ) as exc:
                     raise SessionManagerError(
                         "lineage repair authority verification failed"
                     ) from exc
@@ -1072,7 +1077,7 @@ class SessionManager:
                 raise SessionManagerError("delivery is not authorized by project policy")
             try:
                 ConstitutionAuthority().resolve(project.project_id)
-            except ConstitutionVerificationError as exc:
+            except (AuthorityContextError, ConstitutionVerificationError) as exc:
                 raise SessionManagerError(str(exc)) from exc
             return self._transition_locked(
                 session,

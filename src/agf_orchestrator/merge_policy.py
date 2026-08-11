@@ -22,7 +22,7 @@ from .merge_models import (
     RiskClass,
     canonical_hash,
 )
-from .policy_state_store import KillSwitchSnapshot, PolicyStateError, PolicyStateStore
+from .policy_state_store import KillSwitchSnapshot
 from .risk_models import RiskAssessment
 
 REQUIRED_GATES = (
@@ -220,19 +220,28 @@ class MergePolicyEngine:
 
 def merge_policy_from_verified_active(project_id: str) -> MergePolicy:
     """Load and verify the external policy before enabling its risk matrix."""
-    from .policy_authority import PolicyActivationError, PolicyAuthority
+    from .authority_context import AuthorityContext, AuthorityContextError, resolve_authority
 
     try:
-        active_policy = PolicyAuthority().resolve(project_id)
-        authority = PolicyStateStore(Path.home() / ".agf-orchestrator", read_only=True)
-        snapshot = authority.authority_snapshot(project_id)
+        resolved = resolve_authority(project_id)
+        active_policy = resolved.policy
+        if active_policy is None:
+            raise MergeValidationError("verified active policy is required")
+        authority_context = AuthorityContext.resolve_runtime(
+            project_id, Path.home() / ".agf-orchestrator"
+        )
+        if authority_context is not None and (
+            authority_context.policy_hash != active_policy.policy_hash
+        ):
+            raise MergeValidationError("active policy is not bound to verified authority context")
+        snapshot = resolved.snapshot
         if snapshot is None:
             raise MergeValidationError("verified authority generation is required")
         stop_signal = KillSwitchSnapshot(
             bool(snapshot["kill_switch_active"]), int(snapshot["generation"]),
             f"stop-{snapshot['operation_id']}", snapshot["changed_at"], snapshot["reason"],
         )
-    except (PolicyActivationError, PolicyStateError) as exc:
+    except AuthorityContextError as exc:
         raise MergeValidationError("verified active policy is required") from exc
     if not active_policy.allows_autonomous_merge("HIGH"):
         raise MergeValidationError("active policy does not authorize autonomous HIGH")

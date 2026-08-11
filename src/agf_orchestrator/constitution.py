@@ -106,7 +106,15 @@ class ConstitutionAuthority:
         self.authority_dir = self.state_dir / "constitution-authority"
 
     def resolve(self, project_id: str) -> ActiveConstitution:
-        """Resolve and verify one project's active constitution, fail closed."""
+        """Resolve through the single runtime authority resolver."""
+        from .authority_context import resolve_authority
+
+        return resolve_authority(
+            project_id, constitution_backend=self, include_policy=False
+        ).constitution
+
+    def _resolve_legacy(self, project_id: str) -> ActiveConstitution:
+        """Verify the pre-migration HMAC artifacts behind the central resolver."""
         self._validate_project_id(project_id)
         pointer_path = self._project_constitution_dir(project_id) / "active.json"
         pointer = self._read_json(pointer_path, "active pointer")

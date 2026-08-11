@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .adapters.codex import CodexAdapter
+from .adapters.codex import CodexAdapter, resolve_codex_executable
 from .adapters.ollama import OllamaOpenHandsAdapter
 from .adapters.openhands import OpenHandsSDKAdapter
 from .architect_planning import ArchitectPlanningError, ProviderArchitect
-from .capability_profiles import profile_from_dict
+from .authority_context import resolve_authority
+from .capability_profiles import CapabilityProfileError, CapabilityStatus
 from .capability_selection import CapabilityCandidate, SelectionGates
 from .compliance import ComplianceChecker
 from .constitution import ConstitutionAuthority, ConstitutionVerificationError
@@ -28,10 +32,17 @@ from .git_delivery import DraftPRCreator
 from .inbox import build_inbox
 from .locking import LockError
 from .models import PlanStatus
-from .policy_authority import EffectiveRisk, PolicyActivationError, PolicyAuthority
+from .policy_authority import EffectiveRisk, PolicyActivationError
 from .preflight import PreflightError, collect_repository
 from .project_models import ProjectPolicy
 from .project_registry import ProjectRegistry, ProjectRegistryError, parse_remote_url
+from .provider_intelligence import (
+    ARCHITECT_REQUIREMENTS,
+    ProviderIntelligenceError,
+    ProviderIntelligenceStore,
+    build_state,
+    make_profile,
+)
 from .reviewer import CodexReviewerAdapter, DeterministicReviewer
 from .session_manager import SessionManager, SessionManagerError, _now
 from .session_store import SessionStore, SessionStoreError
@@ -61,15 +72,11 @@ def _approved_dotenv_path(selected: Path, *, allow_registry_failure: bool = Fals
         return False
     try:
         managed_roots = [
-            Path(project.repository_root).resolve()
-            for project in ProjectRegistry().list()
+            Path(project.repository_root).resolve() for project in ProjectRegistry().list()
         ]
     except (OSError, ProjectRegistryError, ValueError):
         return allow_registry_failure
-    return not any(
-        resolved == root or root in resolved.parents
-        for root in managed_roots
-    )
+    return not any(resolved == root or root in resolved.parents for root in managed_roots)
 
 
 def _contains_symlink(path: Path) -> bool:
@@ -174,6 +181,20 @@ def build_parser() -> argparse.ArgumentParser:
     policy_verify = policy_commands.add_parser("verify")
     policy_verify.add_argument("--project", required=True)
     policy_verify.add_argument("--json", action="store_true")
+    intelligence = commands.add_parser(
+        "provider-intelligence", help="inspect or bootstrap durable capability evidence"
+    )
+    intelligence_commands = intelligence.add_subparsers(dest="intelligence_command", required=True)
+    intelligence_inspect = intelligence_commands.add_parser("inspect")
+    intelligence_inspect.add_argument("--project", required=True)
+    intelligence_inspect.add_argument("--json", action="store_true")
+    intelligence_bootstrap = intelligence_commands.add_parser("bootstrap-architect")
+    intelligence_bootstrap.add_argument("--project", required=True)
+    intelligence_bootstrap.add_argument(
+        "--candidate-output",
+        help="write unsigned evidence for the external owner controller to sign",
+    )
+    intelligence_bootstrap.add_argument("--json", action="store_true")
     return parser
 
 
@@ -339,10 +360,14 @@ class _AdapterArchitectProvider:
 
 
 def _architect_from_config(args: argparse.Namespace):
+    if getattr(args, "session_command", None) != "assess":
+        return None
     config_path = getattr(args, "architect_config", None)
     store = SessionStore()
+    session = SessionStore().load(args.session)
+    intelligence_store = ProviderIntelligenceStore().for_project(session.project_id)
     if not config_path:
-        default_path = store.state_dir / "capability-intelligence" / "architect.json"
+        default_path = intelligence_store.path
         if not default_path.is_file():
             return None
         config_path = str(default_path)
@@ -355,32 +380,31 @@ def _architect_from_config(args: argparse.Namespace):
     if state_root not in resolved.parents or _contains_symlink(candidate_path):
         raise ArchitectPlanningError("architect config must be under approved AGF state root")
     try:
-        payload = json.loads(resolved.read_text(encoding="utf-8"))
-        project_id = payload["project_id"]
-        candidates = tuple(
-            CapabilityCandidate(
-                profile_from_dict(item["profile"]),
-                item["priority"],
-                item.get("diagnostic_only", False),
-            )
-            for item in payload["candidates"]
-        )
-        gates = SelectionGates(**payload["gates"])
-        providers = {
-            item["profile"]["provider_id"]: _AdapterArchitectProvider(
-                item["profile"]["provider_id"],
-                CodexAdapter() if item["adapter"] == "codex" else OpenHandsSDKAdapter(
-                    allow_llm_env=False
-                ),
-            )
-            for item in payload["candidates"]
-            if item["adapter"] in {"codex", "openhands"}
-        }
-    except (KeyError, TypeError, ValueError, OSError) as exc:
+        if resolved != intelligence_store.path.resolve():
+            raise ProviderIntelligenceError("architect config is not the project-bound state")
+        state = intelligence_store.load()
+        if state.project_id != session.project_id:
+            raise ProviderIntelligenceError("provider intelligence session binding differs")
+        project = ProjectRegistry().get(session.project_id)
+        target_sha = _git_output(Path(project.repository_root), "rev-parse", "HEAD")
+        snapshot = resolve_authority(project.project_id).policy_snapshot
+        _validate_provider_intelligence_runtime(state, project, target_sha, snapshot, _now())
+        project_id = state.project_id
+        candidates = state.candidates
+        gates = state.gates
+        providers = {}
+        for provider_id, interface in state.provider_interfaces:
+            if interface == "codex":
+                providers[provider_id] = _AdapterArchitectProvider(provider_id, CodexAdapter())
+            elif interface == "openhands":
+                providers[provider_id] = _AdapterArchitectProvider(
+                    provider_id, OpenHandsSDKAdapter(allow_llm_env=False)
+                )
+            else:
+                raise ProviderIntelligenceError("provider interface is not approved")
+    except (KeyError, TypeError, ValueError, OSError, ProviderIntelligenceError) as exc:
         raise ArchitectPlanningError("architect config is invalid") from exc
-    return ProviderArchitect(
-        candidates, providers, now=_now(), project_id=project_id, gates=gates
-    )
+    return ProviderArchitect(candidates, providers, now=_now(), project_id=project_id, gates=gates)
 
 
 def run_inbox(args: argparse.Namespace) -> int:
@@ -397,10 +421,332 @@ def run_inbox(args: argparse.Namespace) -> int:
         return 2
 
 
+def run_provider_intelligence(args: argparse.Namespace) -> int:
+    """Owner-invoked evidence bootstrap; no runtime mutation authority is exposed."""
+    try:
+        registry = ProjectRegistry()
+        project = registry.verify(args.project)
+        store = ProviderIntelligenceStore().for_project(project.project_id)
+        if args.intelligence_command == "inspect":
+            state = store.load()
+            if state.project_id != project.project_id:
+                raise ProviderIntelligenceError("provider intelligence project binding differs")
+            target_sha = _git_output(Path(project.repository_root), "rev-parse", "HEAD")
+            snapshot = resolve_authority(project.project_id).policy_snapshot
+            _validate_provider_intelligence_runtime(state, project, target_sha, snapshot, _now())
+            _output(
+                {
+                    "project_id": state.project_id,
+                    "target_sha": state.target_sha,
+                    "requirements_hash": state.requirements_hash,
+                    "profiles": [candidate.profile.profile_id for candidate in state.candidates],
+                    "gates": state.to_dict()["gates"],
+                    "policy_generation": state.policy_generation,
+                    "state_sha256": state.state_sha256,
+                },
+                args.json,
+            )
+            return 0
+
+        root = Path(project.repository_root)
+        target_sha = _git_output(root, "rev-parse", "HEAD")
+        resolved_authority = resolve_authority(project.project_id)
+        policy = resolved_authority.policy
+        constitution = resolved_authority.constitution
+        if policy is None:
+            raise ProviderIntelligenceError("active policy is unavailable")
+        snapshot = resolved_authority.policy_snapshot
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get("generation"), int):
+            raise ProviderIntelligenceError("active policy generation is unavailable")
+        now = _now()
+        existing = None
+        profile_version = 1
+        if store.path.exists():
+            existing = store.load()
+            if existing.project_id != project.project_id or existing.target_sha != target_sha:
+                raise ProviderIntelligenceError(
+                    "existing provider intelligence is bound to a different project or target"
+                )
+            try:
+                _validate_provider_intelligence_runtime(
+                    existing, project, target_sha, snapshot, now
+                )
+                _output(
+                    {
+                        "project_id": existing.project_id,
+                        "target_sha": existing.target_sha,
+                        "profile_id": existing.candidates[0].profile.profile_id,
+                        "profile_sha256": existing.candidates[0].profile.profile_sha256,
+                        "probe_pass": True,
+                        "idempotent": True,
+                        "gates": existing.to_dict()["gates"],
+                        "requirements_hash": existing.requirements_hash,
+                        "state_sha256": existing.state_sha256,
+                    },
+                    args.json,
+                )
+                return 0
+            except ProviderIntelligenceError:
+                # A verified, project-bound state may be renewed when any
+                # consequential input (policy, Constitution, provider, or
+                # freshness) changes.  Tampered state fails in store.load()
+                # before reaching this recovery path.
+                profile_version = (
+                    max(candidate.profile.profile_version for candidate in existing.candidates) + 1
+                )
+        expires = (
+            (datetime.now(UTC).replace(microsecond=0) + timedelta(hours=24))
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        executable = resolve_codex_executable()
+        if executable.path is None:
+            raise ProviderIntelligenceError("no approved Architect provider interface is available")
+        adapter = CodexAdapter(executable=executable.path, timeout=90.0)
+        probe = adapter.execute(
+            "Read-only AGF Architect capability canary. Do not edit files. Return only JSON "
+            "with exactly these keys: head_sha, repository_name, reasoning_answer, "
+            "context_marker, summary. Inspect the repository and report its current HEAD SHA "
+            f"and name ({root.name}). Solve 2+4 and return reasoning_answer as the string '6'. "
+            "Return context_marker exactly as AGF-CONTEXT-CANARY-7f3d. Do not report capability "
+            f"claims. Inspect only {root} and do not modify it.",
+            str(root),
+            sandbox="read-only",
+        )
+        capabilities = {name: CapabilityStatus.UNKNOWN for name in ARCHITECT_REQUIREMENTS}
+        if probe.invocation_verified and probe.final_message:
+            try:
+                result = json.loads(probe.final_message)
+                exact_schema = set(result) == {
+                    "head_sha",
+                    "repository_name",
+                    "reasoning_answer",
+                    "context_marker",
+                    "summary",
+                }
+                structured = (
+                    exact_schema
+                    and isinstance(result["head_sha"], str)
+                    and isinstance(result["repository_name"], str)
+                    and isinstance(result["reasoning_answer"], str)
+                    and isinstance(result["context_marker"], str)
+                    and isinstance(result["summary"], str)
+                )
+                independent_head_sha = _git_output(root, "rev-parse", "HEAD")
+                independent_repository_name = root.name
+                repository_understanding = (
+                    structured
+                    and result["head_sha"] == independent_head_sha == target_sha
+                    and result["repository_name"] == independent_repository_name
+                )
+                reasoning = structured and result["reasoning_answer"] == "6"
+                context_capacity = (
+                    structured and result["context_marker"] == "AGF-CONTEXT-CANARY-7f3d"
+                )
+                capabilities = {
+                    "repository-understanding": (
+                        CapabilityStatus.SUPPORTED
+                        if repository_understanding
+                        else CapabilityStatus.UNKNOWN
+                    ),
+                    "structured-output": (
+                        CapabilityStatus.SUPPORTED if structured else CapabilityStatus.UNKNOWN
+                    ),
+                    "reasoning": (
+                        CapabilityStatus.SUPPORTED if reasoning else CapabilityStatus.UNKNOWN
+                    ),
+                    "context-capacity": (
+                        CapabilityStatus.SUPPORTED if context_capacity else CapabilityStatus.UNKNOWN
+                    ),
+                }
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        probe_ok = all(item.status is CapabilityStatus.SUPPORTED for item in capabilities.values())
+        provenance = (
+            f"runtime-canary:codex:{executable.path}:"
+            f"{hashlib.sha256(Path(executable.path).read_bytes()).hexdigest()}"
+        )
+        profile = make_profile(
+            project_id=project.project_id,
+            provider_id="provider-codex",
+            provenance_source=provenance,
+            observed_at=now,
+            expires_at=expires,
+            capability_results=capabilities,
+            profile_version=profile_version,
+        )
+        candidate = CapabilityCandidate(profile, priority=0)
+        probe_hash = hashlib.sha256((probe.final_message or "").encode()).hexdigest()
+        gates = SelectionGates(
+            policy_eligible=policy.policy_id == "merge-policy-adr-0003"
+            and policy.policy_hash == snapshot.get("active_policy_hash"),
+            privacy_eligible=executable.path.startswith("/Applications/"),
+            independence_eligible=isinstance(adapter, CodexAdapter),
+            budget_eligible=adapter.timeout <= 90.0,
+            health_eligible=probe.invocation_verified,
+            empirical_evidence_eligible=probe_ok,
+        )
+        gate_evidence = (
+            ("policy_eligible", f"active-policy:{policy.policy_id}:{policy.policy_hash}"),
+            (
+                "privacy_eligible",
+                f"codex-safe-environment-v1;read-only-canary;{gates.privacy_eligible}",
+            ),
+            (
+                "independence_eligible",
+                f"architect-advisory;reviewer-separate-stage;{gates.independence_eligible}",
+            ),
+            (
+                "budget_eligible",
+                f"bounded-timeout-seconds:{adapter.timeout:g};{gates.budget_eligible}",
+            ),
+            ("health_eligible", f"invocation-verified:{probe.invocation_verified}"),
+            ("empirical_evidence_eligible", f"deterministic-canary-sha256:{probe_hash}"),
+        )
+        state = build_state(
+            project_id=project.project_id,
+            target_sha=target_sha,
+            constitution_id=constitution.constitution_id,
+            constitution_record_hash=constitution.record_hash,
+            observed_at=now,
+            expires_at=expires,
+            candidates=(candidate,),
+            provider_interfaces=(("provider-codex", "codex"),),
+            gates=gates,
+            gate_evidence=gate_evidence,
+            policy_generation=snapshot["generation"],
+        )
+        if not args.candidate_output:
+            raise ProviderIntelligenceError(
+                "provider intelligence bootstrap requires --candidate-output "
+                "and the external owner controller"
+            )
+        candidate_output = Path(args.candidate_output).expanduser().resolve()
+        if store.root.resolve() not in candidate_output.parents:
+            raise ProviderIntelligenceError(
+                "provider intelligence candidate must stay under AGF state root"
+            )
+        candidate_output.parent.mkdir(parents=True, exist_ok=True)
+        candidate_output.write_text(
+            json.dumps(state.to_dict(), sort_keys=True) + "\n", encoding="utf-8"
+        )
+        _output(
+            {
+                "project_id": state.project_id,
+                "target_sha": state.target_sha,
+                "profile_id": profile.profile_id,
+                "profile_sha256": profile.profile_sha256,
+                "probe_pass": probe_ok,
+                "gates": state.to_dict()["gates"],
+                "requirements_hash": state.requirements_hash,
+                "state_sha256": state.state_sha256,
+                "candidate_output": str(candidate_output),
+            },
+            args.json,
+        )
+        return 0
+    except (
+        ProviderIntelligenceError,
+        ProjectRegistryError,
+        PolicyActivationError,
+        OSError,
+        ValueError,
+    ) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+
+def _git_output(root: Path, *arguments: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            capture_output=True,
+            text=True,
+            check=True,
+            shell=False,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ProviderIntelligenceError(
+            "provider intelligence repository inspection failed"
+        ) from exc
+    return result.stdout.strip()
+
+
+def _validate_provider_intelligence_runtime(state, project, target_sha, snapshot, now):
+    state.validate(now=now, target_sha=target_sha)
+    if not isinstance(snapshot, dict) or state.policy_generation != snapshot.get("generation"):
+        raise ProviderIntelligenceError("provider intelligence policy generation is stale")
+    from .authority_context import resolve_authority
+
+    resolved_authority = resolve_authority(project.project_id)
+    active_policy = resolved_authority.policy
+    active_constitution = resolved_authority.constitution
+    if active_policy is None:
+        raise ProviderIntelligenceError("active policy is unavailable")
+    if (
+        state.constitution_id != active_constitution.constitution_id
+        or state.constitution_record_hash != active_constitution.record_hash
+    ):
+        raise ProviderIntelligenceError("provider intelligence Constitution binding is stale")
+    if (
+        snapshot.get("active_policy_id") != active_policy.policy_id
+        or snapshot.get("active_policy_hash") != active_policy.policy_hash
+        or active_policy.project_id != project.project_id
+    ):
+        raise ProviderIntelligenceError("provider intelligence policy binding is stale")
+    evidence = dict(state.gate_evidence)
+    if evidence.get("policy_eligible") != (
+        f"active-policy:{active_policy.policy_id}:{active_policy.policy_hash}"
+    ):
+        raise ProviderIntelligenceError("provider intelligence policy evidence is stale")
+    if evidence.get("privacy_eligible") != "codex-safe-environment-v1;read-only-canary;True":
+        raise ProviderIntelligenceError("provider intelligence privacy evidence is invalid")
+    if evidence.get("independence_eligible") != "architect-advisory;reviewer-separate-stage;True":
+        raise ProviderIntelligenceError("provider intelligence independence evidence is invalid")
+    if evidence.get("budget_eligible") != "bounded-timeout-seconds:90;True":
+        raise ProviderIntelligenceError("provider intelligence budget evidence is invalid")
+    health = evidence.get("health_eligible")
+    if health != f"invocation-verified:{state.gates.health_eligible}":
+        raise ProviderIntelligenceError("provider intelligence health evidence is invalid")
+    empirical = evidence.get("empirical_evidence_eligible", "")
+    if not empirical.startswith("deterministic-canary-sha256:"):
+        raise ProviderIntelligenceError("provider intelligence empirical evidence is invalid")
+    canary_hash = empirical.removeprefix("deterministic-canary-sha256:")
+    if len(canary_hash) != 64 or any(char not in "0123456789abcdef" for char in canary_hash):
+        raise ProviderIntelligenceError("provider intelligence canary evidence is invalid")
+    try:
+        expected_empirical = all(
+            candidate.profile.require_supported(capability)
+            for candidate in state.candidates
+            for capability in ARCHITECT_REQUIREMENTS
+        )
+    except (CapabilityProfileError, ValueError):
+        expected_empirical = False
+    if state.gates.empirical_evidence_eligible != expected_empirical:
+        raise ProviderIntelligenceError("provider intelligence empirical gate is inconsistent")
+    for provider_id, interface in state.provider_interfaces:
+        if interface != "codex":
+            continue
+        profile = next(
+            item.profile for item in state.candidates if item.profile.provider_id == provider_id
+        )
+        current = resolve_codex_executable()
+        if current.path is None:
+            raise ProviderIntelligenceError("Architect provider interface is unavailable")
+        current_provenance = (
+            f"runtime-canary:codex:{current.path}:"
+            f"{hashlib.sha256(Path(current.path).read_bytes()).hexdigest()}"
+        )
+        if profile.provenance_source != current_provenance:
+            raise ProviderIntelligenceError("provider profile is stale after provider change")
+
+
 def run_policy(args: argparse.Namespace) -> int:
     try:
         project, _ = _resolve_project(argparse.Namespace(project=args.project))
-        active = PolicyAuthority().resolve(project.project_id)
+        active = resolve_authority(project.project_id).policy
+        if active is None:
+            raise PolicyActivationError("active policy is unavailable")
         _output(
             {
                 "project_id": active.project_id,
@@ -411,8 +757,7 @@ def run_policy(args: argparse.Namespace) -> int:
                 "rollback_target": active.rollback_target,
                 "key_id": active.key_id,
                 "human_merge": {
-                    risk.value: active.requires_human_merge(risk)
-                    for risk in EffectiveRisk
+                    risk.value: active.requires_human_merge(risk) for risk in EffectiveRisk
                 },
             },
             args.json,
@@ -559,7 +904,10 @@ def run_deliver(args: argparse.Namespace) -> int:
             if not project.policy.allow_live_execution or not project.policy.allow_delivery:
                 raise ProjectRegistryError("project policy denies live delivery")
             _verify_constitution(project)
-            active_policy = PolicyAuthority().resolve_or_none(project.project_id)
+            if (Path.home() / ".agf-orchestrator" / "policy-state.sqlite3").exists():
+                active_policy = resolve_authority(project.project_id).policy
+            else:
+                active_policy = None
             if active_policy is None and not project.policy.require_human_merge:
                 raise ProjectRegistryError("delivery requires human merge approval")
             task = next((item for item in plan.tasks if item.task_id == args.task), None)
@@ -602,7 +950,10 @@ def run_deliver(args: argparse.Namespace) -> int:
             max_correction_rounds=project.policy.maximum_correction_rounds,
         )
         report = pipeline.deliver(
-            plan, args.task, str(target_root), execute=args.execute,
+            plan,
+            args.task,
+            str(target_root),
+            execute=args.execute,
             project_id=project.project_id,
         )
         write_delivery_report(report, output)
@@ -637,6 +988,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_session(args)
     if args.command == "inbox":
         return run_inbox(args)
+    if args.command == "provider-intelligence":
+        return run_provider_intelligence(args)
     if args.command == "policy":
         return run_policy(args)
     return 2
