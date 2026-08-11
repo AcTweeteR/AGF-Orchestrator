@@ -23,7 +23,8 @@ from .capability_selection import CapabilityCandidate, SelectionGates
 from .constitution import ConstitutionAuthority, ConstitutionVerificationError
 from .director import Director
 from .locking import lock_status, project_lock, session_lock
-from .models import PlanStatus
+from .models import PlanStatus, plan_from_dict
+from .policy_authority import PolicyActivationError, PolicyAuthority
 from .project_registry import ProjectRegistry, ProjectRegistryError, _git, parse_remote_url
 from .session_models import (
     ALLOWED_TRANSITIONS,
@@ -779,6 +780,236 @@ class SessionManager:
                     [] if target_status is SessionStatus.READY else [architecture.rationale],
                     "DIRECTOR",
                     "assessment:" + session.session_id,
+                )
+                self._save(updated)
+                return updated
+
+    def repair_lineage(self, session_id: str) -> Session:
+        """Repair one proven self-referential plan without creating a session."""
+        with session_lock(self.store.state_dir, session_id, "lineage-repair"):
+            session = self.store.load(session_id)
+            project = self.registry.verify(session.project_id)
+            with project_lock(self.store.state_dir, project.project_id, "lineage-repair"):
+                if session.status in TERMINAL_STATUSES:
+                    raise SessionManagerError("terminal session cannot be repaired")
+                try:
+                    ConstitutionAuthority().resolve(project.project_id)
+                    PolicyAuthority().resolve(project.project_id)
+                except (ConstitutionVerificationError, PolicyActivationError) as exc:
+                    raise SessionManagerError(
+                        "lineage repair authority verification failed"
+                    ) from exc
+                if not session.plan_path:
+                    raise SessionManagerError("session has no plan artifact")
+                plan_path = self.store.ensure_safe_path(session.plan_path)
+                directory = self.store.ensure_safe_path(
+                    self.store.artifacts_dir / session.session_id
+                )
+                try:
+                    audit_path = self.store.ensure_safe_path(
+                        directory / "lineage-repair.json"
+                    )
+                except SessionStoreError as exc:
+                    raise SessionManagerError("lineage repair audit is unsafe") from exc
+                if audit_path.is_symlink():
+                    raise SessionManagerError("lineage repair audit must not be a symlink")
+                audit_payload = None
+                if audit_path.is_file():
+                    audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
+                payload = json.loads(plan_path.read_text(encoding="utf-8"))
+                scope = payload.get("scope", {})
+                raw_lineage = scope.get("lineage", "")
+                raw_lineage_path = Path(raw_lineage)
+                try:
+                    self.store.ensure_safe_path(raw_lineage_path)
+                except SessionStoreError as exc:
+                    raise SessionManagerError("plan lineage reference is unsafe") from exc
+                if raw_lineage_path.is_symlink():
+                    raise SessionManagerError("plan lineage reference must not be a symlink")
+                is_self_reference = (
+                    raw_lineage_path.resolve() == plan_path.resolve()
+                )
+                current_hash = self.store.artifact_hash(str(plan_path))
+                repository = payload["repository"]
+                if (
+                    repository["root"] != project.repository_root
+                    or parse_remote_url(repository["origin"]).identity
+                    != parse_remote_url(project.origin_url).identity
+                    or repository["branch"] != project.default_branch
+                    or repository["head_sha"] != session.base_sha
+                ):
+                    raise SessionManagerError("current plan binding differs")
+                current_plan = plan_from_dict(payload)
+                current_plan.validate()
+                if audit_payload is not None:
+                    operation_id = "lineage-repair:" + session.session_id
+                    if (
+                        audit_payload.get("schema_version") != "1.0"
+                        or audit_payload.get("operation_id") != operation_id
+                        or audit_payload.get("session_id") != session.session_id
+                        or audit_payload.get("old_plan_path") != str(plan_path)
+                        or audit_payload.get("plan_id") != current_plan.plan_id
+                        or audit_payload.get("plan_version") != "v2"
+                    ):
+                        raise SessionManagerError("lineage repair audit identity is invalid")
+                    predecessor = Path(audit_payload["corrected_predecessor_reference"])
+                    predecessor_hash = audit_payload["corrected_predecessor_hash"]
+                    if predecessor.is_symlink():
+                        raise SessionManagerError("repaired predecessor must not be a symlink")
+                    _validate_predecessor_chain(
+                        str(predecessor), predecessor_hash, directory.resolve(), project,
+                        self.store.ensure_safe_path,
+                    )
+                    backup_path = self.store.ensure_safe_path(
+                        directory / "plan-v2-invalid-lineage.json"
+                    )
+                    if backup_path.is_symlink() or not backup_path.is_file():
+                        raise SessionManagerError("lineage repair backup is missing or unsafe")
+                    backup_hash = self.store.artifact_hash(str(backup_path))
+                    if backup_hash != audit_payload.get("old_plan_hash"):
+                        raise SessionManagerError("lineage repair backup hash differs")
+                    persisted_plan_hash = session.artifact_hashes.get("plan")
+                    if current_hash == audit_payload.get("old_plan_hash"):
+                        if persisted_plan_hash != audit_payload.get("old_plan_hash"):
+                            raise SessionManagerError(
+                                "lineage repair old plan hash is not persisted"
+                            )
+                    elif current_hash == audit_payload.get("corrected_plan_hash"):
+                        if persisted_plan_hash not in {
+                            audit_payload.get("old_plan_hash"),
+                            audit_payload.get("corrected_plan_hash"),
+                        }:
+                            raise SessionManagerError("lineage repair session hash is inconsistent")
+                    persisted_audit_hash = session.artifact_hashes.get("lineage_repair_audit")
+                    if persisted_audit_hash and persisted_audit_hash != self.store.artifact_hash(
+                        str(audit_path)
+                    ):
+                        raise SessionManagerError("lineage repair audit hash differs")
+                    if audit_payload.get("old_predecessor_reference") != str(plan_path):
+                        raise SessionManagerError("lineage repair old reference differs")
+                    if predecessor_hash != session.artifact_hashes.get("original_plan"):
+                        raise SessionManagerError("lineage repair predecessor is not original")
+                    audit_repaired = current_hash == audit_payload.get("corrected_plan_hash")
+                    if audit_repaired:
+                        if (
+                            scope.get("lineage")
+                            != audit_payload["corrected_predecessor_reference"]
+                            or scope.get("predecessor_plan_sha256") != predecessor_hash
+                        ):
+                            raise SessionManagerError("repaired plan lineage differs from audit")
+                        updated_hashes = dict(session.artifact_hashes)
+                        updated_hashes.update({
+                            "plan": current_hash,
+                            "predecessor_plan": predecessor_hash,
+                            "lineage_repair_audit": self.store.artifact_hash(
+                                str(audit_path)
+                            ),
+                            "lineage_repair_backup": backup_hash,
+                        })
+                        updated = replace(
+                            session, artifact_hashes=updated_hashes,
+                            blocking_issues=[], required_human_actions=[],
+                        )
+                        if not any(event.operation_id == operation_id for event in session.events):
+                            updated = self._append_event(
+                                updated, session.status, SessionStatus.BLOCKED,
+                                "completed previously interrupted proven plan lineage repair",
+                                [str(audit_path), str(predecessor), str(plan_path)], [],
+                                "SYSTEM", operation_id,
+                            )
+                        self._save(updated)
+                        return updated
+                    elif current_hash != audit_payload.get("old_plan_hash"):
+                        raise SessionManagerError("lineage repair current plan hash is unknown")
+                    elif not is_self_reference:
+                        raise SessionManagerError("lineage repair old plan is not self-referential")
+                if not is_self_reference:
+                    raise SessionManagerError("plan is not the proven self-reference case")
+                if current_hash != session.artifact_hashes.get("plan") and audit_payload is None:
+                    raise SessionManagerError("current plan hash is not persisted")
+                original_hash = session.artifact_hashes.get("original_plan")
+                if not original_hash:
+                    raise SessionManagerError("immutable original plan hash is missing")
+                candidates = []
+                for candidate in sorted(directory.glob("*.json")):
+                    if candidate.resolve() == plan_path.resolve():
+                        continue
+                    if self.store.artifact_hash(str(candidate)) != original_hash:
+                        continue
+                    _validate_predecessor_chain(
+                        str(candidate), original_hash, directory.resolve(), project,
+                        self.store.ensure_safe_path,
+                    )
+                    candidates.append(candidate)
+                if len(candidates) != 1:
+                    raise SessionManagerError("intended predecessor is not uniquely proven")
+                predecessor = candidates[0]
+                corrected = dict(payload)
+                corrected_scope = dict(scope)
+                corrected_scope["lineage"] = str(predecessor)
+                corrected_scope["predecessor_plan_sha256"] = original_hash
+                corrected["scope"] = corrected_scope
+                repaired_plan = plan_from_dict(corrected)
+                repaired_plan.validate()
+                content = json.dumps(corrected, indent=2, sort_keys=True) + "\n"
+                repaired_hash = hashlib.sha256(content.encode()).hexdigest()
+                operation_id = "lineage-repair:" + session.session_id
+                audit_name = "lineage-repair.json"
+                backup_name = "plan-v2-invalid-lineage.json"
+                audit = {
+                    "schema_version": "1.0",
+                    "operation_id": operation_id,
+                    "session_id": session.session_id,
+                    "plan_id": repaired_plan.plan_id,
+                    "plan_version": "v2",
+                    "timestamp": _now(),
+                    "tool": "agf-orchestrator-lineage-repair-v1",
+                    "reason": "plan-v2 self-referential predecessor",
+                    "old_plan_path": str(plan_path),
+                    "old_plan_hash": current_hash,
+                    "old_predecessor_reference": scope["lineage"],
+                    "old_predecessor_hash": scope.get("predecessor_plan_sha256"),
+                    "corrected_predecessor_reference": str(predecessor),
+                    "corrected_predecessor_hash": original_hash,
+                    "corrected_plan_hash": repaired_hash,
+                    "evidence": [
+                        str(directory / "plan.json"),
+                        str(directory / "assessment.json"),
+                        str(directory / "architecture.json"),
+                        "session.artifact_hashes.original_plan",
+                    ],
+                }
+                audit_content = json.dumps(audit, indent=2, sort_keys=True) + "\n"
+                audit_path, audit_hash = self.store.write_artifact(
+                    session.session_id, audit_name, audit_content
+                )
+                self.store.replace_artifact_for_recovery(
+                    session.session_id, plan_path.name, content, backup_name
+                )
+                updated_hashes = dict(session.artifact_hashes)
+                updated_hashes.update({
+                    "plan": repaired_hash,
+                    "predecessor_plan": original_hash,
+                    "lineage_repair_audit": audit_hash,
+                    "lineage_repair_backup": self.store.artifact_hash(
+                        str(directory / backup_name)
+                    ),
+                })
+                updated = replace(
+                    session,
+                    artifact_hashes=updated_hashes,
+                    blocking_issues=[],
+                    required_human_actions=[],
+                )
+                updated = self._append_event(
+                    updated,
+                    session.status,
+                    SessionStatus.BLOCKED,
+                    "repaired proven plan lineage; pilot remains blocked pending assessment",
+                    [audit_path, str(predecessor), str(plan_path)],
+                    [],
+                    "SYSTEM",
+                    operation_id,
                 )
                 self._save(updated)
                 return updated

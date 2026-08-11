@@ -150,7 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     for command in ("list",):
         item = session_commands.add_parser(command)
         item.add_argument("--json", action="store_true")
-    for command in ("show", "resume", "assess", "cancel"):
+    for command in ("show", "resume", "assess", "repair-lineage", "cancel"):
         item = session_commands.add_parser(command)
         item.add_argument("--session", required=True)
         item.add_argument("--json", action="store_true")
@@ -300,6 +300,8 @@ def run_session(args: argparse.Namespace) -> int:
             _output(session.to_dict(), args.json)
         elif args.session_command == "assess":
             _output(manager.assess(args.session).to_dict(), args.json)
+        elif args.session_command == "repair-lineage":
+            _output(manager.repair_lineage(args.session).to_dict(), args.json)
         elif args.session_command == "cancel":
             _output(manager.cancel(args.session).to_dict(), args.json)
         elif args.session_command == "lock-status":
