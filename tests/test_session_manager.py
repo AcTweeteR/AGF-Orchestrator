@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 from dataclasses import replace
@@ -8,7 +9,9 @@ import pytest
 from agf_orchestrator.architect_planning import ProviderArchitect
 from agf_orchestrator.capability_profiles import capability_profile_hash
 from agf_orchestrator.capability_selection import CapabilityCandidate, SelectionGates
+from agf_orchestrator.constitution import ConstitutionVerificationError
 from agf_orchestrator.locking import LockError, project_lock
+from agf_orchestrator.policy_authority import PolicyActivationError
 from agf_orchestrator.project_models import ProjectStatus
 from agf_orchestrator.project_registry import ProjectRegistry, ProjectRegistryError
 from agf_orchestrator.session_manager import SessionManager, SessionManagerError
@@ -284,3 +287,326 @@ def test_repeated_operation_id_adds_one_event_and_uncertain_save_is_human_requir
             SessionStatus.REVIEWING,
             operation_id="operation-2",
         )
+
+
+def test_repair_lineage_replaces_proven_self_reference_and_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.ConstitutionAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.PolicyAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Identify a genuinely useful bounded improvement")
+    assessed = manager.assess(session.session_id)
+    plan_path = Path(assessed.plan_path)
+    payload = json.loads(plan_path.read_text())
+    preserved_scope = {
+        key: payload["scope"].get(key)
+        for key in ("assessment_hash", "architecture_hash", "delivery_branch", "in", "out")
+    }
+    payload["scope"]["lineage"] = str(plan_path)
+    payload["scope"]["predecessor_plan_sha256"] = "0" * 64
+    plan_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    corrupted = manager.store.load(session.session_id)
+    corrupted.artifact_hashes["plan"] = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    corrupted.artifact_hashes["predecessor_plan"] = "0" * 64
+    manager.store.save(corrupted)
+
+    repaired = manager.repair_lineage(session.session_id)
+    repaired_payload = json.loads(plan_path.read_text())
+    predecessor = Path(repaired_payload["scope"]["lineage"])
+    assert repaired.status is SessionStatus.BLOCKED
+    assert predecessor.name == "plan.json"
+    assert repaired_payload["scope"]["predecessor_plan_sha256"] == hashlib.sha256(
+        predecessor.read_bytes()
+    ).hexdigest()
+    assert {
+        key: repaired_payload["scope"].get(key) for key in preserved_scope
+    } == preserved_scope
+    assert (plan_path.parent / "plan-v2-invalid-lineage.json").exists()
+    assert (plan_path.parent / "lineage-repair.json").exists()
+    again = SessionManager(state).repair_lineage(session.session_id)
+    assert again.events == repaired.events
+    assert again.artifact_hashes["plan"] == hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    tampered_session = manager.store.load(session.session_id)
+    tampered_session.artifact_hashes["plan"] = "f" * 64
+    manager.store.save(tampered_session)
+    with pytest.raises(SessionManagerError, match="session hash"):
+        SessionManager(state).repair_lineage(session.session_id)
+
+
+def test_repair_lineage_refuses_ambiguous_predecessor(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.ConstitutionAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.PolicyAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Identify a genuinely useful bounded improvement")
+    assessed = manager.assess(session.session_id)
+    plan_path = Path(assessed.plan_path)
+    payload = json.loads(plan_path.read_text())
+    payload["scope"]["lineage"] = str(plan_path)
+    plan_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    predecessor = plan_path.parent / "plan-copy.json"
+    predecessor.write_bytes((plan_path.parent / "plan.json").read_bytes())
+    corrupted = manager.store.load(session.session_id)
+    corrupted.artifact_hashes["plan"] = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    manager.store.save(corrupted)
+    with pytest.raises(SessionManagerError, match="uniquely proven"):
+        manager.repair_lineage(session.session_id)
+
+
+def test_repaired_predecessor_tampering_fails_closed_on_resume(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.ConstitutionAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.PolicyAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Identify a genuinely useful bounded improvement")
+    assessed = manager.assess(session.session_id)
+    plan_path = Path(assessed.plan_path)
+    payload = json.loads(plan_path.read_text())
+    payload["scope"]["lineage"] = str(plan_path)
+    plan_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    corrupted = manager.store.load(session.session_id)
+    corrupted.artifact_hashes["plan"] = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    manager.store.save(corrupted)
+    manager.repair_lineage(session.session_id)
+    predecessor = plan_path.parent / "plan.json"
+    predecessor.write_text(predecessor.read_text() + "\n")
+    stale = SessionManager(state).resume(session.session_id)
+    assert stale.status is SessionStatus.STALE
+    assert "predecessor" in stale.blocking_issues[0]
+
+
+def test_lineage_repair_recovers_after_interrupted_session_save(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.ConstitutionAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.PolicyAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Identify a genuinely useful bounded improvement")
+    assessed = manager.assess(session.session_id)
+    plan_path = Path(assessed.plan_path)
+    payload = json.loads(plan_path.read_text())
+    payload["scope"]["lineage"] = str(plan_path)
+    plan_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    corrupted = manager.store.load(session.session_id)
+    corrupted.artifact_hashes["plan"] = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    manager.store.save(corrupted)
+    original_save = manager._save
+    calls = {"count": 0}
+
+    def fail_once(value):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise SessionManagerError("simulated interrupted save")
+        original_save(value)
+
+    manager._save = fail_once
+    with pytest.raises(SessionManagerError, match="interrupted"):
+        manager.repair_lineage(session.session_id)
+    recovered = SessionManager(state).repair_lineage(session.session_id)
+    assert recovered.artifact_hashes["lineage_repair_backup"]
+    assert recovered.status is SessionStatus.BLOCKED
+
+
+def test_lineage_repair_rejects_tampered_audit_after_interruption(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.ConstitutionAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.PolicyAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Identify a genuinely useful bounded improvement")
+    assessed = manager.assess(session.session_id)
+    plan_path = Path(assessed.plan_path)
+    payload = json.loads(plan_path.read_text())
+    payload["scope"]["lineage"] = str(plan_path)
+    plan_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    corrupted = manager.store.load(session.session_id)
+    corrupted.artifact_hashes["plan"] = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    manager.store.save(corrupted)
+    original_save = manager._save
+    manager._save = lambda value: (_ for _ in ()).throw(SessionManagerError("interrupted"))
+    with pytest.raises(SessionManagerError, match="interrupted"):
+        manager.repair_lineage(session.session_id)
+    interrupted = manager.store.load(session.session_id)
+    interrupted.artifact_hashes["plan"] = "f" * 64
+    manager.store.save(interrupted)
+    with pytest.raises(SessionManagerError, match="session hash"):
+        SessionManager(state).repair_lineage(session.session_id)
+    interrupted.artifact_hashes["plan"] = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    manager.store.save(interrupted)
+    audit = state / "artifacts" / session.session_id / "lineage-repair.json"
+    audit.write_text(audit.read_text().replace("plan-v2", "plan-v9"))
+    with pytest.raises(SessionManagerError, match="audit"):
+        SessionManager(state).repair_lineage(session.session_id)
+    manager._save = original_save
+
+
+def test_lineage_repair_rejects_missing_backup_after_interruption(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.ConstitutionAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.PolicyAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Identify a genuinely useful bounded improvement")
+    assessed = manager.assess(session.session_id)
+    plan_path = Path(assessed.plan_path)
+    payload = json.loads(plan_path.read_text())
+    payload["scope"]["lineage"] = str(plan_path)
+    plan_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    corrupted = manager.store.load(session.session_id)
+    corrupted.artifact_hashes["plan"] = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    manager.store.save(corrupted)
+    manager._save = lambda value: (_ for _ in ()).throw(SessionManagerError("interrupted"))
+    with pytest.raises(SessionManagerError, match="interrupted"):
+        manager.repair_lineage(session.session_id)
+    (plan_path.parent / "plan-v2-invalid-lineage.json").unlink()
+    with pytest.raises(SessionManagerError, match="backup"):
+        SessionManager(state).repair_lineage(session.session_id)
+
+
+def test_lineage_repair_requires_authority_before_mutation(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.ConstitutionAuthority.resolve",
+        lambda self, project_id: (_ for _ in ()).throw(ConstitutionVerificationError("denied")),
+    )
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Identify a genuinely useful bounded improvement")
+    manager.assess(session.session_id)
+    with pytest.raises(SessionManagerError, match="authority"):
+        manager.repair_lineage(session.session_id)
+
+
+def test_lineage_repair_rejects_audit_symlink_before_read(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.ConstitutionAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.PolicyAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Identify a genuinely useful bounded improvement")
+    assessed = manager.assess(session.session_id)
+    plan_path = Path(assessed.plan_path)
+    payload = json.loads(plan_path.read_text())
+    payload["scope"]["lineage"] = str(plan_path)
+    plan_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    corrupted = manager.store.load(session.session_id)
+    corrupted.artifact_hashes["plan"] = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    manager.store.save(corrupted)
+    audit = plan_path.parent / "lineage-repair.json"
+    audit.symlink_to(plan_path)
+    with pytest.raises(SessionManagerError, match="audit"):
+        manager.repair_lineage(session.session_id)
+
+
+def test_lineage_repair_rejects_current_plan_branch_mismatch(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.ConstitutionAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.PolicyAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Identify a genuinely useful bounded improvement")
+    assessed = manager.assess(session.session_id)
+    plan_path = Path(assessed.plan_path)
+    payload = json.loads(plan_path.read_text())
+    payload["repository"]["branch"] = "unregistered-branch"
+    payload["scope"]["lineage"] = str(plan_path)
+    plan_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    corrupted = manager.store.load(session.session_id)
+    corrupted.artifact_hashes["plan"] = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    manager.store.save(corrupted)
+    with pytest.raises(SessionManagerError, match="binding"):
+        manager.repair_lineage(session.session_id)
+
+
+def test_lineage_repair_rejects_predecessor_cycle(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.ConstitutionAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.PolicyAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Identify a genuinely useful bounded improvement")
+    assessed = manager.assess(session.session_id)
+    directory = Path(assessed.plan_path).parent
+    predecessor = directory / "plan.json"
+    predecessor_payload = json.loads(predecessor.read_text())
+    predecessor_payload["scope"]["lineage"] = str(predecessor)
+    predecessor_payload["scope"]["predecessor_plan_sha256"] = "x" * 64
+    predecessor.write_text(json.dumps(predecessor_payload, indent=2, sort_keys=True) + "\n")
+    plan_path = Path(assessed.plan_path)
+    plan_payload = json.loads(plan_path.read_text())
+    plan_payload["scope"]["lineage"] = str(plan_path)
+    plan_path.write_text(json.dumps(plan_payload, indent=2, sort_keys=True) + "\n")
+    corrupted = manager.store.load(session.session_id)
+    predecessor_hash = hashlib.sha256(predecessor.read_bytes()).hexdigest()
+    corrupted.artifact_hashes.update({
+        "original_plan": predecessor_hash,
+        "predecessor_plan": predecessor_hash,
+        "plan": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+    })
+    manager.store.save(corrupted)
+    with pytest.raises(SessionManagerError, match="lineage"):
+        manager.repair_lineage(session.session_id)
+
+
+def test_lineage_repair_requires_active_policy_independently(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.ConstitutionAuthority.resolve",
+        lambda self, project_id: object(),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.session_manager.PolicyAuthority.resolve",
+        lambda self, project_id: (_ for _ in ()).throw(PolicyActivationError("policy denied")),
+    )
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Identify a genuinely useful bounded improvement")
+    manager.assess(session.session_id)
+    with pytest.raises(SessionManagerError, match="authority"):
+        manager.repair_lineage(session.session_id)

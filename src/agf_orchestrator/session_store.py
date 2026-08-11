@@ -138,3 +138,37 @@ class SessionStore:
         if artifact.is_symlink():
             raise SessionStoreError("artifact read cannot follow a symlink")
         return hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+    def replace_artifact_for_recovery(
+        self, session_id: str, name: str, content: str, backup_name: str
+    ) -> tuple[str, str, str]:
+        """Atomically replace an artifact after retaining its old bytes."""
+        if Path(backup_name).name != backup_name or not backup_name.endswith(".json"):
+            raise SessionStoreError("backup artifact name must be a simple JSON filename")
+        directory = self.artifacts_dir / session_id
+        target = self.ensure_safe_path(directory / name)
+        if not target.is_file() or target.is_symlink():
+            raise SessionStoreError("recovery target artifact is missing or unsafe")
+        old_content = target.read_text(encoding="utf-8")
+        self.write_artifact(session_id, backup_name, old_content)
+        temporary_fd, temporary_name = tempfile.mkstemp(
+            dir=directory, prefix=f".{target.name}.", suffix=".tmp"
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(temporary_fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, target)
+            directory_fd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return str(target), hashlib.sha256(content.encode()).hexdigest(), self.artifact_hash(
+            str(directory / backup_name)
+        )
