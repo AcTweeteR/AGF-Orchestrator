@@ -117,7 +117,7 @@ def test_state_schema_rejects_unknown_or_malformed_payload():
         state_from_dict(payload)
 
 
-def _persisted_state(*, generation: int, profile_version: int, expired: bool):
+def _persisted_state(*, generation: int, profile_version: int, expired: bool, target=TARGET):
     observed = "2020-01-01T00:00:00Z" if expired else "2026-08-11T12:00:00Z"
     expires = "2020-01-02T00:00:00Z" if expired else "2030-01-01T00:00:00Z"
     profile = make_profile(
@@ -131,7 +131,7 @@ def _persisted_state(*, generation: int, profile_version: int, expired: bool):
     )
     return build_state(
         project_id=PROJECT,
-        target_sha=TARGET,
+        target_sha=target,
         constitution_id="constitution-agf-v1",
         constitution_record_hash="c" * 64,
         observed_at=observed,
@@ -175,3 +175,23 @@ def test_owner_recovery_replaces_expired_state_only_with_higher_generation(tmp_p
     )
     store.save(new)
     assert store.load().policy_generation == 3
+
+
+def test_owner_bootstrap_replaces_same_project_state_after_target_advance(tmp_path):
+    store = ProviderIntelligenceStore(tmp_path, signing_key=TEST_KEY, staging=True).for_project(
+        PROJECT
+    )
+    old = sign_state(
+        _persisted_state(generation=2, profile_version=1, expired=True), TEST_KEY, staging=True
+    )
+    store.path.parent.mkdir(parents=True)
+    store.path.write_text(json.dumps(old.to_dict()))
+    advanced = sign_state(
+        _persisted_state(
+            generation=2, profile_version=2, expired=False, target="b" * 40
+        ),
+        TEST_KEY,
+        staging=True,
+    )
+    store.save(advanced)
+    assert store._load_for_owner_recovery().target_sha == "b" * 40
