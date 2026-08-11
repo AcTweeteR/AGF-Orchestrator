@@ -176,3 +176,19 @@ def test_controller_refresh_keeps_policy_hash_and_revalidates_fresh_activation(
 
 def test_runtime_has_no_refresh_mutation_api():
     assert not hasattr(PolicyAuthority, "refresh")
+
+
+def test_refresh_accepts_project_bound_adr0003_hash_without_global_hash(monkeypatch, tmp_path):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    _authority_state(tmp_path)
+    controller = OwnerPolicyController()
+    controller._now = lambda: "2026-08-08T00:00:00Z"
+    policy = controller.prepare(PROJECT)
+    project_policy_hash = owner_policy_controller.canonical_hash(policy)
+    assert project_policy_hash != owner_policy_controller.AGF_0003_POLICY_HASH
+    controller.activate(PROJECT, "operation-project-bound-refresh")
+    controller._now = lambda: datetime.now(UTC).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
+    refreshed = controller.refresh(PROJECT, "operation-project-bound-refresh-2")
+    assert refreshed["policy_hash"] == project_policy_hash

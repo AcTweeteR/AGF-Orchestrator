@@ -189,9 +189,8 @@ class OwnerPolicyController:
         active_hash = snapshot.get("active_policy_hash")
         if (
             snapshot.get("active_policy_id") != POLICY_ID
-            or active_hash != AGF_0003_POLICY_HASH
             or not isinstance(policy, dict)
-            or canonical_hash(policy) != AGF_0003_POLICY_HASH
+            or canonical_hash(policy) != active_hash
         ):
             raise OwnerControllerError("active policy is not the authorized AGF-0003 artifact")
         current_activation = snapshot.get("activation")
