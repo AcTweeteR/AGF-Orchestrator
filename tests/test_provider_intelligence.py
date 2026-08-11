@@ -115,3 +115,63 @@ def test_state_schema_rejects_unknown_or_malformed_payload():
     payload["unexpected"] = True
     with pytest.raises(ProviderIntelligenceError):
         state_from_dict(payload)
+
+
+def _persisted_state(*, generation: int, profile_version: int, expired: bool):
+    observed = "2020-01-01T00:00:00Z" if expired else "2026-08-11T12:00:00Z"
+    expires = "2020-01-02T00:00:00Z" if expired else "2030-01-01T00:00:00Z"
+    profile = make_profile(
+        project_id=PROJECT,
+        provider_id="provider-codex",
+        provenance_source="runtime-canary:codex:test-v1",
+        observed_at=observed,
+        expires_at=expires,
+        capability_results={name: CapabilityStatus.SUPPORTED for name in ARCHITECT_REQUIREMENTS},
+        profile_version=profile_version,
+    )
+    return build_state(
+        project_id=PROJECT,
+        target_sha=TARGET,
+        constitution_id="constitution-agf-v1",
+        constitution_record_hash="c" * 64,
+        observed_at=observed,
+        expires_at=expires,
+        candidates=(CapabilityCandidate(profile, priority=0),),
+        provider_interfaces=(("provider-codex", "codex"),),
+        gates=GATES,
+        gate_evidence=GATE_EVIDENCE,
+        policy_generation=generation,
+    )
+
+
+def test_owner_recovery_accepts_expired_signed_state_but_rejects_tampering(tmp_path):
+    store = ProviderIntelligenceStore(tmp_path, signing_key=TEST_KEY, staging=True).for_project(
+        PROJECT
+    )
+    value = sign_state(
+        _persisted_state(generation=2, profile_version=1, expired=True), TEST_KEY, staging=True
+    )
+    store.path.parent.mkdir(parents=True)
+    store.path.write_text(json.dumps(value.to_dict()))
+    assert store._load_for_owner_recovery().policy_generation == 2
+    payload = value.to_dict()
+    payload["signature"] = "0" * 64
+    store.path.write_text(json.dumps(payload))
+    with pytest.raises(ProviderIntelligenceError, match="signature"):
+        store._load_for_owner_recovery()
+
+
+def test_owner_recovery_replaces_expired_state_only_with_higher_generation(tmp_path):
+    store = ProviderIntelligenceStore(tmp_path, signing_key=TEST_KEY, staging=True).for_project(
+        PROJECT
+    )
+    old = sign_state(
+        _persisted_state(generation=2, profile_version=1, expired=True), TEST_KEY, staging=True
+    )
+    store.path.parent.mkdir(parents=True)
+    store.path.write_text(json.dumps(old.to_dict()))
+    new = sign_state(
+        _persisted_state(generation=3, profile_version=2, expired=False), TEST_KEY, staging=True
+    )
+    store.save(new)
+    assert store.load().policy_generation == 3

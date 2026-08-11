@@ -102,10 +102,14 @@ def activate_provider_candidate(project_id: str, candidate: Path) -> dict[str, s
         raise RuntimeError("provider candidate Constitution binding is stale")
     if state.constitution_record_hash != authority.constitution.record_hash:
         raise RuntimeError("provider candidate Constitution hash is stale")
-    if (
-        not isinstance(authority.policy_snapshot, dict)
-        or state.policy_generation != authority.policy_snapshot.get("generation")
-    ):
+    expected_generation = (
+        authority.context.generation_number
+        if authority.context is not None
+        else authority.policy_snapshot.get("generation")
+        if isinstance(authority.policy_snapshot, dict)
+        else None
+    )
+    if state.policy_generation != expected_generation:
         raise RuntimeError("provider candidate policy generation is stale")
     evidence = dict(state.gate_evidence)
     expected_policy_evidence = (
@@ -113,14 +117,17 @@ def activate_provider_candidate(project_id: str, candidate: Path) -> dict[str, s
     )
     if evidence.get("policy_eligible") != expected_policy_evidence:
         raise RuntimeError("provider candidate policy evidence is stale")
-    envelope = sign_envelope(state._unsigned(), Path.home() / ".agf-owner-root")
     unsigned_signed = state.__class__(
         **{
             **state.__dict__,
-            "signing_key_id": envelope["key_id"],
-            "signature": envelope,
+            "signing_key_id": "owner-ed25519-1",
+            "signature": None,
             "state_sha256": "0" * 64,
         }
+    )
+    envelope = sign_envelope(unsigned_signed._unsigned(), Path.home() / ".agf-owner-root")
+    unsigned_signed = state.__class__(
+        **{**unsigned_signed.__dict__, "signature": envelope}
     )
     state_hash = hashlib.sha256(
         json.dumps(

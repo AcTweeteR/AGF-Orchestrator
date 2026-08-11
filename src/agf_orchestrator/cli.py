@@ -458,11 +458,17 @@ def run_provider_intelligence(args: argparse.Namespace) -> int:
         snapshot = resolved_authority.policy_snapshot
         if not isinstance(snapshot, dict) or not isinstance(snapshot.get("generation"), int):
             raise ProviderIntelligenceError("active policy generation is unavailable")
+        authority_generation = _authority_generation(resolved_authority, snapshot)
         now = _now()
         existing = None
         profile_version = 1
         if store.path.exists():
-            existing = store.load()
+            try:
+                existing = store.load()
+            except ProviderIntelligenceError as exc:
+                if str(exc) != "provider evidence is bound to stale authority":
+                    raise
+                existing = store._load_for_owner_recovery()
             if existing.project_id != project.project_id or existing.target_sha != target_sha:
                 raise ProviderIntelligenceError(
                     "existing provider intelligence is bound to a different project or target"
@@ -561,7 +567,7 @@ def run_provider_intelligence(args: argparse.Namespace) -> int:
                 }
             except (TypeError, ValueError, json.JSONDecodeError):
                 pass
-        probe_ok = all(item.status is CapabilityStatus.SUPPORTED for item in capabilities.values())
+        probe_ok = _capability_probe_passed(capabilities)
         provenance = (
             f"runtime-canary:codex:{executable.path}:"
             f"{hashlib.sha256(Path(executable.path).read_bytes()).hexdigest()}"
@@ -614,7 +620,7 @@ def run_provider_intelligence(args: argparse.Namespace) -> int:
             provider_interfaces=(("provider-codex", "codex"),),
             gates=gates,
             gate_evidence=gate_evidence,
-            policy_generation=snapshot["generation"],
+            policy_generation=authority_generation,
         )
         if not args.candidate_output:
             raise ProviderIntelligenceError(
@@ -656,6 +662,17 @@ def run_provider_intelligence(args: argparse.Namespace) -> int:
         return 2
 
 
+def _capability_probe_passed(capabilities: dict[str, CapabilityStatus]) -> bool:
+    """Return whether every observed Architect capability is supported."""
+    return all(status is CapabilityStatus.SUPPORTED for status in capabilities.values())
+
+
+def _authority_generation(resolved_authority, snapshot: dict | None) -> int | None:
+    if resolved_authority.context is not None:
+        return resolved_authority.context.generation_number
+    return snapshot.get("generation") if isinstance(snapshot, dict) else None
+
+
 def _git_output(root: Path, *arguments: str) -> str:
     try:
         result = subprocess.run(
@@ -674,11 +691,12 @@ def _git_output(root: Path, *arguments: str) -> str:
 
 def _validate_provider_intelligence_runtime(state, project, target_sha, snapshot, now):
     state.validate(now=now, target_sha=target_sha)
-    if not isinstance(snapshot, dict) or state.policy_generation != snapshot.get("generation"):
-        raise ProviderIntelligenceError("provider intelligence policy generation is stale")
     from .authority_context import resolve_authority
 
     resolved_authority = resolve_authority(project.project_id)
+    expected_generation = _authority_generation(resolved_authority, snapshot)
+    if state.policy_generation != expected_generation:
+        raise ProviderIntelligenceError("provider intelligence policy generation is stale")
     active_policy = resolved_authority.policy
     active_constitution = resolved_authority.constitution
     if active_policy is None:

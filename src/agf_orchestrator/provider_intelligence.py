@@ -497,6 +497,14 @@ class ProviderIntelligenceStore:
             current = current.parent
 
     def load(self) -> ProviderIntelligenceState:
+        return self._load()
+
+    def _load_for_owner_recovery(self) -> ProviderIntelligenceState:
+        return self._load(allow_stale_authority=True, allow_expired=True)
+
+    def _load(
+        self, *, allow_stale_authority: bool = False, allow_expired: bool = False
+    ) -> ProviderIntelligenceState:
         self._ensure_safe_path()
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
@@ -505,8 +513,13 @@ class ProviderIntelligenceStore:
         state = state_from_dict(payload)
         if self.expected_project_id is not None and state.project_id != self.expected_project_id:
             raise ProviderIntelligenceError("provider intelligence project binding differs")
-        now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        now = (
+            None
+            if allow_expired
+            else datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        )
         state.validate(now=now)
+        self._verify_signature(state)
         # Once the generation selector is installed, provider evidence must
         # bind to that single verified authority path.  Before migration the
         # selector is absent and the legacy HMAC staging path remains active.
@@ -516,28 +529,11 @@ class ProviderIntelligenceStore:
             context = AuthorityContext.resolve_runtime(state.project_id, self.root)
         except AuthorityContextError as exc:
             raise ProviderIntelligenceError("provider authority context is invalid") from exc
-        if context is not None and (
+        if not allow_stale_authority and context is not None and (
             context.generation_number != state.policy_generation
             or context.constitution_hash != state.constitution_record_hash
         ):
             raise ProviderIntelligenceError("provider evidence is bound to stale authority")
-        if self.signing_key is not None:
-            expected = hmac.new(
-                self.signing_key, _canonical_bytes(state._unsigned()), hashlib.sha256
-            ).hexdigest()
-            if not isinstance(state.signature, str) or not hmac.compare_digest(
-                state.signature, expected
-            ):
-                raise ProviderIntelligenceError("provider intelligence owner signature is invalid")
-        else:
-            try:
-                verify_envelope(state._unsigned(), state.signature)
-            except (OwnerAuthorityError, TypeError) as exc:
-                raise ProviderIntelligenceError(
-                    "provider intelligence owner signature is invalid"
-                ) from exc
-            if state.signing_key_id != state.signature.get("key_id"):
-                raise ProviderIntelligenceError("provider intelligence signer identity is invalid")
         return state
 
     def save(self, state: ProviderIntelligenceState) -> None:
@@ -550,6 +546,40 @@ class ProviderIntelligenceStore:
             self._save_locked(state)
 
     def _save_locked(self, state: ProviderIntelligenceState) -> None:
+        self._verify_signature(state)
+        current = self.path.parent
+        unsafe = self.root.is_symlink()
+        while current != current.parent:
+            unsafe = unsafe or current.is_symlink()
+            current = current.parent
+        if unsafe:
+            raise ProviderIntelligenceError(
+                "provider intelligence state root must not contain symlinks"
+            )
+        if self.path.exists():
+            existing = self._load_for_owner_recovery()
+            if existing.to_dict() != state.to_dict():
+                if (
+                    existing.project_id == state.project_id
+                    and existing.target_sha == state.target_sha
+                    and existing.policy_generation < state.policy_generation
+                    and existing.expires_at is not None
+                    and state.observed_at >= existing.expires_at
+                    and len(existing.candidates) == len(state.candidates)
+                    and all(
+                        candidate.profile.profile_version > old.profile.profile_version
+                        for candidate, old in zip(state.candidates, existing.candidates)
+                    )
+                ):
+                    _atomic_write(self.path, state.to_dict())
+                    return
+                raise ProviderIntelligenceError(
+                    "provider intelligence state already exists with different evidence"
+                )
+            return
+        _atomic_write(self.path, state.to_dict())
+
+    def _verify_signature(self, state: ProviderIntelligenceState) -> None:
         if self.signing_key is None:
             try:
                 verify_envelope(state._unsigned(), state.signature)
@@ -567,34 +597,3 @@ class ProviderIntelligenceStore:
                 state.signature, expected
             ):
                 raise ProviderIntelligenceError("provider intelligence owner signature is invalid")
-        current = self.path.parent
-        unsafe = self.root.is_symlink()
-        while current != current.parent:
-            unsafe = unsafe or current.is_symlink()
-            current = current.parent
-        if unsafe:
-            raise ProviderIntelligenceError(
-                "provider intelligence state root must not contain symlinks"
-            )
-        if self.path.exists():
-            existing = self.load()
-            if existing.to_dict() != state.to_dict():
-                if (
-                    existing.project_id == state.project_id
-                    and existing.target_sha == state.target_sha
-                    and existing.policy_generation == state.policy_generation
-                    and existing.expires_at is not None
-                    and state.observed_at >= existing.expires_at
-                    and len(existing.candidates) == len(state.candidates)
-                    and all(
-                        candidate.profile.profile_version > old.profile.profile_version
-                        for candidate, old in zip(state.candidates, existing.candidates)
-                    )
-                ):
-                    _atomic_write(self.path, state.to_dict())
-                    return
-                raise ProviderIntelligenceError(
-                    "provider intelligence state already exists with different evidence"
-                )
-            return
-        _atomic_write(self.path, state.to_dict())
