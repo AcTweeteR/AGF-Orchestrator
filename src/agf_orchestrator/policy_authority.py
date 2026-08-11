@@ -104,6 +104,14 @@ class PolicyAuthority:
         self.authority_dir = self.state_dir / "constitution-authority"
 
     def resolve(self, project_id: str) -> ActiveMergePolicy:
+        from .authority_context import resolve_authority
+
+        resolved = resolve_authority(project_id, policy_backend=self)
+        if resolved.policy is None:
+            raise PolicyActivationError("POLICY_NOT_ACTIVATED: policy state is unreadable")
+        return resolved.policy
+
+    def _resolve_legacy(self, project_id: str) -> ActiveMergePolicy:
         self._validate_project_id(project_id)
         constitution = self._verify_constitution(project_id)
         try:
@@ -153,7 +161,7 @@ class PolicyAuthority:
 
     def _verify_constitution(self, project_id: str):
         try:
-            return ConstitutionAuthority().resolve(project_id)
+            return ConstitutionAuthority()._resolve_legacy(project_id)
         except ConstitutionVerificationError as exc:
             raise PolicyActivationError(
                 "POLICY_NOT_ACTIVATED: ConstitutionAuthority failed"

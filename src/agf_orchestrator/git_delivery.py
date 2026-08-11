@@ -15,6 +15,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Callable
 
+from .authority_context import AuthorityContextError, resolve_authority
+from .constitution import ConstitutionVerificationError
 from .executor import _changed_paths, _run_validations, _status_lines
 from .merge_models import (
     AuthorizationStatus,
@@ -26,7 +28,7 @@ from .merge_models import (
 )
 from .merge_policy import REQUIRED_GATES
 from .models import Task
-from .policy_authority import PolicyActivationError, PolicyAuthority
+from .policy_authority import PolicyActivationError
 from .policy_state_store import PolicyStateError, PolicyStateStore
 from .risk_models import risk_from_dict
 from .scheduler_journal import InboxItem, SchedulerJournal
@@ -316,13 +318,13 @@ class GitDelivery:
             raise GitDeliveryError("fully evidenced LOW merge decision is required")
         if merge_decision is None and project_id is not None:
             try:
-                active = PolicyAuthority().resolve_or_none(project_id)
-            except PolicyActivationError as exc:
+                active = resolve_authority(project_id).policy
+            except (PolicyActivationError, AuthorityContextError) as exc:
                 raise GitDeliveryError("active policy is not verified") from exc
             if active is not None:
                 raise GitDeliveryError("active policy requires an integrity-bound MergeDecision")
         if merge_decision is None and project_id is None:
-            if (PolicyAuthority().state_dir / "policy-state.sqlite3").exists():
+            if (Path.home() / ".agf-orchestrator" / "policy-state.sqlite3").exists():
                 raise GitDeliveryError("delivery project identity is required")
         validated_decision: MergeDecision | None = None
         if merge_decision is not None:
@@ -429,8 +431,7 @@ def _validate_delivery_authorization(
         raise GitDeliveryError("merge authorization project does not match delivery")
     if project_id is not None:
         try:
-            store = PolicyStateStore(Path.home() / ".agf-orchestrator", read_only=True)
-            snapshot = store.authority_snapshot(project_id)
+            snapshot = resolve_authority(project_id).snapshot
         except (PolicyStateError, sqlite3.Error) as exc:
             raise GitDeliveryError("authority state is unreadable") from exc
         if snapshot is None:
@@ -445,10 +446,13 @@ def _validate_delivery_authorization(
         raise GitDeliveryError(
             "active policy hash is required for MEDIUM/HIGH delivery; legacy path is LOW-only"
         )
-    try:
-        active = PolicyAuthority().resolve_or_none(validated.project_id)
-    except PolicyActivationError as exc:
-        raise GitDeliveryError("active policy is not verified") from exc
+    if (Path.home() / ".agf-orchestrator" / "policy-state.sqlite3").exists():
+        try:
+            active = resolve_authority(validated.project_id).policy
+        except (PolicyActivationError, AuthorityContextError) as exc:
+            raise GitDeliveryError("active policy is not verified") from exc
+    else:
+        active = None
     if active is None and validated.policy_hash:
         raise GitDeliveryError("merge authorization policy was superseded or rolled back")
     if active is not None:
@@ -505,14 +509,18 @@ def _validate_delivery_authorization(
 def _ensure_emergency_stop_clear(project_id: str | None) -> None:
     """Re-read the owner signal at each consequential delivery boundary."""
     if project_id is None:
-        if (PolicyAuthority().state_dir / "policy-state.sqlite3").exists():
+        if (Path.home() / ".agf-orchestrator" / "policy-state.sqlite3").exists():
             raise GitDeliveryError("delivery project identity is required")
         return
     try:
-        snapshot = PolicyStateStore(
-            Path.home() / ".agf-orchestrator", read_only=True
-        ).authority_snapshot(project_id)
-    except (PolicyStateError, sqlite3.Error) as exc:
+        snapshot = resolve_authority(project_id).snapshot
+    except (
+        AuthorityContextError,
+        ConstitutionVerificationError,
+        PolicyStateError,
+        sqlite3.Error,
+        OSError,
+    ) as exc:
         raise GitDeliveryError("authority state is unreadable") from exc
     if snapshot is None:
         raise GitDeliveryError("authority state is not bootstrapped")
