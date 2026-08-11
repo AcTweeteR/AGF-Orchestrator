@@ -17,6 +17,7 @@ class SessionStatus(StrEnum):
     DELIVERING = "DELIVERING"
     PR_READY = "PR_READY"
     BLOCKED = "BLOCKED"
+    RETRY_REQUIRED = "RETRY_REQUIRED"
     HUMAN_REQUIRED = "HUMAN_REQUIRED"
     COMPLETED = "COMPLETED"
     CANCELLED = "CANCELLED"
@@ -56,6 +57,10 @@ for _status in ACTIVE_STATUSES:
             SessionStatus.CANCELLED,
         }
     )
+ALLOWED_TRANSITIONS[SessionStatus.RETRY_REQUIRED].update(
+    {SessionStatus.READY, SessionStatus.BLOCKED}
+)
+ALLOWED_TRANSITIONS[SessionStatus.BLOCKED].add(SessionStatus.RETRY_REQUIRED)
 
 
 @dataclass(frozen=True)

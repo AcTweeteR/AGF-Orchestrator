@@ -15,6 +15,9 @@ from dotenv import load_dotenv
 from .adapters.codex import CodexAdapter
 from .adapters.ollama import OllamaOpenHandsAdapter
 from .adapters.openhands import OpenHandsSDKAdapter
+from .architect_planning import ArchitectPlanningError, ProviderArchitect
+from .capability_profiles import profile_from_dict
+from .capability_selection import CapabilityCandidate, SelectionGates
 from .compliance import ComplianceChecker
 from .constitution import ConstitutionAuthority, ConstitutionVerificationError
 from .delivery import DeliveryPipeline, write_delivery_report
@@ -30,7 +33,7 @@ from .preflight import PreflightError, collect_repository
 from .project_models import ProjectPolicy
 from .project_registry import ProjectRegistry, ProjectRegistryError, parse_remote_url
 from .reviewer import CodexReviewerAdapter, DeterministicReviewer
-from .session_manager import SessionManager, SessionManagerError
+from .session_manager import SessionManager, SessionManagerError, _now
 from .session_store import SessionStore, SessionStoreError
 
 AGF_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
@@ -147,10 +150,15 @@ def build_parser() -> argparse.ArgumentParser:
     for command in ("list",):
         item = session_commands.add_parser(command)
         item.add_argument("--json", action="store_true")
-    for command in ("show", "resume", "cancel"):
+    for command in ("show", "resume", "assess", "cancel"):
         item = session_commands.add_parser(command)
         item.add_argument("--session", required=True)
         item.add_argument("--json", action="store_true")
+        if command == "assess":
+            item.add_argument(
+                "--architect-config",
+                help="approved state-root JSON with capability profiles, gates, and providers",
+            )
     resume = session_commands.choices["resume"]
     resume.add_argument("--project", help="registered project name or ID")
     resume.add_argument("--execute", action="store_true")
@@ -272,8 +280,8 @@ def run_project(args: argparse.Namespace) -> int:
 
 
 def run_session(args: argparse.Namespace) -> int:
-    manager = SessionManager()
     try:
+        manager = SessionManager(architect=_architect_from_config(args))
         if args.session_command == "start":
             session = manager.start(args.project, args.goal)
             _output(session.to_dict(), args.json)
@@ -290,6 +298,8 @@ def run_session(args: argparse.Namespace) -> int:
                 confirm_delivery=args.confirm_delivery,
             )
             _output(session.to_dict(), args.json)
+        elif args.session_command == "assess":
+            _output(manager.assess(args.session).to_dict(), args.json)
         elif args.session_command == "cancel":
             _output(manager.cancel(args.session).to_dict(), args.json)
         elif args.session_command == "lock-status":
@@ -305,6 +315,70 @@ def run_session(args: argparse.Namespace) -> int:
     ) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+
+
+class _AdapterArchitectProvider:
+    def __init__(self, provider_id: str, adapter: object) -> None:
+        self.provider_id = provider_id
+        self.adapter = adapter
+
+    def propose(self, request) -> str:
+        instruction = (
+            "Return only the strict JSON architecture response required by AGF.\n"
+            + json.dumps(request.to_dict(), ensure_ascii=False, sort_keys=True)
+        )
+        result = self.adapter.execute(instruction, request.repository.root)
+        if not result.invocation_verified or not result.final_message:
+            raise ArchitectPlanningError(
+                f"{self.provider_id} architect invocation failed: "
+                f"{result.transport_error or 'missing verified response'}"
+            )
+        return result.final_message
+
+
+def _architect_from_config(args: argparse.Namespace):
+    config_path = getattr(args, "architect_config", None)
+    store = SessionStore()
+    if not config_path:
+        default_path = store.state_dir / "capability-intelligence" / "architect.json"
+        if not default_path.is_file():
+            return None
+        config_path = str(default_path)
+    candidate_path = Path(config_path).expanduser()
+    try:
+        resolved = candidate_path.resolve(strict=True)
+    except OSError as exc:
+        raise ArchitectPlanningError("architect config is unreadable") from exc
+    state_root = store.state_dir.resolve()
+    if state_root not in resolved.parents or _contains_symlink(candidate_path):
+        raise ArchitectPlanningError("architect config must be under approved AGF state root")
+    try:
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+        project_id = payload["project_id"]
+        candidates = tuple(
+            CapabilityCandidate(
+                profile_from_dict(item["profile"]),
+                item["priority"],
+                item.get("diagnostic_only", False),
+            )
+            for item in payload["candidates"]
+        )
+        gates = SelectionGates(**payload["gates"])
+        providers = {
+            item["profile"]["provider_id"]: _AdapterArchitectProvider(
+                item["profile"]["provider_id"],
+                CodexAdapter() if item["adapter"] == "codex" else OpenHandsSDKAdapter(
+                    allow_llm_env=False
+                ),
+            )
+            for item in payload["candidates"]
+            if item["adapter"] in {"codex", "openhands"}
+        }
+    except (KeyError, TypeError, ValueError, OSError) as exc:
+        raise ArchitectPlanningError("architect config is invalid") from exc
+    return ProviderArchitect(
+        candidates, providers, now=_now(), project_id=project_id, gates=gates
+    )
 
 
 def run_inbox(args: argparse.Namespace) -> int:

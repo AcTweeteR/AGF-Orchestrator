@@ -4,10 +4,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from .architect_planning import (
+    ArchitectPlanningError,
+    ProviderArchitect,
+    architect_request_hash,
+    architect_response_hash,
+    build_architect_request,
+    provider_evidence_payload,
+    validate_architect_response,
+    verify_provider_evidence,
+)
+from .capability_selection import CapabilityCandidate, SelectionGates
 from .constitution import ConstitutionAuthority, ConstitutionVerificationError
 from .director import Director
 from .locking import lock_status, project_lock, session_lock
@@ -21,6 +33,7 @@ from .session_models import (
     SessionStatus,
 )
 from .session_store import SessionStore, SessionStoreError
+from .target_assessment import assess_repository, derive_architecture
 
 
 class SessionManagerError(RuntimeError):
@@ -31,13 +44,123 @@ def _now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _assessment_version(store: SessionStore, session: Session) -> int:
+    plan_path = session.plan_path
+    versions = []
+    if not plan_path:
+        return 2
+    stem = Path(plan_path).stem
+    if stem.startswith("plan-v"):
+        try:
+            versions.append(int(stem.removeprefix("plan-v")))
+        except ValueError:
+            pass
+    directory = store.artifacts_dir / session.session_id
+    store.ensure_safe_path(directory)
+    for path in directory.glob("*-v*.json"):
+        try:
+            versions.append(int(path.stem.rsplit("-v", 1)[1]))
+        except ValueError:
+            continue
+    return max(versions, default=1) + 1
+
+
+def _assessment_artifact_name(name: str, version: int) -> str:
+    if version == 2:
+        return name
+    if name == "plan-v2.json":
+        return f"plan-v{version}.json"
+    return f"{Path(name).stem}-v{version}.json"
+
+
+def _assessment_artifact_paths(store: SessionStore, session: Session) -> dict[str, Path]:
+    version = int(Path(session.plan_path).stem.removeprefix("plan-v"))
+    suffix = "" if version == 2 else f"-v{version}"
+    directory = store.artifacts_dir / session.session_id
+    paths = {
+        "assessment": directory / f"assessment{suffix}.json",
+        "architecture": directory / f"architecture{suffix}.json",
+        "architect_request": directory / f"architect-request{suffix}.json",
+        "plan": Path(session.plan_path),
+    }
+    if "provider_evidence" in session.artifact_hashes:
+        paths["provider_evidence"] = directory / f"provider-evidence{suffix}.json"
+    if "architect_response" in session.artifact_hashes:
+        paths["architect_response"] = directory / f"architect-response{suffix}.json"
+    return paths
+
+
+def _validate_predecessor_chain(
+    first_path: str, first_hash: str, expected_dir: Path, project, safe_path
+) -> None:
+    raw_path = Path(first_path)
+    expected_hash = first_hash
+    seen: set[Path] = set()
+    from .executor import load_plan
+
+    while True:
+        if raw_path.is_symlink():
+            raise SessionManagerError("recovered plan predecessor must not be a symlink")
+        try:
+            safe_path(raw_path)
+        except SessionStoreError as exc:
+            raise SessionManagerError("recovered plan predecessor path is unsafe") from exc
+        path = raw_path.resolve()
+        if (
+            path in seen
+            or path.parent != expected_dir
+            or not path.is_file()
+        ):
+            raise SessionManagerError("recovered plan predecessor is outside session lineage")
+        seen.add(path)
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
+            raise SessionManagerError("recovered plan predecessor hash differs")
+        try:
+            load_plan(str(path))
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            repository = payload["repository"]
+            if (
+                repository["root"] != project.repository_root
+                or parse_remote_url(repository["origin"]).identity
+                != parse_remote_url(project.origin_url).identity
+                or repository["head_sha"] != project.current_head_sha
+            ):
+                raise SessionManagerError("recovered plan predecessor binding differs")
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise SessionManagerError("recovered plan predecessor is invalid") from exc
+        scope = payload.get("scope", {})
+        next_path = scope.get("lineage")
+        if not next_path:
+            return
+        next_hash = scope.get("predecessor_plan_sha256")
+        if not isinstance(next_hash, str) or not next_hash:
+            raise SessionManagerError("recovered plan predecessor hash is missing")
+        raw_path = Path(next_path)
+        expected_hash = next_hash
+
+
 class SessionManager:
     """Manage persisted state; resume authorizes a stage but does not execute it."""
 
-    def __init__(self, state_dir=None, *, registry=None, store=None, director=None):
+    def __init__(
+        self,
+        state_dir=None,
+        *,
+        registry=None,
+        store=None,
+        director=None,
+        architect=None,
+        architect_candidates: tuple[CapabilityCandidate, ...] = (),
+        architect_providers: dict[str, object] | None = None,
+        architect_gates: SelectionGates | None = None,
+    ):
         self.store = store or SessionStore(state_dir)
         self.registry = registry or ProjectRegistry(self.store.state_dir)
         self.director = director or Director()
+        self.architect = architect
+        self.architect_candidates = architect_candidates
+        self.architect_providers = architect_providers or {}
+        self.architect_gates = architect_gates
 
     def start(self, project_name: str, goal: str) -> Session:
         with self.registry._lock("session-start-project"):
@@ -189,6 +312,477 @@ class SessionManager:
             with project_lock(self.store.state_dir, project.project_id, "session-resume"):
                 return self._resume_locked(session, project, execute, confirm_delivery)
 
+    def assess(self, session_id: str) -> Session:
+        """Advance a placeholder plan through persisted assessment/architecture.
+
+        This is an explicit planning operation.  It never invokes an
+        implementer and never mutates the target repository.
+        """
+        with session_lock(self.store.state_dir, session_id, "assessment"):
+            session = self.store.load(session_id)
+            if session.status in TERMINAL_STATUSES:
+                raise SessionManagerError("terminal session cannot be assessed")
+            project = self.registry.get(session.project_id)
+            artifacts_ready = {
+                "assessment", "architecture", "architect_request", "plan", "original_plan"
+            }.issubset(session.artifact_hashes)
+            if (
+                artifacts_ready
+                and session.status is not SessionStatus.RETRY_REQUIRED
+                and session.plan_path
+                and Path(session.plan_path).name.startswith("plan-v")
+            ):
+                root = Path(project.repository_root)
+                actual_head = _git(root, "rev-parse", "HEAD")
+                actual_branch = _git(root, "branch", "--show-current")
+                actual_origin = parse_remote_url(
+                    _git(root, "config", "--get", "remote.origin.url")
+                ).identity
+                if (
+                    actual_head != session.base_sha
+                    or actual_branch != project.default_branch
+                    or actual_origin != parse_remote_url(project.origin_url).identity
+                ):
+                    return self._mark_stale(
+                        session,
+                        "repository identity or baseline changed during assessment recovery",
+                        "restore the registered repository identity and baseline",
+                    )
+                artifact_paths = _assessment_artifact_paths(self.store, session)
+                try:
+                    for path in artifact_paths.values():
+                        self.store.ensure_safe_path(path)
+                        if path.is_symlink():
+                            raise SessionManagerError("persisted assessment path is a symlink")
+                    plan_payload = json.loads(artifact_paths["plan"].read_text(encoding="utf-8"))
+                    assessment_payload = json.loads(
+                        artifact_paths["assessment"].read_text(encoding="utf-8")
+                    )
+                    request_payload = json.loads(
+                        artifact_paths["architect_request"].read_text(encoding="utf-8")
+                    )
+                    legacy_lineage = (
+                        "predecessor_plan_sha256" not in plan_payload.get("scope", {})
+                        or "repository_origin" not in assessment_payload
+                        or "predecessor_plan" not in session.artifact_hashes
+                        or "architect_request" not in session.artifact_hashes
+                        or "provider_evidence" not in session.artifact_hashes
+                        or "request_hash" not in request_payload
+                        or "architecture_hash" not in plan_payload.get("scope", {})
+                    )
+                    for key, path in artifact_paths.items():
+                        if self.store.artifact_hash(str(path)) != session.artifact_hashes[key]:
+                            raise SessionManagerError(f"persisted {key} artifact hash differs")
+                    architecture_payload = json.loads(
+                        artifact_paths["architecture"].read_text(encoding="utf-8")
+                    )
+                    provider_evidence = None
+                    if "provider_evidence" in artifact_paths:
+                        provider_evidence = json.loads(
+                            artifact_paths["provider_evidence"].read_text(encoding="utf-8")
+                        )
+                    if not legacy_lineage:
+                        from .target_assessment import ArchitectureDecision, TargetAssessment
+
+                        recovered_assessment = TargetAssessment(**assessment_payload)
+                        if recovered_assessment.project_id != project.project_id:
+                            raise SessionManagerError(
+                                "recovered assessment project binding differs"
+                            )
+                        if request_payload.get("request_hash") != architect_request_hash(
+                            request_payload
+                        ):
+                            raise SessionManagerError("architect request hash differs")
+                        if (
+                            request_payload.get("assessment", {}).get("evidence_hash")
+                            != recovered_assessment.evidence_hash
+                        ):
+                            raise SessionManagerError(
+                                "architect request assessment binding differs"
+                            )
+                        if (
+                            request_payload.get("repository", {}).get("root")
+                            != recovered_assessment.repository_root
+                            or request_payload.get("repository", {}).get("origin")
+                            != recovered_assessment.repository_origin
+                            or request_payload.get("repository", {}).get("head_sha")
+                            != recovered_assessment.baseline_sha
+                        ):
+                            raise SessionManagerError(
+                                "architect request repository binding differs"
+                            )
+                        recovered_clean = not bool(
+                            _git(Path(project.repository_root), "status", "--porcelain")
+                        )
+                        recovered_assessment.validate(
+                            self._repository_context(
+                                project, clean=recovered_clean
+                            )
+                        )
+                        recovered_architecture = ArchitectureDecision(**architecture_payload)
+                        recovered_architecture.validate(recovered_assessment)
+                        if architecture_payload.get("provider_selection", {}).get(
+                            "architect_request_hash"
+                        ) != request_payload.get("request_hash"):
+                            raise SessionManagerError("provider selection request binding differs")
+                        provider_state = architecture_payload.get("provider_selection", {})
+                        authoritative_candidates = None
+                        authoritative_gates = None
+                        if isinstance(self.architect, ProviderArchitect):
+                            authoritative_candidates = self.architect.candidates
+                            authoritative_gates = self.architect.gates
+                        if provider_evidence is not None and not isinstance(
+                            self.architect, ProviderArchitect
+                        ):
+                            return self._mark_retry_required(
+                                session,
+                                "current provider authority is unavailable; fresh retry required",
+                                str(artifact_paths["provider_evidence"]),
+                            )
+                        if provider_evidence is None:
+                            raise SessionManagerError("provider evidence artifact is missing")
+                        verify_provider_evidence(
+                            provider_evidence,
+                            provider_state,
+                            request=build_architect_request(
+                                session.goal,
+                                self._repository_context(project, clean=recovered_clean),
+                                recovered_assessment,
+                                registered_project=project,
+                            ),
+                            session_id=session.session_id,
+                            plan_path=plan_payload["scope"].get("lineage"),
+                            plan_hash=session.artifact_hashes["predecessor_plan"],
+                            target_sha=recovered_assessment.baseline_sha,
+                            now=_now(),
+                            authoritative_candidates=authoritative_candidates or (),
+                            authoritative_gates=authoritative_gates,
+                        )
+                        response_hash = provider_state.get("response_hash")
+                        if provider_state.get("status") == "SELECTED" and not response_hash:
+                            raise SessionManagerError(
+                                "selected architect response evidence is missing"
+                            )
+                        if response_hash:
+                            response_path = artifact_paths.get("architect_response")
+                            if response_path is None:
+                                raise SessionManagerError("architect response artifact is missing")
+                            if "architect_response" not in session.artifact_hashes:
+                                raise SessionManagerError("architect response artifact is missing")
+                            if self.store.artifact_hash(str(response_path)) != (
+                                session.artifact_hashes["architect_response"]
+                            ):
+                                raise SessionManagerError(
+                                    "persisted architect response artifact hash differs"
+                                )
+                            response_payload = json.loads(response_path.read_text(encoding="utf-8"))
+                            if architect_response_hash(response_payload) != response_hash:
+                                raise SessionManagerError("architect response hash differs")
+                            validated_response = validate_architect_response(
+                                response_payload,
+                                build_architect_request(
+                                    session.goal,
+                                    self._repository_context(project, clean=recovered_clean),
+                                    recovered_assessment,
+                                    registered_project=project,
+                                ),
+                            )
+                            if (
+                                provider_state.get("planning_outcome") == "NO_JUSTIFIED_WORK"
+                                and validated_response is not None
+                            ) or (
+                                provider_state.get("planning_outcome") != "NO_JUSTIFIED_WORK"
+                                and validated_response is None
+                            ):
+                                raise SessionManagerError("architect response outcome differs")
+                        if (
+                            plan_payload["scope"].get("assessment_hash")
+                            != recovered_assessment.evidence_hash
+                        ):
+                            raise SessionManagerError("recovered plan assessment binding differs")
+                        if plan_payload["scope"].get("in") != [
+                            recovered_architecture.bounded_objective
+                        ]:
+                            raise SessionManagerError("recovered plan objective binding differs")
+                        expected_architecture_hash = hashlib.sha256(
+                            json.dumps(
+                                recovered_architecture.to_dict(),
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ).encode()
+                        ).hexdigest()
+                        if (
+                            plan_payload["scope"].get("architecture_hash")
+                            != expected_architecture_hash
+                        ):
+                            raise SessionManagerError("recovered plan architecture binding differs")
+                        raw_plan_tasks = plan_payload.get("tasks", [])
+                        if len({item.get("task_id") for item in raw_plan_tasks}) != len(
+                            raw_plan_tasks
+                        ):
+                            raise SessionManagerError("recovered plan contains duplicate task IDs")
+                        plan_tasks = {
+                            item["task_id"]: item
+                            for item in raw_plan_tasks
+                        }
+                        architecture_task_ids = {
+                            item["task_id"] for item in recovered_architecture.tasks
+                        }
+                        if set(plan_tasks) != architecture_task_ids:
+                            raise SessionManagerError("recovered plan task set differs")
+                        if (
+                            plan_payload["scope"].get("delivery_branch")
+                            != recovered_architecture.delivery_branch
+                            or plan_payload["scope"].get("out")
+                            != list(recovered_architecture.prohibited_paths)
+                        ):
+                            raise SessionManagerError("recovered plan scope differs")
+                        for architecture_task in recovered_architecture.tasks:
+                            planned_task = plan_tasks.get(architecture_task["task_id"])
+                            if planned_task is None or any(
+                                planned_task.get(field) != architecture_task.get(field)
+                                for field in (
+                                    "allowed_paths", "dependencies", "acceptance_criteria",
+                                    "validation_commands", "risk_level", "objective",
+                                )
+                            ):
+                                raise SessionManagerError("recovered plan task scope differs")
+                        if (
+                            plan_payload["scope"].get("predecessor_plan_sha256")
+                            != session.artifact_hashes["predecessor_plan"]
+                        ):
+                            raise SessionManagerError("recovered plan lineage differs")
+                        predecessor_path = plan_payload["scope"].get("lineage")
+                        if not predecessor_path:
+                            raise SessionManagerError("recovered plan predecessor is missing")
+                        _validate_predecessor_chain(
+                            predecessor_path,
+                            session.artifact_hashes["predecessor_plan"],
+                            (self.store.artifacts_dir / session.session_id).resolve(),
+                            project,
+                            self.store.ensure_safe_path,
+                        )
+                        return self._mark_retry_required(
+                            session,
+                            "historical provider observation cannot authorize recovery; "
+                            "fresh retry required",
+                            str(artifact_paths["provider_evidence"]),
+                        )
+                    self._validate_plan_identity(session, project)
+                except (OSError, json.JSONDecodeError, TypeError, KeyError, ValueError) as exc:
+                    raise SessionManagerError("persisted assessment evidence is invalid") from exc
+                if not legacy_lineage:
+                    return session
+                self.store.write_artifact(
+                    session.session_id,
+                    "assessment-legacy.json",
+                    artifact_paths["assessment"].read_text(encoding="utf-8"),
+                )
+            with project_lock(self.store.state_dir, project.project_id, "session-assessment"):
+                if project.status.value != "ACTIVE":
+                    return self._mark_stale(
+                        session, "project is not active", "restore project identity"
+                    )
+                root = Path(project.repository_root)
+                actual_head = _git(root, "rev-parse", "HEAD")
+                actual_branch = _git(root, "branch", "--show-current")
+                if actual_branch != project.default_branch:
+                    return self._mark_stale(
+                        session,
+                        "repository branch changed during assessment",
+                        "restore the registered default branch",
+                    )
+                actual_origin = parse_remote_url(
+                    _git(root, "config", "--get", "remote.origin.url")
+                ).identity
+                if actual_origin != parse_remote_url(project.origin_url).identity:
+                    return self._mark_stale(
+                        session,
+                        "repository origin changed during assessment",
+                        "restore the registered repository identity",
+                    )
+                repository = self._repository_context(
+                    project, clean=not bool(_git(root, "status", "--porcelain"))
+                )
+                repository = replace(repository, head_sha=actual_head)
+                if actual_head != session.base_sha:
+                    return self._mark_stale(
+                        session,
+                        "base SHA drifted: "
+                        f"expected {session.base_sha}, found {repository.head_sha}",
+                        "review the drift and start a new session if appropriate",
+                    )
+                assessment = assess_repository(
+                    repository, project.project_id, registered_project=project
+                )
+                request = build_architect_request(
+                    session.goal, repository, assessment, registered_project=project
+                )
+                architect = self.architect or ProviderArchitect(
+                    self.architect_candidates,
+                    self.architect_providers,
+                    now=_now(),
+                    project_id=project.project_id,
+                    gates=self.architect_gates,
+                )
+                try:
+                    if isinstance(architect, ProviderArchitect):
+                        proposal = architect.propose(request)
+                    else:
+                        proposal = architect.propose(session.goal, assessment)
+                except ArchitectPlanningError as exc:
+                    proposal = None
+                    provider_selection = {
+                        **getattr(architect, "provider_selection", {}),
+                        "status": "BLOCKED",
+                        "reason": str(exc),
+                        "architect_request_hash": request.request_hash,
+                    }
+                    provider_selection["considered"] = [
+                        candidate.profile.provider_id
+                        for candidate in sorted(
+                            getattr(architect, "candidates", ()),
+                            key=lambda item: (
+                                item.priority,
+                                item.profile.provider_id,
+                                item.profile.profile_id,
+                            ),
+                        )
+                    ]
+                    provider_selection["rejected_reasons"] = list(
+                        [str(exc)]
+                    )
+                    provider_selection["reason"] = str(exc)
+                    if getattr(architect, "planning_outcome", None) == "NO_JUSTIFIED_WORK":
+                        provider_selection["planning_outcome"] = "NO_JUSTIFIED_WORK"
+                else:
+                    provider_selection = getattr(architect, "provider_selection", None)
+                if provider_selection is not None:
+                    provider_selection = {
+                        **provider_selection,
+                        "architect_request_hash": request.request_hash,
+                    }
+                old_plan_path = session.plan_path
+                assessment_version = _assessment_version(self.store, session)
+                predecessor_hash = (
+                    self.store.artifact_hash(old_plan_path) if old_plan_path else None
+                )
+                evidence_path = None
+                evidence_hash = None
+                if isinstance(architect, ProviderArchitect):
+                    evidence = provider_evidence_payload(
+                        architect,
+                        request,
+                        session_id=session.session_id,
+                        plan_path=old_plan_path,
+                        plan_hash=predecessor_hash or "",
+                        target_sha=repository.head_sha,
+                        selection=provider_selection,
+                    )
+                    evidence_path, evidence_hash = self.store.write_artifact(
+                        session.session_id,
+                        _assessment_artifact_name("provider-evidence.json", assessment_version),
+                        json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+                    )
+                    provider_selection = {
+                        **(provider_selection or {}),
+                        "provider_evidence_hash": evidence_hash,
+                    }
+                architecture = derive_architecture(
+                    session.goal,
+                    repository,
+                    assessment,
+                    proposal=proposal,
+                    provider_selection=provider_selection,
+                )
+                request_path, request_hash = self.store.write_artifact(
+                    session.session_id,
+                    _assessment_artifact_name("architect-request.json", assessment_version),
+                    json.dumps(request.to_dict(), indent=2, sort_keys=True) + "\n",
+                )
+                response_path = None
+                response_hash = None
+                if (
+                    isinstance(architect, ProviderArchitect)
+                    and architect.last_response is not None
+                ):
+                    response = architect.last_response
+                    response_text = (
+                        response
+                        if isinstance(response, str)
+                        else json.dumps(response, indent=2, sort_keys=True)
+                    )
+                    response_path, response_hash = self.store.write_artifact(
+                        session.session_id,
+                        _assessment_artifact_name("architect-response.json", assessment_version),
+                        response_text + "\n",
+                    )
+                assessment_path, assessment_hash = self.store.write_artifact(
+                    session.session_id,
+                    _assessment_artifact_name("assessment.json", assessment_version),
+                    json.dumps(assessment.to_dict(), indent=2, sort_keys=True) + "\n",
+                )
+                architecture_path, architecture_hash = self.store.write_artifact(
+                    session.session_id,
+                    _assessment_artifact_name("architecture.json", assessment_version),
+                    json.dumps(architecture.to_dict(), indent=2, sort_keys=True) + "\n",
+                )
+                original_plan_hash = session.artifact_hashes.get("original_plan", "")
+                plan = self.director.create_assessed_plan(
+                    session.goal,
+                    repository,
+                    assessment,
+                    architecture,
+                    lineage=old_plan_path,
+                    lineage_hash=predecessor_hash,
+                )
+                plan_path, plan_hash = self.store.write_artifact(
+                    session.session_id,
+                    _assessment_artifact_name("plan-v2.json", assessment_version),
+                    json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n",
+                )
+                session.plan_path = plan_path
+                session.artifact_hashes = {
+                    key: value for key, value in session.artifact_hashes.items()
+                    if key not in {"provider_evidence", "architect_response"}
+                }
+                session.artifact_hashes.update({
+                    "original_plan": original_plan_hash or predecessor_hash or "",
+                    "predecessor_plan": predecessor_hash or "",
+                    "plan": plan_hash,
+                    "assessment": assessment_hash,
+                    "architecture": architecture_hash,
+                    "architect_request": request_hash,
+                })
+                if evidence_hash is not None:
+                    session.artifact_hashes["provider_evidence"] = evidence_hash
+                if response_hash is not None:
+                    session.artifact_hashes["architect_response"] = response_hash
+                target_status = (
+                    SessionStatus.READY
+                    if plan.status is PlanStatus.READY
+                    else SessionStatus.BLOCKED
+                )
+                summary = (
+                    "assessment and architecture approved; executable scope persisted"
+                    if target_status is SessionStatus.READY
+                    else "assessment completed; no bounded executable scope was justified"
+                )
+                updated = self._append_event(
+                    session,
+                    session.status,
+                    target_status,
+                    summary,
+                    [assessment_path, request_path, architecture_path, plan_path]
+                    + ([evidence_path] if evidence_path else [])
+                    + ([response_path] if response_path else []),
+                    [] if target_status is SessionStatus.READY else [architecture.rationale],
+                    "DIRECTOR",
+                    "assessment:" + session.session_id,
+                )
+                self._save(updated)
+                return updated
+
     @staticmethod
     def _validate_resume_flags(execute: bool, confirm_execution: bool, confirm_delivery: bool):
         if confirm_execution and not execute:
@@ -229,8 +823,17 @@ class SessionManager:
             )
         try:
             self._validate_plan_identity(session, project)
+            self._validate_plan_lineage(session, project)
         except SessionManagerError as exc:
             return self._mark_stale(session, str(exc), "inspect or restore session evidence")
+        if session.status is SessionStatus.READY and "provider_evidence" in session.artifact_hashes:
+            evidence_path = _assessment_artifact_paths(self.store, session)["provider_evidence"]
+            return self._mark_retry_required(
+                session,
+                "historical provider observation cannot authorize recovery; "
+                "fresh retry required",
+                str(evidence_path),
+            )
         if session.status is SessionStatus.READY and execute:
             if not project.policy.allow_live_execution:
                 raise SessionManagerError("execution is not authorized by project policy")
@@ -249,11 +852,42 @@ class SessionManager:
             )
         return session
 
+    def _validate_plan_lineage(self, session: Session, project) -> None:
+        """Validate every persisted predecessor before normal continuation."""
+        if not session.plan_path:
+            return
+        plan_path = self.store.ensure_safe_path(session.plan_path)
+        try:
+            payload = json.loads(plan_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise SessionManagerError("persisted plan lineage is invalid") from exc
+        scope = payload.get("scope", {})
+        lineage = scope.get("lineage")
+        lineage_hash = scope.get("predecessor_plan_sha256")
+        if not lineage and not lineage_hash:
+            return
+        expected_hash = session.artifact_hashes.get("predecessor_plan")
+        if not lineage or not lineage_hash or not expected_hash or lineage_hash != expected_hash:
+            raise SessionManagerError("persisted plan lineage is incomplete")
+        _validate_predecessor_chain(
+            lineage,
+            lineage_hash,
+            (self.store.artifacts_dir / session.session_id).resolve(),
+            project,
+            self.store.ensure_safe_path,
+        )
+
     def _validate_plan_identity(self, session: Session, project) -> None:
         if not session.plan_path:
             raise SessionManagerError("required plan artifact is missing")
         expected_dir = (self.store.artifacts_dir / session.session_id).resolve()
         path = Path(session.plan_path)
+        try:
+            self.store.ensure_safe_path(path)
+        except SessionStoreError as exc:
+            raise SessionManagerError("plan artifact path is unsafe") from exc
+        if path.is_symlink():
+            raise SessionManagerError("plan artifact must not be a symlink")
         try:
             resolved = path.resolve(strict=True)
         except OSError as exc:
@@ -308,6 +942,24 @@ class SessionManager:
             operation_id,
         )
         updated.required_human_actions = [action]
+        self._save(updated)
+        return updated
+
+    def _mark_retry_required(self, session, reason: str, evidence_ref: str) -> Session:
+        evidence_key = session.artifact_hashes.get("provider_evidence", evidence_ref)
+        operation_id = "retry-required:" + session.session_id + ":" + evidence_key
+        if any(event.operation_id == operation_id for event in session.events):
+            return session
+        updated = self._append_event(
+            session,
+            session.status,
+            SessionStatus.RETRY_REQUIRED,
+            reason,
+            [evidence_ref],
+            [reason],
+            "SYSTEM",
+            operation_id,
+        )
         self._save(updated)
         return updated
 

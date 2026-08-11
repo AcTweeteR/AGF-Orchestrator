@@ -1,12 +1,19 @@
+import json
 import subprocess
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
+from agf_orchestrator.architect_planning import ProviderArchitect
+from agf_orchestrator.capability_profiles import capability_profile_hash
+from agf_orchestrator.capability_selection import CapabilityCandidate, SelectionGates
 from agf_orchestrator.locking import LockError, project_lock
 from agf_orchestrator.project_models import ProjectStatus
 from agf_orchestrator.project_registry import ProjectRegistry, ProjectRegistryError
 from agf_orchestrator.session_manager import SessionManager, SessionManagerError
 from agf_orchestrator.session_models import SessionStatus
+from tests.test_architect_planning import FakeProvider, profile
 
 
 def registered(tmp_path):
@@ -46,6 +53,112 @@ def test_start_is_ready_and_resume_is_idempotent(tmp_path):
     stale = manager.resume(session.session_id)
     assert stale.status is SessionStatus.STALE
     assert "base SHA" in stale.blocking_issues[0]
+
+
+def test_assess_placeholder_persists_evidence_and_blocks_unsupported_scope(tmp_path):
+    root, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Identify a genuinely useful bounded improvement")
+    assessed = manager.assess(session.session_id)
+    assert assessed.status is SessionStatus.BLOCKED
+    assert assessed.plan_path.endswith("plan-v2.json")
+    assert assessed.artifact_hashes["original_plan"]
+    assert (state / "artifacts" / session.session_id / "assessment.json").exists()
+    assert (state / "artifacts" / session.session_id / "architecture.json").exists()
+    assert Path(assessed.plan_path).exists()
+    assert not list(root.glob("**/*.agf"))
+    retry = manager.transition(session.session_id, SessionStatus.RETRY_REQUIRED)
+    assert retry.status is SessionStatus.RETRY_REQUIRED
+    restarted = SessionManager(state)
+    assert restarted.resume(session.session_id).status is SessionStatus.RETRY_REQUIRED
+    assert manager.assess(session.session_id).status is SessionStatus.BLOCKED
+
+
+def test_recovery_requires_fresh_evaluation_and_preserves_versioned_lineage(tmp_path):
+    root, state = registered(tmp_path)
+    (root / "README.md").write_text("# Test\n")
+    subprocess.run(["git", "-C", str(root), "add", "README.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "add readme"],
+        check=True, capture_output=True,
+    )
+    project_id = ProjectRegistry(state).get("alpha").project_id
+    provider_profile = replace(profile("provider-a"), project_id=project_id)
+    provider_profile = replace(
+        provider_profile, profile_sha256=capability_profile_hash(provider_profile)
+    )
+    candidates = (CapabilityCandidate(provider_profile, 0),)
+    gates = SelectionGates(
+        policy_eligible=True, privacy_eligible=True, independence_eligible=True,
+        budget_eligible=True, health_eligible=True, empirical_evidence_eligible=True,
+    )
+    architect = ProviderArchitect(
+        candidates, {"provider-a": FakeProvider()}, now="2026-08-10T12:00:00Z",
+        project_id=project_id, gates=gates,
+    )
+    manager = SessionManager(
+        state, architect=architect,
+        architect_candidates=candidates, architect_providers={"provider-a": FakeProvider()},
+        architect_gates=gates,
+    )
+    session = manager.start("alpha", "Improve file:README.md")
+    assessed = manager.assess(session.session_id)
+    assert assessed.status is SessionStatus.READY
+    first_plan = Path(assessed.plan_path)
+    first_files = {
+        path.name for path in (state / "artifacts" / session.session_id).glob("*.json")
+    }
+    recovered = SessionManager(state, architect=architect, architect_candidates=candidates,
+                               architect_providers={"provider-a": FakeProvider()},
+                               architect_gates=gates).assess(session.session_id)
+    assert recovered.status is SessionStatus.RETRY_REQUIRED
+    retried = manager.assess(session.session_id)
+    assert retried.status is SessionStatus.READY
+    assert Path(retried.plan_path).name == "plan-v3.json"
+    assert first_plan.exists()
+    current_files = {
+        path.name for path in (state / "artifacts" / session.session_id).glob("*.json")
+    }
+    assert first_files <= current_files
+    plan_payload = json.loads(Path(retried.plan_path).read_text(encoding="utf-8"))
+    assert Path(plan_payload["scope"]["lineage"]).resolve() == first_plan.resolve()
+    restarted = SessionManager(
+        state, architect=architect, architect_candidates=candidates,
+        architect_providers={"provider-a": FakeProvider()}, architect_gates=gates,
+    )
+    assert restarted.resume(session.session_id).status is SessionStatus.RETRY_REQUIRED
+
+
+def test_interrupted_assessment_preserves_partial_generation_and_uses_next_version(
+    tmp_path, monkeypatch
+):
+    root, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Identify a genuinely useful bounded improvement")
+    assert manager.assess(session.session_id).status is SessionStatus.BLOCKED
+    manager.transition(session.session_id, SessionStatus.RETRY_REQUIRED)
+    original_write = manager.store.write_artifact
+    calls = 0
+
+    def fail_after_first_generation(session_id, name, content):
+        nonlocal calls
+        calls += 1
+        if name == "architecture-v3.json":
+            raise RuntimeError("injected artifact failure")
+        return original_write(session_id, name, content)
+
+    monkeypatch.setattr(manager.store, "write_artifact", fail_after_first_generation)
+    with pytest.raises(RuntimeError, match="injected artifact failure"):
+        manager.assess(session.session_id)
+    artifact_dir = state / "artifacts" / session.session_id
+    assert (artifact_dir / "assessment-v3.json").exists()
+    assert not (artifact_dir / "architecture-v3.json").exists()
+    assert manager.get(session.session_id).plan_path.endswith("plan-v2.json")
+    monkeypatch.setattr(manager.store, "write_artifact", original_write)
+    retried = manager.assess(session.session_id)
+    assert retried.plan_path.endswith("plan-v4.json")
+    assert (artifact_dir / "assessment-v3.json").exists()
+    assert "architect_response" not in retried.artifact_hashes
 
 
 def test_invalid_transition_and_cancel_preserve_events(tmp_path):

@@ -25,6 +25,29 @@ Review record, verification evidence, findings with severity and reproduction ba
 - preserve independence from the Implementer;
 - never implement features or silently correct the reviewed outcome.
 
+## Provider evidence review contract
+
+When reviewing provider-backed planning, apply the authoritative trust model
+in this order: active Constitution, active policy, approved ADR/architecture,
+task acceptance criteria, then review criteria. The Reviewer must verify that:
+
+- adapter outcomes are represented honestly as observations, never as
+  independent external attestations;
+- same-process fallback is bounded by current capability evidence and policy
+  gates;
+- historical observations cannot authorize fallback after restart;
+- restart preserves evidence but requires `RETRY_REQUIRED` and fresh
+  reevaluation;
+- stale, tampered, cross-project, or otherwise uncertain evidence fails
+  closed, especially for consequential work; and
+- no provider, adapter, scheduler, implementer, or reviewer can upgrade an
+  observation or lower the effective governed decision.
+
+The Reviewer must request changes for a violation of these properties. It
+must not invent an independent-attestation requirement that is absent from a
+higher-authority source, and it must not suppress a finding merely because
+the candidate follows this trust model.
+
 ## Success criteria
 
 The review is reproducible, criteria-based, independent, and explicit about acceptance, rework, or blocking.
