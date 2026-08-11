@@ -77,6 +77,35 @@ def test_assess_placeholder_persists_evidence_and_blocks_unsupported_scope(tmp_p
     assert manager.assess(session.session_id).status is SessionStatus.BLOCKED
 
 
+def test_changed_provider_authority_requires_fresh_assessment(tmp_path):
+    root, state = registered(tmp_path)
+    initial = SessionManager(state)
+    session = initial.start("alpha", "Identify a genuinely useful bounded improvement")
+    assert initial.assess(session.session_id).status is SessionStatus.BLOCKED
+
+    project_id = ProjectRegistry(state).get("alpha").project_id
+    provider_profile = replace(profile("provider-a"), project_id=project_id)
+    provider_profile = replace(
+        provider_profile, profile_sha256=capability_profile_hash(provider_profile)
+    )
+    candidates = (CapabilityCandidate(provider_profile, 0),)
+    gates = SelectionGates(
+        policy_eligible=True, privacy_eligible=True, independence_eligible=True,
+        budget_eligible=True, health_eligible=True, empirical_evidence_eligible=True,
+    )
+    architect = ProviderArchitect(
+        candidates, {"provider-a": FakeProvider()}, now="2026-08-10T12:00:00Z",
+        project_id=project_id, gates=gates,
+    )
+    refreshed = SessionManager(
+        state, architect=architect, architect_candidates=candidates,
+        architect_providers={"provider-a": FakeProvider()}, architect_gates=gates,
+    ).assess(session.session_id)
+
+    assert refreshed.status is SessionStatus.RETRY_REQUIRED
+    assert "provider evidence is stale" in refreshed.blocking_issues[0]
+
+
 def test_recovery_requires_fresh_evaluation_and_preserves_versioned_lineage(tmp_path):
     root, state = registered(tmp_path)
     (root / "README.md").write_text("# Test\n")
