@@ -378,7 +378,12 @@ class DeliveryPipeline:
         task = _task(plan, task_id)
         delivery_id = _delivery_id(plan.plan_id, task_id)
         base_sha = plan.repository.head_sha
-        branch = sanitize_branch_name(plan.plan_id, task_id)
+        architecture_branch = plan.scope.get("delivery_branch")
+        branch = (
+            sanitize_branch_name(str(architecture_branch), task_id)
+            if architecture_branch
+            else sanitize_branch_name(plan.plan_id, task_id)
+        )
         if not execute:
             return DeliveryReport(
                 delivery_id,

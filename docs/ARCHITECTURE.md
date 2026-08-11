@@ -14,3 +14,18 @@ AGF-Orchestrator is a layered control system. Work flows downward toward executi
 | Repository | Persist authoritative state | Task artifacts, decisions, evidence, release record | Durable records and retrievable history | Preserve integrity, identity, version, and traceability | Report unavailable, corrupt, or conflicting records to Director |
 
 The layers are logical, not a prescription for components. An implementation may combine or distribute them only if authority, evidence, and separation of duties remain observable.
+
+## Provider outcome trust boundary
+
+Provider adapters are observation sources, not independent authority sources.
+An adapter-reported failure is recorded as an attributable `OBSERVATION`; AGF
+does not represent it as an independently attested fact. A live, same-process
+fallback may use that observation only when the current capability evidence,
+policy gates, scope, and safety conditions still authorize the next attempt.
+
+Historical adapter observations cannot authorize execution after restart. On
+recovery, AGF preserves the audit trail, transitions safe work to
+`RETRY_REQUIRED`, and requires a fresh provider selection and evaluation.
+Consequential ambiguity, stale or tampered evidence, and uncertainty at a
+protected boundary fail closed. No adapter, provider, scheduler, or reviewer
+may upgrade an observation into attestation or lower a governed decision.
