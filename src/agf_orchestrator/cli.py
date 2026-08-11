@@ -466,12 +466,15 @@ def run_provider_intelligence(args: argparse.Namespace) -> int:
             try:
                 existing = store.load()
             except ProviderIntelligenceError as exc:
-                if str(exc) != "provider evidence is bound to stale authority":
+                if str(exc) not in {
+                    "provider evidence is bound to stale authority",
+                    "provider intelligence evidence is stale",
+                }:
                     raise
                 existing = store._load_for_owner_recovery()
-            if existing.project_id != project.project_id or existing.target_sha != target_sha:
+            if existing.project_id != project.project_id:
                 raise ProviderIntelligenceError(
-                    "existing provider intelligence is bound to a different project or target"
+                    "existing provider intelligence is bound to a different project"
                 )
             try:
                 _validate_provider_intelligence_runtime(

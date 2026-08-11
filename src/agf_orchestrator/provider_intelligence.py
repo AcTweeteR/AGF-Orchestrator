@@ -561,10 +561,18 @@ class ProviderIntelligenceStore:
             if existing.to_dict() != state.to_dict():
                 if (
                     existing.project_id == state.project_id
-                    and existing.target_sha == state.target_sha
                     and existing.policy_generation < state.policy_generation
                     and existing.expires_at is not None
                     and state.observed_at >= existing.expires_at
+                    and len(existing.candidates) == len(state.candidates)
+                    and all(
+                        candidate.profile.profile_version > old.profile.profile_version
+                        for candidate, old in zip(state.candidates, existing.candidates)
+                    )
+                ) or (
+                    existing.project_id == state.project_id
+                    and existing.target_sha != state.target_sha
+                    and existing.policy_generation <= state.policy_generation
                     and len(existing.candidates) == len(state.candidates)
                     and all(
                         candidate.profile.profile_version > old.profile.profile_version
