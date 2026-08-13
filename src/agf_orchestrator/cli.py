@@ -350,16 +350,28 @@ class _AdapterArchitectProvider:
         self.provider_id = provider_id
         self.adapter = adapter
 
-    def propose(self, request) -> str:
-        instruction = (
+    @staticmethod
+    def _instruction(request) -> str:
+        assessment = request.assessment
+        evidence_inventory = sorted({
+            *assessment.repository_structure,
+            assessment.evidence_hash,
+        })
+        return (
             "Return exactly one JSON object matching this schema, with no wrapper key: "
             + json.dumps(architect_response_schema(), sort_keys=True)
             + ". Do not wrap it "
             "in an architecture key. No Markdown, code fences, prose, invented evidence, "
             "paths, or dependencies. Use proposed_outcome=NO_JUSTIFIED_WORK only when formally "
-            "justified; malformed output is a provider failure, never no-work.\n"
+            "justified; malformed output is a provider failure, never no-work. Every value in "
+            "evidence_references MUST be exactly one item from this closed evidence inventory: "
+            + json.dumps(evidence_inventory, ensure_ascii=False)
+            + ". Do not cite any other string.\n"
             + json.dumps(request.to_dict(), ensure_ascii=False, sort_keys=True)
         )
+
+    def propose(self, request) -> str:
+        instruction = self._instruction(request)
         kwargs = {"sandbox": "read-only"}
         if isinstance(self.adapter, CodexAdapter):
             kwargs["output_schema"] = architect_response_schema()
