@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +15,273 @@ from agf_orchestrator.authority_generation import (
     GenerationStatus,
     build_generation,
 )
+from agf_orchestrator.capability_profiles import CapabilityStatus
+from agf_orchestrator.capability_selection import CapabilityCandidate, SelectionGates
+from agf_orchestrator.provider_intelligence import (
+    ARCHITECT_REQUIREMENTS,
+    build_state,
+    make_profile,
+)
 from tools import owner_ed25519_authority as controller
+
+TEST_OWNER_KEY = b"test-owner-key-which-is-long-enough-123456"
+
+
+def test_normal_provider_activation_does_not_authorize_renewal(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(controller, "project_lock", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(
+        controller,
+        "_activate_provider_candidate",
+        lambda project_id, candidate, **kwargs: calls.append(kwargs) or {"ok": "true"},
+    )
+    assert controller.activate_provider_candidate(
+        "project-0123456789abcdef", tmp_path / "candidate"
+    )
+    assert calls == [{"allow_renewal": False}]
+
+
+def test_provider_renewal_requires_fresh_observation_for_each_profile():
+    previous = SimpleNamespace(
+        candidates=(
+            SimpleNamespace(
+                profile=SimpleNamespace(
+                    profile_id="provider-codex", observed_at="2026-08-13T12:00:00Z"
+                )
+            ),
+        )
+    )
+    proposed = SimpleNamespace(
+        candidates=(
+            SimpleNamespace(
+                profile=SimpleNamespace(
+                    profile_id="provider-codex", observed_at="2026-08-13T12:00:00Z"
+                )
+            ),
+        )
+    )
+    with pytest.raises(RuntimeError, match="fresh profile observations"):
+        controller._require_fresh_profile_observations(previous, proposed)
+
+
+def test_controller_rejects_historical_profile_without_mutating(monkeypatch, tmp_path):
+    project_id = "project-0123456789abcdef"
+    previous = SimpleNamespace(
+        project_id=project_id,
+        target_sha="a" * 40,
+        observed_at="2026-08-13T12:00:00Z",
+        state_sha256="old",
+        candidates=(
+            SimpleNamespace(
+                profile=SimpleNamespace(
+                    profile_id="provider-codex",
+                    profile_version=1,
+                    observed_at="2026-08-13T12:00:00Z",
+                )
+            ),
+        ),
+    )
+    proposed = SimpleNamespace(
+        project_id=project_id,
+        target_sha=previous.target_sha,
+        observed_at="2026-08-13T12:01:00Z",
+        candidates=(
+            SimpleNamespace(
+                profile=SimpleNamespace(
+                    profile_id="provider-codex",
+                    profile_version=2,
+                    observed_at="2026-08-13T12:00:00Z",
+                )
+            ),
+        ),
+    )
+
+    class FakeStore:
+        def for_project(self, _project_id):
+            return self
+
+        def _load_for_owner_recovery(self):
+            return previous
+
+    monkeypatch.setattr(controller, "ProviderIntelligenceStore", FakeStore)
+    monkeypatch.setattr(controller, "project_lock", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(controller, "_candidate_path", lambda *_: tmp_path / "candidate.json")
+    monkeypatch.setattr(controller, "state_from_dict", lambda _payload: proposed)
+    monkeypatch.setattr(controller, "_activate_provider_candidate", pytest.fail)
+    (tmp_path / "candidate.json").write_text("{}")
+    with pytest.raises(RuntimeError, match="fresh profile observations"):
+        controller.renew_provider_candidate(project_id, tmp_path / "candidate.json")
+
+
+def test_controller_accepts_fresh_profile_and_authorizes_renewal(monkeypatch, tmp_path):
+    project_id = "project-0123456789abcdef"
+    previous = SimpleNamespace(
+        project_id=project_id,
+        target_sha="a" * 40,
+        observed_at="2026-08-13T12:00:00Z",
+        state_sha256="old",
+        candidates=(
+            SimpleNamespace(
+                profile=SimpleNamespace(
+                    profile_id="provider-codex",
+                    profile_version=1,
+                    observed_at="2026-08-13T12:00:00Z",
+                )
+            ),
+        ),
+    )
+    proposed = SimpleNamespace(
+        project_id=project_id,
+        target_sha=previous.target_sha,
+        observed_at="2026-08-13T12:01:00Z",
+        candidates=(
+            SimpleNamespace(
+                profile=SimpleNamespace(
+                    profile_id="provider-codex",
+                    profile_version=2,
+                    observed_at="2026-08-13T12:01:00Z",
+                )
+            ),
+        ),
+    )
+
+    class FakeStore:
+        def for_project(self, _project_id):
+            return self
+
+        def _load_for_owner_recovery(self):
+            return previous
+
+        def load(self):
+            return SimpleNamespace(state_sha256="new")
+
+    calls = []
+    monkeypatch.setattr(controller, "ProviderIntelligenceStore", FakeStore)
+    monkeypatch.setattr(controller, "project_lock", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(controller, "_candidate_path", lambda *_: tmp_path / "candidate.json")
+    monkeypatch.setattr(controller, "state_from_dict", lambda _payload: proposed)
+    monkeypatch.setattr(
+        controller,
+        "_activate_provider_candidate",
+        lambda *args, **kwargs: calls.append(kwargs) or {"state_sha256": "new"},
+    )
+    (tmp_path / "candidate.json").write_text("{}")
+    result = controller.renew_provider_candidate(project_id, tmp_path / "candidate.json")
+    assert result["renewed"] == "true"
+    assert calls == [{"allow_renewal": True}]
+
+
+def test_controller_renewal_uses_real_store_and_replaces_atomically(monkeypatch, tmp_path):
+    project_id = "project-0123456789abcdef"
+    target = "a" * 40
+    state_root = tmp_path / ".agf-orchestrator"
+    monkeypatch.setenv("AGF_STATE_DIR", str(state_root))
+    monkeypatch.setattr(controller.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(
+        "agf_orchestrator.provider_intelligence.verify_envelope", lambda *_: None
+    )
+    monkeypatch.setattr(
+        controller, "sign_envelope", lambda *_: {"key_id": "owner-ed25519-1"}
+    )
+    monkeypatch.setattr(
+        controller,
+        "ProjectRegistry",
+        lambda: SimpleNamespace(
+            verify=lambda _project: SimpleNamespace(repository_root=tmp_path)
+        ),
+    )
+    authority = SimpleNamespace(
+        policy=SimpleNamespace(policy_id="merge-policy-adr-0003", policy_hash="p" * 64),
+        constitution=SimpleNamespace(
+            constitution_id="constitution-agf-v1", record_hash="c" * 64
+        ),
+        context=SimpleNamespace(generation_number=2),
+        policy_snapshot={"generation": 2},
+    )
+    monkeypatch.setattr(controller, "resolve_authority", lambda _project: authority)
+    monkeypatch.setattr(
+        controller.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=f"{target}\n"),
+    )
+
+    def make_provider_state(observed, version):
+        profile = make_profile(
+            project_id=project_id,
+            provider_id="provider-codex",
+            provenance_source="runtime-canary:codex:test-v1",
+            observed_at=observed,
+            expires_at="2030-01-01T00:00:00Z",
+            capability_results={
+                name: CapabilityStatus.SUPPORTED for name in ARCHITECT_REQUIREMENTS
+            },
+            profile_version=version,
+        )
+        value = build_state(
+            project_id=project_id,
+            target_sha=target,
+            constitution_id="constitution-agf-v1",
+            constitution_record_hash="c" * 64,
+            observed_at=observed,
+            expires_at="2030-01-01T00:00:00Z",
+            candidates=(CapabilityCandidate(profile, priority=0),),
+            provider_interfaces=(("provider-codex", "codex"),),
+            gates=SelectionGates(True, True, True, True, True, True),
+            gate_evidence=(
+                ("policy_eligible", "active-policy:merge-policy-adr-0003:" + "p" * 64),
+                ("privacy_eligible", "codex-safe-environment-v1;read-only-canary;True"),
+                ("independence_eligible", "architect-advisory;reviewer-separate-stage;True"),
+                ("budget_eligible", "bounded-timeout-seconds:90;True"),
+                ("health_eligible", "invocation-verified:True"),
+                ("empirical_evidence_eligible", "deterministic-canary-sha256:" + "e" * 64),
+            ),
+            policy_generation=2,
+        )
+        signed = value.__class__(
+            **{
+                **value.__dict__,
+                "signing_key_id": "owner-ed25519-1",
+                "signature": {"key_id": "owner-ed25519-1"},
+            }
+        )
+        return signed.__class__(
+            **{
+                **signed.__dict__,
+                "state_sha256": hashlib.sha256(
+                    json.dumps(signed._unsigned(), sort_keys=True, separators=(",", ":"))
+                    .encode()
+                ).hexdigest(),
+            }
+        )
+
+    from agf_orchestrator.provider_intelligence import ProviderIntelligenceStore
+
+    store = ProviderIntelligenceStore().for_project(project_id)
+    old = make_provider_state("2026-08-13T12:00:00Z", 1)
+    renewed = make_provider_state("2026-08-13T12:01:00Z", 2)
+    store.path.parent.mkdir(parents=True)
+    store.path.write_text(json.dumps(old.to_dict()))
+    candidate = state_root / "capability-intelligence" / project_id / "candidate.json"
+    candidate.write_text(json.dumps(renewed.to_dict()))
+
+    result = controller.renew_provider_candidate(project_id, candidate)
+
+    assert result["renewed"] == "true"
+    assert store._load_for_owner_recovery().state_sha256 == renewed.state_sha256
+
+    failed_candidate = state_root / "capability-intelligence" / project_id / "failed.json"
+    failed_candidate.write_text(
+        json.dumps(make_provider_state("2026-08-13T12:02:00Z", 3).to_dict())
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.provider_intelligence._atomic_write",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("injected write failure")),
+    )
+    with pytest.raises(OSError, match="injected write failure"):
+        controller.renew_provider_candidate(project_id, failed_candidate)
+    assert store._load_for_owner_recovery().state_sha256 == renewed.state_sha256
+
+
 
 
 def test_cutover_rejects_path_escape_before_reading_state():
