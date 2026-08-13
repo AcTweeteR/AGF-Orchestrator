@@ -35,7 +35,12 @@ from .session_models import (
     SessionStatus,
 )
 from .session_store import SessionStore, SessionStoreError
-from .target_assessment import assess_repository, derive_architecture
+from .target_assessment import (
+    ArchitectureDecision,
+    TargetAssessment,
+    assess_repository,
+    derive_architecture,
+)
 
 
 class SessionManagerError(RuntimeError):
@@ -324,6 +329,7 @@ class SessionManager:
             session = self.store.load(session_id)
             if session.status in TERMINAL_STATUSES:
                 raise SessionManagerError("terminal session cannot be assessed")
+            fresh_retry = session.status is SessionStatus.RETRY_REQUIRED
             project = self.registry.get(session.project_id)
             artifacts_ready = {
                 "assessment", "architecture", "architect_request", "plan", "original_plan"
@@ -383,9 +389,7 @@ class SessionManager:
                         provider_evidence = json.loads(
                             artifact_paths["provider_evidence"].read_text(encoding="utf-8")
                         )
-                    if not legacy_lineage:
-                        from .target_assessment import ArchitectureDecision, TargetAssessment
-
+                    if not legacy_lineage or fresh_retry:
                         recovered_assessment = TargetAssessment(**assessment_payload)
                         if recovered_assessment.project_id != project.project_id:
                             raise SessionManagerError(
@@ -432,12 +436,44 @@ class SessionManager:
                             "request_hash"
                         ):
                             raise SessionManagerError("provider selection request binding differs")
+                        if fresh_retry:
+                            evidence_inputs = (
+                                provider_evidence.get("inputs")
+                                if isinstance(provider_evidence, dict)
+                                else None
+                            )
+                            required_inputs = {
+                                "project_id": project.project_id,
+                                "session_id": session.session_id,
+                                "request_hash": request_payload.get("request_hash"),
+                                "target_sha": recovered_assessment.baseline_sha,
+                                "plan_hash": session.artifact_hashes.get("predecessor_plan"),
+                            }
+                            if (
+                                not isinstance(provider_evidence, dict)
+                                or provider_evidence.get("schema_version") != "1.0"
+                                or provider_evidence.get("source") != "adapter"
+                                or provider_evidence.get("evidence_kind") != "observation"
+                                or provider_evidence.get("attestation") != "unavailable"
+                                or not isinstance(provider_evidence.get("attempts"), list)
+                                or not isinstance(provider_evidence.get("selection_audit"), list)
+                                or not isinstance(evidence_inputs, dict)
+                                or any(
+                                    evidence_inputs.get(key) != value
+                                    for key, value in required_inputs.items()
+                                )
+                                or evidence_inputs.get("plan_path")
+                                != plan_payload.get("scope", {}).get("lineage")
+                            ):
+                                raise SessionManagerError(
+                                    "persisted provider evidence binding is invalid"
+                                )
                         authoritative_candidates = None
                         authoritative_gates = None
                         if isinstance(self.architect, ProviderArchitect):
                             authoritative_candidates = self.architect.candidates
                             authoritative_gates = self.architect.gates
-                        if provider_evidence is not None and not isinstance(
+                        if provider_evidence is not None and not fresh_retry and not isinstance(
                             self.architect, ProviderArchitect
                         ):
                             return self._mark_retry_required(
@@ -445,9 +481,9 @@ class SessionManager:
                                 "current provider authority is unavailable; fresh retry required",
                                 str(artifact_paths["provider_evidence"]),
                             )
-                        if provider_evidence is None:
+                        if provider_evidence is None and not fresh_retry:
                             raise SessionManagerError("provider evidence artifact is missing")
-                        if authoritative_gates is not None:
+                        if authoritative_gates is not None and not fresh_retry:
                             current_gate_results = {
                                 name: getattr(authoritative_gates, name)
                                 for name in (
@@ -480,29 +516,30 @@ class SessionManager:
                                     "persisted provider evidence is stale; fresh retry required",
                                     str(artifact_paths["provider_evidence"]),
                                 )
-                        verify_provider_evidence(
-                            provider_evidence,
-                            provider_state,
-                            request=build_architect_request(
-                                session.goal,
-                                self._repository_context(project, clean=recovered_clean),
-                                recovered_assessment,
-                                registered_project=project,
-                            ),
-                            session_id=session.session_id,
-                            plan_path=plan_payload["scope"].get("lineage"),
-                            plan_hash=session.artifact_hashes["predecessor_plan"],
-                            target_sha=recovered_assessment.baseline_sha,
-                            now=_now(),
-                            authoritative_candidates=authoritative_candidates or (),
-                            authoritative_gates=authoritative_gates,
-                        )
+                        if not fresh_retry:
+                            verify_provider_evidence(
+                                provider_evidence,
+                                provider_state,
+                                request=build_architect_request(
+                                    session.goal,
+                                    self._repository_context(project, clean=recovered_clean),
+                                    recovered_assessment,
+                                    registered_project=project,
+                                ),
+                                session_id=session.session_id,
+                                plan_path=plan_payload["scope"].get("lineage"),
+                                plan_hash=session.artifact_hashes["predecessor_plan"],
+                                target_sha=recovered_assessment.baseline_sha,
+                                now=_now(),
+                                authoritative_candidates=authoritative_candidates or (),
+                                authoritative_gates=authoritative_gates,
+                            )
                         response_hash = provider_state.get("response_hash")
                         if provider_state.get("status") == "SELECTED" and not response_hash:
                             raise SessionManagerError(
                                 "selected architect response evidence is missing"
                             )
-                        if response_hash:
+                        if response_hash and not fresh_retry:
                             response_path = artifact_paths.get("architect_response")
                             if response_path is None:
                                 raise SessionManagerError("architect response artifact is missing")
@@ -601,16 +638,17 @@ class SessionManager:
                             project,
                             self.store.ensure_safe_path,
                         )
-                        return self._mark_retry_required(
-                            session,
-                            "historical provider observation cannot authorize recovery; "
-                            "fresh retry required",
-                            str(artifact_paths["provider_evidence"]),
-                        )
                     self._validate_plan_identity(session, project)
                 except (OSError, json.JSONDecodeError, TypeError, KeyError, ValueError) as exc:
                     raise SessionManagerError("persisted assessment evidence is invalid") from exc
-                if not legacy_lineage:
+                if not fresh_retry and "provider_evidence" in session.artifact_hashes:
+                    return self._mark_retry_required(
+                        session,
+                        "provider evidence is stale; historical provider observation "
+                        "cannot authorize recovery; fresh retry required",
+                        str(artifact_paths["provider_evidence"]),
+                    )
+                if not legacy_lineage and not fresh_retry:
                     return session
                 self.store.write_artifact(
                     session.session_id,
