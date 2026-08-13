@@ -89,21 +89,6 @@ def architect_response_schema() -> dict[str, Any]:
             "evidence_references": {"type": "array", "items": {"type": "string"}},
             "unresolved_unknowns": {"type": "array", "items": {"type": "string"}},
         },
-        "allOf": [
-            {
-                "if": {"properties": {"proposed_outcome": {"const": "BOUNDED_IMPLEMENTATION"}}},
-                "then": {"properties": {"proposed_tasks": {"minItems": 1}}},
-            },
-            {
-                "if": {"properties": {"proposed_outcome": {"const": "NO_JUSTIFIED_WORK"}}},
-                "then": {
-                    "properties": {
-                        "proposed_tasks": {"maxItems": 0},
-                        "evidence_references": {"minItems": 1},
-                    }
-                },
-            },
-        ],
     }
     if set(schema["properties"]) != REQUIRED_RESPONSE_FIELDS:
         raise RuntimeError("Architect response schema fields drifted from validator")
