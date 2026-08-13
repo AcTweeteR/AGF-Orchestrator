@@ -23,6 +23,7 @@ from agf_orchestrator.capability_profiles import (
     sha256_text,
 )
 from agf_orchestrator.capability_selection import CapabilityCandidate, SelectionGates
+from agf_orchestrator.cli import _AdapterArchitectProvider
 from tests.test_target_assessment import assess, context, repo
 
 PROJECT = "project-test"
@@ -427,6 +428,19 @@ def test_provider_schema_is_native_codex_compatible():
     assert "allOf" not in serialized
     assert '"if"' not in serialized
     assert '"then"' not in serialized
+
+
+def test_architect_provider_prompt_binds_closed_evidence_inventory(tmp_path):
+    root = repo(tmp_path)
+    repository = context(root)
+    assessment = assess(repository, PROJECT)
+    request = build_architect_request(
+        "Assess", repository, assessment, registered_project=registration(repository)
+    )
+    instruction = _AdapterArchitectProvider._instruction(request)
+    assert "closed evidence inventory" in instruction
+    assert assessment.evidence_hash in instruction
+    assert "Do not cite any other string" in instruction
 
 
 def test_architect_request_requires_exact_registered_repository_binding(tmp_path):
