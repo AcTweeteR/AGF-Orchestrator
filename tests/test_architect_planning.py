@@ -415,12 +415,18 @@ def test_provider_schema_matches_validator_fields_and_semantics():
         "evidence_references", "unresolved_unknowns",
     }
     assert schema["properties"]["proposed_tasks"]["items"]["required"]
-    assert len(schema["allOf"]) == 2
-    bounded = schema["allOf"][0]
-    no_work = schema["allOf"][1]
-    assert bounded["then"]["properties"]["proposed_tasks"]["minItems"] == 1
-    assert no_work["then"]["properties"]["proposed_tasks"]["maxItems"] == 0
-    assert no_work["then"]["properties"]["evidence_references"]["minItems"] == 1
+    # The native Codex schema subset rejects conditional allOf/if/then
+    # constructs.  These outcome-dependent invariants remain enforced by
+    # validate_architect_response after the provider returns its object.
+    assert "allOf" not in schema
+
+
+def test_provider_schema_is_native_codex_compatible():
+    schema = architect_response_schema()
+    serialized = json.dumps(schema)
+    assert "allOf" not in serialized
+    assert '"if"' not in serialized
+    assert '"then"' not in serialized
 
 
 def test_architect_request_requires_exact_registered_repository_binding(tmp_path):
