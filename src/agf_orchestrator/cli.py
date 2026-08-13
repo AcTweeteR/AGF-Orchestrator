@@ -18,7 +18,12 @@ from dotenv import load_dotenv
 from .adapters.codex import CodexAdapter, resolve_codex_executable
 from .adapters.ollama import OllamaOpenHandsAdapter
 from .adapters.openhands import OpenHandsSDKAdapter
-from .architect_planning import ArchitectPlanningError, ProviderArchitect
+from .architect_planning import (
+    ArchitectPlanningError,
+    ProviderArchitect,
+    ProviderInvocationError,
+    architect_response_schema,
+)
 from .authority_context import resolve_authority
 from .capability_profiles import CapabilityProfileError, CapabilityStatus
 from .capability_selection import CapabilityCandidate, SelectionGates
@@ -347,15 +352,25 @@ class _AdapterArchitectProvider:
 
     def propose(self, request) -> str:
         instruction = (
-            "Return only the strict JSON architecture response required by AGF.\n"
+            "Return exactly one JSON object matching this schema, with no wrapper key: "
+            + json.dumps(architect_response_schema(), sort_keys=True)
+            + ". Do not wrap it "
+            "in an architecture key. No Markdown, code fences, prose, invented evidence, "
+            "paths, or dependencies. Use proposed_outcome=NO_JUSTIFIED_WORK only when formally "
+            "justified; malformed output is a provider failure, never no-work.\n"
             + json.dumps(request.to_dict(), ensure_ascii=False, sort_keys=True)
         )
-        result = self.adapter.execute(instruction, request.repository.root)
-        if not result.invocation_verified or not result.final_message:
-            raise ArchitectPlanningError(
+        kwargs = {"sandbox": "read-only"}
+        if isinstance(self.adapter, CodexAdapter):
+            kwargs["output_schema"] = architect_response_schema()
+        result = self.adapter.execute(instruction, request.repository.root, **kwargs)
+        if result.transport_error or not result.invocation_verified:
+            raise ProviderInvocationError(
                 f"{self.provider_id} architect invocation failed: "
                 f"{result.transport_error or 'missing verified response'}"
             )
+        if not result.final_message:
+            raise ProviderInvocationError(f"{self.provider_id} architect response is missing")
         return result.final_message
 
 

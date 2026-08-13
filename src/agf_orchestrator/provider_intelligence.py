@@ -230,7 +230,10 @@ class ProviderIntelligenceState:
                     candidate.profile.validate_at(now)
             except (CapabilityProfileError, ValueError) as exc:
                 raise ProviderIntelligenceError(str(exc)) from exc
-        candidate_ids = {candidate.profile.provider_id for candidate in self.candidates}
+        candidate_provider_ids = [candidate.profile.provider_id for candidate in self.candidates]
+        if len(candidate_provider_ids) != len(set(candidate_provider_ids)):
+            raise ProviderIntelligenceError("provider candidate bindings are duplicated")
+        candidate_ids = set(candidate_provider_ids)
         interface_ids = [provider_id for provider_id, _ in self.provider_interfaces]
         if any(
             provider_id not in candidate_ids or not interface
@@ -559,25 +562,47 @@ class ProviderIntelligenceStore:
         if self.path.exists():
             existing = self._load_for_owner_recovery()
             if existing.to_dict() != state.to_dict():
+                existing_ids = [
+                    (item.profile.provider_id, item.profile.profile_id)
+                    for item in existing.candidates
+                ]
+                state_ids = [
+                    (item.profile.provider_id, item.profile.profile_id)
+                    for item in state.candidates
+                ]
+                if (
+                    len(set(existing_ids)) != len(existing_ids)
+                    or len(set(state_ids)) != len(state_ids)
+                ):
+                    raise ProviderIntelligenceError(
+                        "provider intelligence profile identities are duplicated"
+                    )
+                existing_profiles = {
+                    identity: item.profile.profile_version
+                    for identity, item in zip(existing_ids, existing.candidates)
+                }
+                state_profiles = {
+                    identity: item.profile.profile_version
+                    for identity, item in zip(state_ids, state.candidates)
+                }
+                profiles_advanced = (
+                    set(existing_profiles) == set(state_profiles)
+                    and all(
+                        state_profiles[key] > existing_profiles[key]
+                        for key in existing_profiles
+                    )
+                )
                 if (
                     existing.project_id == state.project_id
-                    and existing.policy_generation < state.policy_generation
+                    and existing.policy_generation <= state.policy_generation
                     and existing.expires_at is not None
                     and state.observed_at >= existing.expires_at
-                    and len(existing.candidates) == len(state.candidates)
-                    and all(
-                        candidate.profile.profile_version > old.profile.profile_version
-                        for candidate, old in zip(state.candidates, existing.candidates)
-                    )
+                    and profiles_advanced
                 ) or (
                     existing.project_id == state.project_id
                     and existing.target_sha != state.target_sha
                     and existing.policy_generation <= state.policy_generation
-                    and len(existing.candidates) == len(state.candidates)
-                    and all(
-                        candidate.profile.profile_version > old.profile.profile_version
-                        for candidate, old in zip(state.candidates, existing.candidates)
-                    )
+                    and profiles_advanced
                 ):
                     _atomic_write(self.path, state.to_dict())
                     return

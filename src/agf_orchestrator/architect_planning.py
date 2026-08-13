@@ -39,6 +39,7 @@ _SECRET = re.compile(
     r"(?is)(api[_-]?key|token|secret|password|authorization)\s*[:=]|"
     r"-----BEGIN [^-]+-----|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\."
 )
+_NON_BLANK = {"type": "string", "pattern": r".*\S.*"}
 REQUIRED_RESPONSE_FIELDS = {
     "assessment_summary", "proposed_outcome", "rationale", "confidence", "proposed_tasks",
     "architecture_implications", "preliminary_risk_indicators", "evidence_references",
@@ -48,6 +49,68 @@ REQUIRED_TASK_FIELDS = {
     "objective", "justification", "dependencies", "allowed_paths", "prohibited_paths",
     "acceptance_criteria", "validation_requirements", "evidence_references", "risk_level",
 }
+
+
+def architect_response_schema() -> dict[str, Any]:
+    """Return the one provider-facing schema for the validated response model."""
+    task_properties = {
+        "objective": _NON_BLANK,
+        "justification": _NON_BLANK,
+        "dependencies": {"type": "array", "items": {"type": "string"}},
+        "allowed_paths": {"type": "array", "items": {"type": "string"}},
+        "prohibited_paths": {"type": "array", "items": {"type": "string"}},
+        "acceptance_criteria": {
+            "type": "array", "items": _NON_BLANK, "minItems": 1,
+        },
+        "validation_requirements": {
+            "type": "array", "items": _NON_BLANK, "minItems": 1,
+        },
+        "evidence_references": {"type": "array", "items": {"type": "string"}},
+        "risk_level": {"enum": ["low", "medium", "high", "critical"]},
+    }
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": sorted(REQUIRED_RESPONSE_FIELDS),
+        "properties": {
+            "assessment_summary": _NON_BLANK,
+            "proposed_outcome": {"enum": ["BOUNDED_IMPLEMENTATION", "NO_JUSTIFIED_WORK"]},
+            "rationale": _NON_BLANK,
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "proposed_tasks": {
+                "type": "array",
+                "items": {
+                    "type": "object", "additionalProperties": False,
+                    "required": sorted(REQUIRED_TASK_FIELDS), "properties": task_properties,
+                },
+            },
+            "architecture_implications": {"type": "array", "items": {"type": "string"}},
+            "preliminary_risk_indicators": {"type": "array", "items": {"type": "string"}},
+            "evidence_references": {"type": "array", "items": {"type": "string"}},
+            "unresolved_unknowns": {"type": "array", "items": {"type": "string"}},
+        },
+        "allOf": [
+            {
+                "if": {"properties": {"proposed_outcome": {"const": "BOUNDED_IMPLEMENTATION"}}},
+                "then": {"properties": {"proposed_tasks": {"minItems": 1}}},
+            },
+            {
+                "if": {"properties": {"proposed_outcome": {"const": "NO_JUSTIFIED_WORK"}}},
+                "then": {
+                    "properties": {
+                        "proposed_tasks": {"maxItems": 0},
+                        "evidence_references": {"minItems": 1},
+                    }
+                },
+            },
+        ],
+    }
+    if set(schema["properties"]) != REQUIRED_RESPONSE_FIELDS:
+        raise RuntimeError("Architect response schema fields drifted from validator")
+    task_schema = schema["properties"]["proposed_tasks"]["items"]
+    if set(task_schema["properties"]) != REQUIRED_TASK_FIELDS:
+        raise RuntimeError("Architect task schema fields drifted from validator")
+    return schema
 
 
 @dataclass(frozen=True)
@@ -74,7 +137,6 @@ class ArchitectRequest:
             "protected_paths": list(self.protected_paths),
             "request_hash": self.request_hash,
         }
-
 
 def architect_request_hash(payload: dict[str, Any]) -> str:
     value = dict(payload)

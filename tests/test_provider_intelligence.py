@@ -17,7 +17,7 @@ from agf_orchestrator.provider_intelligence import (
 PROJECT = "project-efc8e8ef7be7050b"
 TARGET = "a" * 40
 NOW = "2026-08-11T12:00:00Z"
-EXPIRES = "2026-08-12T12:00:00Z"
+EXPIRES = "2030-08-12T12:00:00Z"
 GATES = SelectionGates(True, True, True, True, True, True)
 GATE_EVIDENCE = (
     ("policy_eligible", "active-policy:merge-policy-adr-0003:" + "a" * 64),
@@ -30,20 +30,20 @@ GATE_EVIDENCE = (
 TEST_KEY = b"test-owner-key-which-is-long-enough-123456"
 
 
-def candidate(status=CapabilityStatus.SUPPORTED):
+def candidate(status=CapabilityStatus.SUPPORTED, provider_id="provider-codex", priority=0):
     profile = make_profile(
         project_id=PROJECT,
-        provider_id="provider-codex",
+        provider_id=provider_id,
         provenance_source="runtime-canary:codex:test-v1",
         observed_at=NOW,
         expires_at=EXPIRES,
         capability_results={name: status for name in ARCHITECT_REQUIREMENTS},
     )
-    return CapabilityCandidate(profile, priority=0)
+    return CapabilityCandidate(profile, priority=priority)
 
 
 def state(**kwargs):
-    return build_state(
+    defaults = dict(
         project_id=PROJECT,
         target_sha=TARGET,
         constitution_id="constitution-agf-v1",
@@ -55,8 +55,9 @@ def state(**kwargs):
         gates=GATES,
         gate_evidence=GATE_EVIDENCE,
         policy_generation=2,
-        **kwargs,
     )
+    defaults.update(kwargs)
+    return build_state(**defaults)
 
 
 def test_state_is_durable_and_restarts_with_verified_hash(tmp_path):
@@ -187,11 +188,18 @@ def test_owner_bootstrap_replaces_same_project_state_after_target_advance(tmp_pa
     store.path.parent.mkdir(parents=True)
     store.path.write_text(json.dumps(old.to_dict()))
     advanced = sign_state(
-        _persisted_state(
-            generation=2, profile_version=2, expired=False, target="b" * 40
-        ),
+        _persisted_state(generation=2, profile_version=2, expired=False, target="b" * 40),
         TEST_KEY,
         staging=True,
     )
     store.save(advanced)
     assert store._load_for_owner_recovery().target_sha == "b" * 40
+
+
+def test_duplicate_provider_candidates_are_rejected():
+    duplicate = candidate(priority=1)
+    value = state(
+        candidates=(candidate(), duplicate),
+    )
+    with pytest.raises(ProviderIntelligenceError, match="candidate bindings"):
+        value.validate()
