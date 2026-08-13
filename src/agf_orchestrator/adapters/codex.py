@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -52,6 +53,7 @@ class CodexInvocationProfile:
     def build_command(
         self, executable: str, instruction: str, *, sandbox: str = "workspace-write",
         final_message_path: str | None = None,
+        output_schema_path: str | None = None,
     ) -> list[str]:
         if not self.global_options_before_exec:
             raise ValueError("unsupported Codex invocation profile")
@@ -65,6 +67,8 @@ class CodexInvocationProfile:
         command.extend(["exec"])
         if final_message_path is not None:
             command.extend(["--output-last-message", final_message_path])
+        if output_schema_path is not None:
+            command.extend(["--output-schema", output_schema_path])
         command.append(instruction)
         return command
 
@@ -129,6 +133,7 @@ def discover_invocation_profile(
         or "exec" not in root_output
         or "--config" not in exec_output
         or "--sandbox" not in exec_output
+        or "--output-schema" not in exec_output
     ):
         return None
     return CodexInvocationProfile()
@@ -185,6 +190,7 @@ class CodexAdapter:
         repository: str,
         *,
         sandbox: str = "workspace-write",
+        output_schema: dict | None = None,
     ) -> CodexProcessResult:
         resolution = resolve_codex_executable(self.executable)
         if resolution.path is None:
@@ -210,12 +216,19 @@ class CodexAdapter:
             )
         approved_dir = Path(tempfile.mkdtemp(prefix="agf-codex-transport-"))
         final_message_path = approved_dir / "final-message.txt"
+        output_schema_path = None
+        if output_schema is not None:
+            output_schema_path = approved_dir / "output-schema.json"
+            output_schema_path.write_text(
+                json.dumps(output_schema, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+            )
         invocation_started_ns = time.time_ns()
         command = profile.build_command(
             executable,
             instruction,
             sandbox=sandbox,
             final_message_path=str(final_message_path),
+            output_schema_path=str(output_schema_path) if output_schema_path else None,
         )
         summary = (
             f'codex -c approval_policy="never" -s {sandbox} '

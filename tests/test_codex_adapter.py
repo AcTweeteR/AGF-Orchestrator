@@ -300,9 +300,11 @@ def test_discovery_places_global_flags_before_exec(monkeypatch):
         calls.append(command)
         if command[-2:] == ["exec", "--help"]:
             return subprocess.CompletedProcess(
-                command, 0, "Run Codex non-interactively\n--sandbox\n--config", ""
+                command, 0, "Run Codex non-interactively\n--sandbox\n--config\n--output-schema", ""
             )
-        return subprocess.CompletedProcess(command, 0, "exec\n--sandbox\n--config", "")
+        return subprocess.CompletedProcess(
+            command, 0, "exec\n--sandbox\n--config\n--output-schema", ""
+        )
 
     monkeypatch.setattr(codex_module.subprocess, "run", fake_run)
     profile = discover_invocation_profile("codex")
@@ -321,6 +323,13 @@ def test_command_never_emits_unsupported_or_dangerous_flags():
     assert "--dangerously-bypass-approvals-and-sandbox" not in command
     assert "--ask-for-approval" not in command
     assert command.index("-c") < command.index("exec")
+
+
+def test_command_emits_native_output_schema_when_supplied():
+    command = CodexInvocationProfile().build_command(
+        "codex", "instruction", output_schema_path="/tmp/schema.json"
+    )
+    assert command[-3:-1] == ["--output-schema", "/tmp/schema.json"]
 
 
 def test_discovery_failure_returns_human_required(monkeypatch, tmp_path):

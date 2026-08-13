@@ -8,6 +8,7 @@ from agf_orchestrator.architect_planning import (
     ArchitectPlanningError,
     ProviderArchitect,
     ProviderInvocationError,
+    architect_response_schema,
     build_architect_request,
     provider_evidence_payload,
     validate_architect_response,
@@ -404,6 +405,22 @@ def test_malformed_structured_response_is_rejected_strictly(tmp_path):
     malformed["proposed_tasks"][0]["allowed_paths"] = ["README.md", 7]
     with pytest.raises(ArchitectPlanningError, match="list fields"):
         validate_architect_response(malformed, request)
+
+
+def test_provider_schema_matches_validator_fields_and_semantics():
+    schema = architect_response_schema()
+    assert set(schema["properties"]) == {
+        "assessment_summary", "proposed_outcome", "rationale", "confidence",
+        "proposed_tasks", "architecture_implications", "preliminary_risk_indicators",
+        "evidence_references", "unresolved_unknowns",
+    }
+    assert schema["properties"]["proposed_tasks"]["items"]["required"]
+    assert len(schema["allOf"]) == 2
+    bounded = schema["allOf"][0]
+    no_work = schema["allOf"][1]
+    assert bounded["then"]["properties"]["proposed_tasks"]["minItems"] == 1
+    assert no_work["then"]["properties"]["proposed_tasks"]["maxItems"] == 0
+    assert no_work["then"]["properties"]["evidence_references"]["minItems"] == 1
 
 
 def test_architect_request_requires_exact_registered_repository_binding(tmp_path):
