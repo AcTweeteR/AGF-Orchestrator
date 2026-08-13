@@ -116,6 +116,81 @@ def test_provider_selection_uses_capability_evidence_and_fallback(tmp_path):
     assert architect.provider_selection["fallback_used"] is True
 
 
+def test_architect_rejects_non_executable_validation_requirement(tmp_path):
+    root = repo(tmp_path)
+    repository = context(root)
+    assessment = assess(repository, PROJECT)
+    payload = response()
+    payload["proposed_tasks"][0]["validation_requirements"] = [
+        "Run the existing test with an available runner."
+    ]
+    with pytest.raises(ArchitectPlanningError, match="executable"):
+        validate_architect_response(
+            json.dumps(payload),
+            build_architect_request(
+                "Improve file:README.md", repository, assessment,
+                registered_project=registration(repository),
+            ),
+        )
+
+
+@pytest.mark.parametrize("command", ["python -m pytest", "git diff --check"])
+def test_architect_accepts_valid_validation_commands(tmp_path, command):
+    root = repo(tmp_path)
+    repository = context(root)
+    assessment = assess(repository, PROJECT)
+    payload = response()
+    payload["proposed_tasks"][0]["validation_requirements"] = [command]
+    validate_architect_response(
+        json.dumps(payload),
+        build_architect_request(
+            "Improve file:README.md", repository, assessment,
+            registered_project=registration(repository),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest;rm", "pytest&&false", "pytest & false", "pytest&false",
+        "pytest$(id)", "`id`", "pytest\nid", "pytest\rid",
+    ],
+)
+def test_architect_rejects_shell_control_in_validation_requirement(tmp_path, command):
+    root = repo(tmp_path)
+    repository = context(root)
+    assessment = assess(repository, PROJECT)
+    payload = response()
+    payload["proposed_tasks"][0]["validation_requirements"] = [command]
+    with pytest.raises(ArchitectPlanningError, match="shell|executable"):
+        validate_architect_response(
+            json.dumps(payload),
+            build_architect_request(
+                "Improve file:README.md", repository, assessment,
+                registered_project=registration(repository),
+            ),
+        )
+
+
+def test_architect_accepts_executable_relative_to_target(tmp_path):
+    root = repo(tmp_path)
+    script = root / "check.sh"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o700)
+    repository = context(root)
+    assessment = assess(repository, PROJECT)
+    payload = response()
+    payload["proposed_tasks"][0]["validation_requirements"] = ["./check.sh"]
+    validate_architect_response(
+        json.dumps(payload),
+        build_architect_request(
+            "Improve file:README.md", repository, assessment,
+            registered_project=registration(repository),
+        ),
+    )
+
+
 def test_unknown_only_provider_is_rejected(tmp_path):
     root = repo(tmp_path)
     repository = context(root)

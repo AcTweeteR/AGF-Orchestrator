@@ -20,6 +20,7 @@ from .capability_selection import (
 from .models import RepositoryContext
 from .remote_identity import RemoteIdentityError, canonical_remote_identity
 from .target_assessment import AssessmentError, TargetAssessment, derive_architecture
+from .validation_commands import validate_commands
 
 
 class ArchitectPlanningError(ValueError):
@@ -978,6 +979,10 @@ def validate_architect_response(
             raise ArchitectPlanningError(f"architect task {index} list fields are invalid")
         if not task["acceptance_criteria"] or not task["validation_requirements"]:
             raise ArchitectPlanningError(f"architect task {index} requires validation criteria")
+        try:
+            validate_commands(task["validation_requirements"], request.repository.root)
+        except ValueError as exc:
+            raise ArchitectPlanningError(str(exc)) from exc
         if (
             not isinstance(task["objective"], str)
             or not isinstance(task["justification"], str)

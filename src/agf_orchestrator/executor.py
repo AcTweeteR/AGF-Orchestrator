@@ -18,9 +18,7 @@ from .execution_models import ExecutionResult, ExecutionStatus
 from .models import ExecutionPlan, PlanStatus, Task, plan_from_dict
 from .preflight import PreflightError, collect_repository
 from .remote_identity import RemoteIdentityError, canonical_remote_identity
-
-CONTROL_SYNTAX = (";", "&&", "||", "|", ">", "<", "`", "$(", "\n")
-SHELL_CONTROL_TOKENS = {";", "&&", "||", "|", ">", "<"}
+from .validation_commands import validate_commands
 
 
 class ExecutionValidationError(ValueError):
@@ -105,37 +103,6 @@ def _normalize_allowed_paths(paths: list[str], repository: str) -> list[str]:
     return normalized
 
 
-def _validate_commands(commands: list[str]) -> list[str]:
-    if not commands:
-        raise ExecutionValidationError("task validation_commands must not be empty")
-    parsed: list[str] = []
-    for command in commands:
-        if not command.strip():
-            raise ExecutionValidationError("validation commands cannot be empty")
-        if any(token in command for token in ("`", "$(", "\n")):
-            raise ExecutionValidationError(
-                f"validation command contains shell control syntax: {command}"
-            )
-        try:
-            lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>")
-            lexer.whitespace_split = True
-            tokens = list(lexer)
-            if any(token in SHELL_CONTROL_TOKENS for token in tokens):
-                raise ExecutionValidationError(
-                    f"validation command contains shell control syntax: {command}"
-                )
-            argv = shlex.split(command)
-        except ValueError as exc:
-            raise ExecutionValidationError(f"invalid validation command: {exc}") from exc
-        if not argv or shutil.which(argv[0]) is None:
-            executable = argv[0] if argv else command
-            raise ExecutionValidationError(
-                f"validation executable cannot be resolved: {executable}"
-            )
-        parsed.append(command)
-    return parsed
-
-
 def _validate_gates(
     plan: ExecutionPlan,
     task: Task,
@@ -192,7 +159,10 @@ def _validate_gates(
     if not task.acceptance_criteria:
         raise GateFailure("task acceptance_criteria must not be empty", evidence)
     checked("acceptance criteria present")
-    _validate_commands(task.validation_commands)
+    try:
+        validate_commands(task.validation_commands, context.root)
+    except ValueError as exc:
+        raise ExecutionValidationError(str(exc)) from exc
     checked("validation commands safe and resolvable")
     if plan.human_intervention:
         raise GateFailure("plan has unresolved human intervention", evidence)

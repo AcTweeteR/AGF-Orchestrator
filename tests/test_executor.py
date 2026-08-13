@@ -236,6 +236,37 @@ def test_quoted_python_validation_command_is_allowed(tmp_path):
     assert result.status is ExecutionStatus.DRY_RUN
 
 
+@pytest.mark.parametrize("command", ["./check.sh", "../check.sh", "pytest & false", "pytest\nid"])
+def test_runtime_validation_uses_target_scoped_command_policy(tmp_path, command):
+    init_repo(tmp_path)
+    outside = tmp_path.parent / "check.sh"
+    outside.write_text("#!/bin/sh\nexit 0\n")
+    outside.chmod(0o700)
+    inside = tmp_path / "check.sh"
+    inside.write_text("#!/bin/sh\nexit 0\n")
+    inside.chmod(0o700)
+    git(tmp_path, "add", "check.sh")
+    git(tmp_path, "commit", "-m", "add validation helper")
+    if command == "./check.sh":
+        expected = ExecutionStatus.DRY_RUN
+    else:
+        expected = ExecutionStatus.BLOCKED
+    task = replace(make_plan(tmp_path).tasks[0], validation_commands=[command])
+    result = Executor().execute(make_plan(tmp_path, task=task), "task-001", str(tmp_path))
+    assert result.status is expected
+
+
+def test_runtime_validation_rejects_symlinked_target_executable(tmp_path):
+    init_repo(tmp_path)
+    outside = tmp_path.parent / "outside-check.sh"
+    outside.write_text("#!/bin/sh\nexit 0\n")
+    outside.chmod(0o700)
+    (tmp_path / "check.sh").symlink_to(outside)
+    task = replace(make_plan(tmp_path).tasks[0], validation_commands=["./check.sh"])
+    result = Executor().execute(make_plan(tmp_path, task=task), "task-001", str(tmp_path))
+    assert result.status is ExecutionStatus.BLOCKED
+
+
 def test_validation_command_timeout_is_reported(tmp_path):
     init_repo(tmp_path)
     task = replace(make_plan(tmp_path).tasks[0], validation_commands=["sleep 1"])
