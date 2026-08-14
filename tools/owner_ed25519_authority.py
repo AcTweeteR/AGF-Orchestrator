@@ -29,6 +29,10 @@ from agf_orchestrator.authority_generation import (
     build_generation,
 )
 from agf_orchestrator.constitution import ConstitutionAuthority, canonical_json
+from agf_orchestrator.historical_evidence import (
+    HistoricalEvidenceError,
+    load_historical_baseline,
+)
 from agf_orchestrator.locking import project_lock
 from agf_orchestrator.owner_authority import (
     PINNED_OWNER_FINGERPRINT,
@@ -191,6 +195,216 @@ def renew_provider_candidate(project_id: str, candidate: Path) -> dict[str, str]
         if current.state_sha256 == previous.state_sha256:
             raise RuntimeError("provider renewal did not create new evidence")
         return {**result, "previous_state_sha256": previous.state_sha256, "renewed": "true"}
+
+
+def create_prospective_baseline(
+    project_id: str, operation_id: str, *, target_sha: str | None = None
+) -> dict[str, object]:
+    """Create one signed prospective historical-evidence checkpoint.
+
+    This is intentionally an external owner operation.  Runtime historical
+    verification has no mutation path and cannot call this function.
+    """
+    if not project_id.startswith("project-") or not operation_id.startswith("historical-baseline-"):
+        raise RuntimeError("baseline identity is invalid")
+    state_dir = _migration_state_dir()
+    with project_lock(state_dir, project_id, "historical-baseline-create"):
+        registry = ProjectRegistry(state_dir)
+        project = registry.verify_read_only(project_id)
+        if project.status.value != "ACTIVE":
+            raise RuntimeError("project registration is not ACTIVE")
+        authority = resolve_authority(project_id)
+        if authority.constitution is None or authority.policy is None or authority.snapshot is None:
+            raise RuntimeError("current project authority is unavailable")
+        root = Path(project.repository_root)
+        observed_sha = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            shell=False,
+        ).stdout.strip()
+        if project.current_head_sha != observed_sha:
+            raise RuntimeError("registered target SHA is stale")
+        if target_sha is not None and target_sha != observed_sha:
+            raise RuntimeError("requested target SHA does not match the registered target")
+        directory = state_dir / "historical-evidence" / project_id
+        baseline_path = directory / "baseline.json"
+        journal_path = directory / "baseline-journal.json"
+        activation_path = directory / "baseline-activation.json"
+        ledger_directory = directory / "ledgers"
+        ledger_paths = {
+            evidence_type: ledger_directory / f"{evidence_type}-ledger.json"
+            for evidence_type in ("rollback", "incident")
+        }
+        if directory.is_symlink() or ledger_directory.is_symlink():
+            raise RuntimeError("historical baseline namespace must not use symlinks")
+        if baseline_path.exists():
+            try:
+                existing = load_historical_baseline(project_id, state_root=state_dir)
+            except HistoricalEvidenceError as exc:
+                raise RuntimeError("existing prospective baseline is invalid") from exc
+            if existing is None or existing.operation_id != operation_id:
+                raise RuntimeError("conflicting active prospective baseline exists")
+            if (
+                existing.target_sha != observed_sha
+                or existing.target_identity != project.origin_url
+            ):
+                raise RuntimeError("idempotent baseline request binding differs")
+            return {
+                "status": "ALREADY_COMMITTED",
+                "project_id": project_id,
+                "baseline_id": existing.baseline_id,
+                "operation_id": operation_id,
+                "target_sha": observed_sha,
+                "coverage_start": existing.coverage_start,
+                "baseline_generation": existing.baseline_generation,
+            }
+        if journal_path.exists():
+            journal = _read_object(journal_path).get("payload", {})
+            if journal.get("operation_id") == operation_id:
+                if journal.get("status") == "PREPARED":
+                    raise RuntimeError("incomplete baseline activation requires explicit recovery")
+                raise RuntimeError("baseline operation has already been consumed")
+            raise RuntimeError("conflicting baseline journal exists")
+        if any(path.exists() or path.is_symlink() for path in ledger_paths.values()):
+            raise RuntimeError("conflicting prospective evidence ledger exists")
+        generation = int(authority.snapshot["generation"])
+        now = _now()
+        baseline_id = "baseline-" + hashlib.sha256(
+            canonical_bytes(
+                {
+                    "project_id": project_id,
+                    "target_sha": observed_sha,
+                    "operation_id": operation_id,
+                }
+            )
+        ).hexdigest()[:16]
+        source_set = [
+            f"ledger:{project_id}:ledgers/rollback-ledger.json",
+            f"ledger:{project_id}:ledgers/incident-ledger.json",
+        ]
+        ledger_payloads = {
+            "rollback": {
+                "schema_version": "1.0",
+                "project_id": project_id,
+                "baseline_id": baseline_id,
+                "evidence_type": "rollback",
+                "coverage_before_baseline": "UNKNOWN",
+                "coverage_start": now,
+                "coverage_status_from_baseline": "AUTHORITATIVE",
+                "qualifying_event_definition": "agf-historical-events-v1",
+                "records": [],
+                "provenance": "external-owner-controller:prospective-baseline",
+            },
+            "incident": {
+                "schema_version": "1.0",
+                "project_id": project_id,
+                "baseline_id": baseline_id,
+                "evidence_type": "incident",
+                "coverage_before_baseline": "UNKNOWN",
+                "coverage_start": now,
+                "coverage_status_from_baseline": "AUTHORITATIVE",
+                "qualifying_event_definition": "agf-historical-events-v1",
+                "records": [],
+                "provenance": "external-owner-controller:prospective-baseline",
+            },
+        }
+        source_hashes = [
+            _object_hash(ledger_payloads["rollback"]),
+            _object_hash(ledger_payloads["incident"]),
+        ]
+        payload = {
+            "schema_version": "1.0",
+            "baseline_id": baseline_id,
+            "project_id": project_id,
+            "target_identity": project.origin_url,
+            "target_sha": observed_sha,
+            "coverage_start": now,
+            "policy_id": authority.policy.policy_id,
+            "policy_hash": authority.policy.policy_hash,
+            "policy_generation": generation,
+            "constitution_id": authority.constitution.constitution_id,
+            "constitution_record_hash": authority.constitution.record_hash,
+            "authority_generation": generation,
+            "owner_fingerprint": PINNED_OWNER_FINGERPRINT,
+            "evidence_definition_version": "agf-historical-events-v1",
+            "source_set": source_set,
+            "source_hashes": source_hashes,
+            "baseline_generation": 1,
+            "predecessor_baseline_hash": None,
+            "operation_id": operation_id,
+            "generated_at": now,
+            "provenance": "external-owner-controller:prospective-baseline;pre-baseline=UNKNOWN",
+        }
+        envelope = sign_envelope(payload, _generation_root())
+        baseline_hash = hashlib.sha256(canonical_bytes(payload)).hexdigest()
+        journal_payload = {
+            "schema_version": "1.0",
+            "status": "PREPARED",
+            "project_id": project_id,
+            "baseline_id": baseline_id,
+            "baseline_hash": baseline_hash,
+            "baseline_generation": 1,
+            "operation_id": operation_id,
+            "target_sha": observed_sha,
+            "source_hashes": source_hashes,
+            "created_at": now,
+        }
+        _atomic_write(
+            journal_path,
+            {
+                "payload": journal_payload,
+                "envelope": sign_envelope(journal_payload, _generation_root()),
+            },
+        )
+        for evidence_type, ledger_payload in ledger_payloads.items():
+            _atomic_write(ledger_paths[evidence_type], ledger_payload)
+        _atomic_write(baseline_path, {"payload": payload, "envelope": envelope})
+        journal_payload = {**journal_payload, "status": "COMMITTED"}
+        _atomic_write(
+            journal_path,
+            {
+                "payload": journal_payload,
+                "envelope": sign_envelope(journal_payload, _generation_root()),
+            },
+        )
+        activation_payload = {
+            "schema_version": "1.0",
+            "status": "COMMITTED",
+            "project_id": project_id,
+            "baseline_id": baseline_id,
+            "baseline_hash": baseline_hash,
+            "journal_hash": _object_hash(journal_payload),
+            "source_hashes": source_hashes,
+            "operation_id": operation_id,
+            "committed_at": _now(),
+        }
+        _atomic_write(
+            activation_path,
+            {
+                "payload": activation_payload,
+                "envelope": sign_envelope(activation_payload, _generation_root()),
+            },
+        )
+        try:
+            verified = load_historical_baseline(project_id, state_root=state_dir)
+        except HistoricalEvidenceError as exc:
+            raise RuntimeError("prospective baseline post-commit verification failed") from exc
+        if verified is None or verified.baseline_id != baseline_id:
+            raise RuntimeError("prospective baseline verification failed")
+        return {
+            "status": "COMMITTED",
+            "project_id": project_id,
+            "baseline_id": baseline_id,
+            "operation_id": operation_id,
+            "target_sha": observed_sha,
+            "coverage_start": now,
+            "baseline_generation": 1,
+            "authority_generation": generation,
+            "pre_baseline": "UNKNOWN",
+            "post_baseline": "AUTHORITATIVE",
+        }
 
 
 def _require_fresh_profile_observations(previous, proposed) -> None:
@@ -616,6 +830,8 @@ def main() -> int:
     parser.add_argument("--verify-generation")
     parser.add_argument("--cutover-generation")
     parser.add_argument("--renew-provider-candidate")
+    parser.add_argument("--create-prospective-baseline", action="store_true")
+    parser.add_argument("--target-sha")
     args = parser.parse_args()
     if args.prepare_generation:
         result = prepare_ed25519_generation(args.project, args.operation_id)
@@ -625,6 +841,10 @@ def main() -> int:
         result = cutover_ed25519_generation(args.project, args.cutover_generation)
     elif args.renew_provider_candidate:
         result = renew_provider_candidate(args.project, Path(args.renew_provider_candidate))
+    elif args.create_prospective_baseline:
+        result = create_prospective_baseline(
+            args.project, args.operation_id, target_sha=args.target_sha
+        )
     else:
         result = prepare_root(args.project, args.operation_id, Path.home() / ".agf-owner-root")
     print(json.dumps(result, sort_keys=True))

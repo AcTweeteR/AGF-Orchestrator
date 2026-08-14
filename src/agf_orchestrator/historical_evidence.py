@@ -17,6 +17,7 @@ from typing import Any
 
 from .authority_context import resolve_authority
 from .owner_authority import OwnerAuthorityError, verify_envelope
+from .project_registry import ProjectRegistry
 
 
 class HistoricalEvidenceError(ValueError):
@@ -32,6 +33,19 @@ class HistoricalBaseline:
     constitution_id: str
     authority_generation: int
     generated_at: str
+    target_identity: str | None = None
+    target_sha: str | None = None
+    policy_id: str | None = None
+    policy_generation: int | None = None
+    constitution_record_hash: str | None = None
+    owner_fingerprint: str | None = None
+    evidence_definition_version: str | None = None
+    source_set: tuple[str, ...] = ()
+    source_hashes: tuple[str, ...] = ()
+    baseline_generation: int | None = None
+    predecessor_baseline_hash: str | None = None
+    operation_id: str | None = None
+    authoritative: bool = False
 
 
 class EvidenceStatus(StrEnum):
@@ -42,6 +56,7 @@ class EvidenceStatus(StrEnum):
 
 _PROJECT = re.compile(r"^project-[0-9a-f]{16}$")
 _HEX = re.compile(r"^[0-9a-f]{64}$")
+_TARGET_SHA = re.compile(r"^[0-9a-f]{40,64}$")
 _BASELINE = re.compile(r"^baseline-[a-z0-9-]{8,80}$")
 _TYPES = frozenset({"rollback", "incident"})
 
@@ -217,12 +232,22 @@ def load_historical_baseline(
         raise HistoricalEvidenceError("historical baseline signature is invalid") from exc
     except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise HistoricalEvidenceError("historical baseline is unreadable") from exc
-    required = {
+    legacy_required = {
         "schema_version", "baseline_id", "project_id", "coverage_start",
         "policy_hash", "constitution_id", "authority_generation", "generated_at",
         "provenance",
     }
-    if set(payload) != required or payload["schema_version"] != "1.0":
+    extended_required = legacy_required | {
+        "target_identity", "target_sha", "policy_id", "policy_generation",
+        "constitution_record_hash", "owner_fingerprint", "evidence_definition_version",
+        "source_set", "source_hashes", "baseline_generation", "predecessor_baseline_hash",
+        "operation_id",
+    }
+    payload_keys = set(payload)
+    if (
+        payload_keys not in (legacy_required, extended_required)
+        or payload["schema_version"] != "1.0"
+    ):
         raise HistoricalEvidenceError("historical baseline schema is invalid")
     if payload["project_id"] != project_id or not _BASELINE.fullmatch(payload["baseline_id"]):
         raise HistoricalEvidenceError("historical baseline binding is invalid")
@@ -230,6 +255,37 @@ def load_historical_baseline(
         raise HistoricalEvidenceError("historical baseline policy is invalid")
     if not isinstance(payload["authority_generation"], int) or payload["authority_generation"] < 1:
         raise HistoricalEvidenceError("historical baseline generation is invalid")
+    if payload_keys == extended_required:
+        if (
+            not isinstance(payload["target_identity"], str)
+            or not payload["target_identity"]
+            or not isinstance(payload["target_sha"], str)
+            or not _TARGET_SHA.fullmatch(payload["target_sha"])
+            or not isinstance(payload["policy_id"], str)
+            or not payload["policy_id"]
+            or not isinstance(payload["policy_generation"], int)
+            or payload["policy_generation"] < 1
+            or not _HEX.fullmatch(payload["constitution_record_hash"])
+            or payload["owner_fingerprint"]
+            != "d23e23484571f256610658dd2b851ef3e4144dbd03827b8a66ee421c93ffe42a"
+            or not isinstance(payload["evidence_definition_version"], str)
+            or not payload["evidence_definition_version"]
+            or not isinstance(payload["source_set"], list)
+            or not payload["source_set"]
+            or any(not isinstance(item, str) or not item for item in payload["source_set"])
+            or not isinstance(payload["source_hashes"], list)
+            or len(payload["source_hashes"])
+            != len(payload["source_set"])
+            or any(
+                not isinstance(item, str) or not _HEX.fullmatch(item)
+                for item in payload["source_hashes"]
+            )
+            or payload["baseline_generation"] != 1
+            or payload["predecessor_baseline_hash"] is not None
+            or not isinstance(payload["operation_id"], str)
+            or not payload["operation_id"].startswith("historical-baseline-")
+        ):
+            raise HistoricalEvidenceError("historical baseline extended bindings are invalid")
     try:
         _timestamp(payload["coverage_start"])
         generated = _timestamp(payload["generated_at"])
@@ -245,9 +301,85 @@ def load_historical_baseline(
         payload["baseline_id"], project_id, payload["coverage_start"],
         payload["policy_hash"], payload["constitution_id"],
         payload["authority_generation"], payload["generated_at"],
+        payload.get("target_identity"), payload.get("target_sha"), payload.get("policy_id"),
+        payload.get("policy_generation"), payload.get("constitution_record_hash"),
+        payload.get("owner_fingerprint"), payload.get("evidence_definition_version"),
+        tuple(payload.get("source_set", ())), tuple(payload.get("source_hashes", ())),
+        payload.get("baseline_generation"),
+        payload.get("predecessor_baseline_hash"), payload.get("operation_id"),
+        payload_keys == extended_required,
     )
+    if payload_keys == extended_required:
+        journal_path = directory / "baseline-journal.json"
+        activation_path = directory / "baseline-activation.json"
+        try:
+            if journal_path.is_symlink():
+                raise HistoricalEvidenceError("historical baseline journal must not use symlinks")
+            if activation_path.is_symlink():
+                raise HistoricalEvidenceError(
+                    "historical baseline activation must not use symlinks"
+                )
+            journal_document = json.loads(journal_path.read_text(encoding="utf-8"))
+            verify_envelope(journal_document["payload"], journal_document["envelope"])
+            journal = journal_document["payload"]
+            if (
+                journal.get("status") != "COMMITTED"
+                or journal.get("operation_id") != baseline.operation_id
+                or journal.get("project_id") != project_id
+                or journal.get("baseline_id") != baseline.baseline_id
+                or journal.get("target_sha") != baseline.target_sha
+                or tuple(journal.get("source_hashes", ())) != baseline.source_hashes
+                or journal.get("baseline_hash") != hashlib.sha256(
+                    json.dumps(
+                        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                    ).encode()
+                ).hexdigest()
+                or journal.get("baseline_generation") != baseline.baseline_generation
+            ):
+                raise HistoricalEvidenceError("historical baseline journal is invalid")
+            activation_document = json.loads(activation_path.read_text(encoding="utf-8"))
+            verify_envelope(activation_document["payload"], activation_document["envelope"])
+            activation = activation_document["payload"]
+            if (
+                activation.get("status") != "COMMITTED"
+                or activation.get("project_id") != project_id
+                or activation.get("baseline_id") != baseline.baseline_id
+                or activation.get("baseline_hash") != _object_hash(payload)
+                or activation.get("journal_hash") != _object_hash(journal)
+                or tuple(activation.get("source_hashes", ())) != baseline.source_hashes
+            ):
+                raise HistoricalEvidenceError("historical baseline activation is invalid")
+            for source_ref, expected_hash in zip(baseline.source_set, baseline.source_hashes):
+                prefix = f"ledger:{project_id}:"
+                if not source_ref.startswith(prefix):
+                    raise HistoricalEvidenceError("historical baseline source binding is invalid")
+                source_path = directory / source_ref[len(prefix):]
+                if source_path.is_symlink() or not source_path.is_file():
+                    raise HistoricalEvidenceError("historical baseline source is unavailable")
+                source_payload = json.loads(source_path.read_text(encoding="utf-8"))
+                if _object_hash(source_payload) != expected_hash:
+                    raise HistoricalEvidenceError("historical baseline source integrity is invalid")
+                if (
+                    source_payload.get("project_id") != project_id
+                    or source_payload.get("baseline_id") != baseline.baseline_id
+                    or source_payload.get("coverage_before_baseline") != "UNKNOWN"
+                    or source_payload.get("coverage_status_from_baseline") != "AUTHORITATIVE"
+                ):
+                    raise HistoricalEvidenceError("historical baseline source binding is invalid")
+        except HistoricalEvidenceError:
+            raise
+        except (
+            OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError
+        ) as exc:
+            raise HistoricalEvidenceError("historical baseline journal is unavailable") from exc
     verify_current_baseline_bindings(baseline)
     return baseline
+
+
+def _object_hash(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
 
 
 def _parse(payload: Any, evidence_type: str, *, expected_project_id: str) -> HistoricalEvidence:
@@ -370,3 +502,24 @@ def verify_current_baseline_bindings(baseline: HistoricalBaseline) -> None:
         raise HistoricalEvidenceError("historical baseline policy binding is stale")
     if baseline.authority_generation != int(resolved.snapshot["generation"]):
         raise HistoricalEvidenceError("historical baseline generation is stale")
+    if baseline.policy_id is not None and baseline.policy_id != resolved.policy.policy_id:
+        raise HistoricalEvidenceError("historical baseline policy identity is stale")
+    if baseline.policy_generation is not None and baseline.policy_generation != int(
+        resolved.snapshot["generation"]
+    ):
+        raise HistoricalEvidenceError("historical baseline policy generation is stale")
+    if baseline.constitution_record_hash is not None and baseline.constitution_record_hash != (
+        resolved.constitution.record_hash
+    ):
+        raise HistoricalEvidenceError("historical baseline Constitution hash is stale")
+    if baseline.owner_fingerprint is not None and baseline.owner_fingerprint != (
+        "d23e23484571f256610658dd2b851ef3e4144dbd03827b8a66ee421c93ffe42a"
+    ):
+        raise HistoricalEvidenceError("historical baseline owner authority is stale")
+    if baseline.target_identity is not None:
+        project = ProjectRegistry().get(baseline.project_id)
+        if (
+            project.origin_url != baseline.target_identity
+            or project.current_head_sha != baseline.target_sha
+        ):
+            raise HistoricalEvidenceError("historical baseline target identity is stale")

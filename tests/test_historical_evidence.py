@@ -315,9 +315,11 @@ def test_valid_ed25519_record_is_consumed_with_pinned_test_anchor(monkeypatch, t
         json.dumps({"payload": baseline_payload, "envelope": baseline_envelope}),
         encoding="utf-8",
     )
-    assert load_historical_baseline(
+    legacy_baseline = load_historical_baseline(
         "project-ec392dd7e95cf253", state_root=tmp_path
-    ).baseline_id == "baseline-test-00000000"
+    )
+    assert legacy_baseline.baseline_id == "baseline-test-00000000"
+    assert legacy_baseline.authoritative is False
     document = payload()
     document["coverage_start"] = (now - timedelta(hours=1)).isoformat()
     document["coverage_end"] = now.isoformat()
@@ -357,7 +359,4 @@ def test_valid_ed25519_record_is_consumed_with_pinned_test_anchor(monkeypatch, t
     prospective = _load_prospective_evidence(
         "project-ec392dd7e95cf253", "incident", now.isoformat(), 86400
     )
-    assert prospective is not None
-    assert prospective.baseline_id == "baseline-test-00000000"
-    assert prospective.coverage_before_baseline == "UNKNOWN"
-    assert prospective.evidence_hash == document["evidence_hash"]
+    assert prospective is None

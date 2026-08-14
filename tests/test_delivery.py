@@ -110,7 +110,9 @@ def test_prospective_evidence_uses_persisted_baseline_and_preserves_unknown(monk
     monkeypatch.setattr(
         "agf_orchestrator.delivery.load_historical_baseline",
         lambda *args, **kwargs: SimpleNamespace(
-            baseline_id=evidence.baseline_id, coverage_start=evidence.coverage_start
+            baseline_id=evidence.baseline_id,
+            coverage_start=evidence.coverage_start,
+            authoritative=True,
         ),
     )
     assert _load_prospective_evidence("project-ec392dd7e95cf253", "incident", decision, 86400)
@@ -132,7 +134,9 @@ def test_future_prospective_evidence_does_not_authorize_current_decision(monkeyp
     monkeypatch.setattr(
         "agf_orchestrator.delivery.load_historical_baseline",
         lambda *args, **kwargs: SimpleNamespace(
-            baseline_id=evidence.baseline_id, coverage_start=evidence.coverage_start
+            baseline_id=evidence.baseline_id,
+            coverage_start=evidence.coverage_start,
+            authoritative=True,
         ),
     )
     assert _load_prospective_evidence(
@@ -160,6 +164,7 @@ def test_mismatched_baseline_keeps_delivery_risk_fail_closed(monkeypatch, tmp_pa
         lambda *args, **kwargs: SimpleNamespace(
             baseline_id="baseline-different-00000000",
             coverage_start=evidence.coverage_start,
+            authoritative=True,
         ),
     )
     monkeypatch.setattr(
@@ -190,7 +195,7 @@ def test_unequal_historical_snapshots_fail_closed(monkeypatch, tmp_path):
         constitution_id="constitution-v1", authority_generation=1,
         baseline_id="baseline-test-00000000", coverage_before_baseline="UNKNOWN",
         coverage_start="2026-08-14T08:12:35+00:00", status=SimpleNamespace(value="VERIFIED_ZERO"),
-        count=0, evidence_hash="a" * 64,
+        count=0, evidence_hash="a" * 64, authoritative=True,
     )
     rollback = SimpleNamespace(**base.__dict__, coverage_end="2026-08-14T08:20:00+00:00")
     incident = SimpleNamespace(**base.__dict__, coverage_end="2026-08-14T08:21:00+00:00")
