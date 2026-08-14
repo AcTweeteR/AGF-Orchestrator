@@ -7,9 +7,11 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from agf_orchestrator.delivery import _load_prospective_evidence
 from agf_orchestrator.historical_evidence import (
     EvidenceStatus,
     HistoricalEvidenceError,
+    load_historical_baseline,
     load_historical_evidence,
 )
 
@@ -25,6 +27,8 @@ def payload(project="project-ec392dd7e95cf253", evidence_type="incident", count=
             else EvidenceStatus.VERIFIED_EVENTS.value
         ),
         "count": count,
+        "baseline_id": "baseline-test-00000000",
+        "coverage_before_baseline": "UNKNOWN",
         "coverage_start": "2026-08-13T12:28:22+00:00",
         "coverage_end": "2026-08-14T12:28:22+00:00",
         "definition_version": "1.0",
@@ -122,6 +126,28 @@ def test_stale_or_narrow_coverage_is_unknown(monkeypatch, tmp_path):
     ) is None
 
 
+def test_generated_before_coverage_start_is_unknown(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "agf_orchestrator.historical_evidence.verify_envelope", lambda payload, envelope: None
+    )
+    path = tmp_path / "historical-evidence" / "project-ec392dd7e95cf253"
+    path.mkdir(parents=True)
+    document = payload()
+    document["generated_at"] = "2026-08-13T12:00:00+00:00"
+    document["evidence_hash"] = hashlib.sha256(
+        json.dumps(
+            {key: value for key, value in document.items() if key != "evidence_hash"},
+            sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
+    (path / "incident.json").write_text(
+        json.dumps({"payload": document, "envelope": envelope(document)}), encoding="utf-8"
+    )
+    assert load_historical_evidence(
+        "project-ec392dd7e95cf253", "incident", state_root=tmp_path
+    ) is None
+
+
 def test_valid_ed25519_record_is_consumed_with_pinned_test_anchor(monkeypatch, tmp_path):
     key = Ed25519PrivateKey.generate()
     public = key.public_key().public_bytes(
@@ -142,7 +168,40 @@ def test_valid_ed25519_record_is_consumed_with_pinned_test_anchor(monkeypatch, t
     monkeypatch.setattr(
         "agf_orchestrator.owner_authority.PINNED_OWNER_FINGERPRINT", fingerprint
     )
+    monkeypatch.setattr(
+        "agf_orchestrator.historical_evidence.verify_current_baseline_bindings",
+        lambda baseline: None,
+    )
     now = datetime.now(UTC).replace(microsecond=0)
+    baseline_payload = {
+        "schema_version": "1.0",
+        "baseline_id": "baseline-test-00000000",
+        "project_id": "project-ec392dd7e95cf253",
+        "coverage_start": (now - timedelta(hours=1)).isoformat(),
+        "policy_hash": "b" * 64,
+        "constitution_id": "constitution-v1",
+        "authority_generation": 1,
+        "generated_at": now.isoformat(),
+        "provenance": "owner-controller:test",
+    }
+    baseline_bytes = json.dumps(
+        baseline_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+    baseline_envelope = {
+        "signature_scheme": "Ed25519", "signature_version": "1", "key_id": "owner-key-1",
+        "public_key_fingerprint": fingerprint,
+        "payload_hash": hashlib.sha256(baseline_bytes).hexdigest(),
+        "signature": base64.b64encode(key.sign(baseline_bytes)).decode(),
+    }
+    path = tmp_path / "historical-evidence" / "project-ec392dd7e95cf253"
+    path.mkdir(parents=True)
+    (path / "baseline.json").write_text(
+        json.dumps({"payload": baseline_payload, "envelope": baseline_envelope}),
+        encoding="utf-8",
+    )
+    assert load_historical_baseline(
+        "project-ec392dd7e95cf253", state_root=tmp_path
+    ).baseline_id == "baseline-test-00000000"
     document = payload()
     document["coverage_start"] = (now - timedelta(hours=1)).isoformat()
     document["coverage_end"] = now.isoformat()
@@ -160,8 +219,6 @@ def test_valid_ed25519_record_is_consumed_with_pinned_test_anchor(monkeypatch, t
         "payload_hash": hashlib.sha256(canonical).hexdigest(),
         "signature": base64.b64encode(key.sign(canonical)).decode(),
     }
-    path = tmp_path / "historical-evidence" / "project-ec392dd7e95cf253"
-    path.mkdir(parents=True)
     (path / "incident.json").write_text(
         json.dumps({"payload": document, "envelope": signed}), encoding="utf-8"
     )
@@ -171,3 +228,20 @@ def test_valid_ed25519_record_is_consumed_with_pinned_test_anchor(monkeypatch, t
     )
     assert verified is not None
     assert verified.status is EvidenceStatus.VERIFIED_ZERO
+    monkeypatch.setattr(
+        "agf_orchestrator.delivery.load_historical_baseline",
+        lambda project_id, **kwargs: load_historical_baseline(project_id, state_root=tmp_path),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.delivery.load_historical_evidence",
+        lambda project_id, evidence_type, **kwargs: load_historical_evidence(
+            project_id, evidence_type, state_root=tmp_path
+        ),
+    )
+    prospective = _load_prospective_evidence(
+        "project-ec392dd7e95cf253", "incident", now.isoformat(), 86400
+    )
+    assert prospective is not None
+    assert prospective.baseline_id == "baseline-test-00000000"
+    assert prospective.coverage_before_baseline == "UNKNOWN"
+    assert prospective.evidence_hash == document["evidence_hash"]

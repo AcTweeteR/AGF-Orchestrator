@@ -1,11 +1,13 @@
 import subprocess
 from dataclasses import replace
+from types import SimpleNamespace
 
 from agf_orchestrator.adapters.codex import CodexAdapter, CodexInvocationProfile
 from agf_orchestrator.delivery import (
     Attempt,
     DeliveryPipeline,
     PatchArtifact,
+    _load_prospective_evidence,
     _patch_policy,
     _risk_assessment_for_attempt,
 )
@@ -88,6 +90,94 @@ def plan_for(root):
     )
     plan.validate()
     return plan
+
+
+def test_prospective_evidence_uses_persisted_baseline_and_preserves_unknown(monkeypatch):
+    decision = "2026-08-14T08:15:00+00:00"
+    evidence = SimpleNamespace(
+        baseline_id="baseline-test-00000000",
+        coverage_before_baseline="UNKNOWN",
+        coverage_start="2026-08-14T08:12:35+00:00",
+        coverage_end=decision,
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.delivery.load_historical_evidence",
+        lambda *args, **kwargs: evidence,
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.delivery.load_historical_baseline",
+        lambda *args, **kwargs: SimpleNamespace(
+            baseline_id=evidence.baseline_id, coverage_start=evidence.coverage_start
+        ),
+    )
+    assert _load_prospective_evidence("project-ec392dd7e95cf253", "incident", decision, 86400)
+    assert evidence.coverage_before_baseline == "UNKNOWN"
+
+
+def test_narrow_prospective_evidence_does_not_authorize_current_decision(monkeypatch):
+    decision = "2026-08-14T08:15:00+00:00"
+    evidence = SimpleNamespace(
+        baseline_id="baseline-test-00000000",
+        coverage_before_baseline="UNKNOWN",
+        coverage_start="2026-08-14T08:12:35+00:00",
+        coverage_end="2026-08-14T08:14:59+00:00",
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.delivery.load_historical_evidence",
+        lambda *args, **kwargs: evidence,
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.delivery.load_historical_baseline",
+        lambda *args, **kwargs: SimpleNamespace(
+            baseline_id=evidence.baseline_id, coverage_start=evidence.coverage_start
+        ),
+    )
+    assert _load_prospective_evidence(
+        "project-ec392dd7e95cf253", "incident", decision, 86400
+    ) is None
+
+
+def test_mismatched_baseline_keeps_delivery_risk_fail_closed(monkeypatch, tmp_path):
+    root = setup_repo(tmp_path)
+    evidence = SimpleNamespace(
+        baseline_id="baseline-evidence-00000000",
+        coverage_before_baseline="UNKNOWN",
+        coverage_start="2026-08-14T08:12:35+00:00",
+        coverage_end="2026-08-14T08:20:00+00:00",
+        status=SimpleNamespace(value="VERIFIED_ZERO"),
+        count=0,
+        evidence_hash="a" * 64,
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.delivery.load_historical_evidence",
+        lambda *args, **kwargs: evidence,
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.delivery.load_historical_baseline",
+        lambda *args, **kwargs: SimpleNamespace(
+            baseline_id="baseline-different-00000000",
+            coverage_start=evidence.coverage_start,
+        ),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.delivery.resolve_authority",
+        lambda project_id: SimpleNamespace(
+            constitution=SimpleNamespace(constitution_id="constitution-v1"),
+            policy=SimpleNamespace(
+                freshness_limits={"policy_seconds": 86400}, policy_hash="b" * 64
+            ),
+            snapshot={"generation": 1},
+        ),
+    )
+    report = _risk_assessment_for_attempt(
+        plan_for(root), plan_for(root).tasks[0], Attempt(
+            ExecutionStatus.COMPLETED, ["allowed.txt"], ["validation: exit_code=0"], [], [],
+            PatchArtifact("/tmp/patch", "a" * 64, ["allowed.txt"], "patch"), True,
+        ), ReviewReport("reviewer", ReviewStatus.APPROVE, [], [], []),
+        project_id="project-ec392dd7e95cf253", delivery_id="delivery-mismatched-baseline",
+    )
+    assert report.level.name == "CRITICAL"
+    assert "risk-fact:rollback=UNKNOWN" in report.evidence_refs
 
 
 def fake_adapter(tmp_path, body=None):
