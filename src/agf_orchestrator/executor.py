@@ -144,6 +144,10 @@ def _validate_gates(
     checked("repository identity")
     if Path(context.root).resolve() != Path(plan.repository.root).resolve():
         raise GateFailure("repository does not match the plan repository context", evidence)
+    if context.branch != plan.repository.branch:
+        raise GateFailure("repository branch does not match the plan", evidence)
+    if context.head_sha != plan.repository.head_sha:
+        raise GateFailure("repository base SHA does not match the plan", evidence)
     try:
         origin_matches = canonical_remote_identity(context.origin) == canonical_remote_identity(
             plan.repository.origin
@@ -153,10 +157,11 @@ def _validate_gates(
     if not origin_matches:
         raise GateFailure("repository origin does not match the plan", evidence)
     checked("named non-default branch")
-    if context.branch in {"main", "master"} and not allow_default_branch:
-        raise GateFailure("live execution is blocked on main or master", evidence)
-    if context.branch in {"main", "master"} and allow_default_branch:
-        checked("controlled delivery from default branch")
+    if context.branch in {"main", "master"}:
+        evidence.append(
+            "controlled execution from default branch: caller remains unchanged; "
+            "implementation uses an isolated temporary worktree"
+        )
     checked("clean repository")
     checked("origin present")
     checked("HEAD resolvable")
@@ -225,7 +230,17 @@ def _run_validations(
 def _create_worktree(repository: str, head_sha: str) -> str:
     worktree = tempfile.mkdtemp(prefix="agf-execution-")
     os.rmdir(worktree)
+    registered = False
     try:
+        current_head = subprocess.run(
+            ["git", "-C", repository, "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            shell=False,
+        ).stdout.strip()
+        if current_head != head_sha:
+            raise ExecutionValidationError("repository HEAD changed before isolated execution")
         subprocess.run(
             ["git", "-C", repository, "worktree", "add", "--detach", worktree, head_sha],
             check=True,
@@ -233,7 +248,34 @@ def _create_worktree(repository: str, head_sha: str) -> str:
             text=True,
             shell=False,
         )
+        registered = True
+        current_after_add = subprocess.run(
+            ["git", "-C", repository, "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            shell=False,
+        ).stdout.strip()
+        if current_after_add != head_sha:
+            subprocess.run(
+                ["git", "-C", repository, "worktree", "remove", "--force", worktree],
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=False,
+            )
+            raise ExecutionValidationError(
+                "repository HEAD changed during isolated worktree creation"
+            )
     except Exception:
+        if registered:
+            subprocess.run(
+                ["git", "-C", repository, "worktree", "remove", "--force", worktree],
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=False,
+            )
         shutil.rmtree(worktree, ignore_errors=True)
         raise
     return worktree
@@ -350,6 +392,17 @@ class Executor:
                 validation_commands=task.validation_commands,
                 stop_conditions=["scope expansion", "missing context", "architecture uncertainty"],
             )
+            current_head = subprocess.run(
+                ["git", "-C", context.root, "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+                shell=False,
+            ).stdout.strip()
+            if current_head != context.head_sha:
+                raise ExecutionValidationError(
+                    "repository HEAD changed before provider invocation"
+                )
             process = self.adapter.execute(instruction, worktree)
             evidence.append(f"{invocation_label}: yes")
             if self.adapter.name == "openhands":
@@ -443,7 +496,7 @@ class Executor:
                     if validations_passed:
                         status = ExecutionStatus.COMPLETED
                         evidence.append("validated changes remain unapplied to caller repository")
-        except (OSError, subprocess.CalledProcessError) as exc:
+        except (ExecutionValidationError, OSError, subprocess.CalledProcessError) as exc:
             blockers.append(f"isolated execution failed: {redact_secrets(str(exc))}")
         finally:
             cleanup_success = True
