@@ -22,7 +22,11 @@ from .architect_planning import (
 from .authority_context import AuthorityContextError
 from .capability_selection import CapabilityCandidate, SelectionGates
 from .constitution import ConstitutionAuthority, ConstitutionVerificationError
-from .delivery_reconciliation import DeliveryIntentStore, DeliveryReconciliationError
+from .delivery_reconciliation import (
+    DeliveryIntentStore,
+    DeliveryReceipt,
+    DeliveryReconciliationError,
+)
 from .director import Director
 from .locking import lock_status, project_lock, session_lock
 from .models import PlanStatus, plan_from_dict
@@ -1401,12 +1405,68 @@ class SessionManager:
         expected_hash = session.artifact_hashes.get("predecessor_plan")
         if not lineage or not lineage_hash or not expected_hash or lineage_hash != expected_hash:
             raise SessionManagerError("persisted plan lineage is incomplete")
+        allowed_heads = None
+        reconciliation = scope.get("delivery_reconciliation")
+        if reconciliation is not None:
+            try:
+                delivery_id = reconciliation["delivery_id"]
+                intent = DeliveryIntentStore(self.store.state_dir).get(
+                    project.project_id, delivery_id
+                )
+                receipt_path = DeliveryIntentStore(self.store.state_dir).receipt_path(
+                    project.project_id, delivery_id
+                )
+                if receipt_path.is_symlink():
+                    raise SessionManagerError("persisted delivery receipt must not be a symlink")
+                receipt_payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+                receipt_hash = receipt_payload.pop("receipt_sha256")
+                receipt = DeliveryReceipt(**receipt_payload, receipt_sha256=receipt_hash)
+                expected_receipt_hash = hashlib.sha256(
+                    json.dumps(
+                        receipt_payload, sort_keys=True, separators=(",", ":")
+                    ).encode()
+                ).hexdigest()
+                if (
+                    intent is None
+                    or intent.session_id != session.session_id
+                    or intent.candidate_sha != session.base_sha
+                    or intent.content_sha256 != reconciliation["intent_hash"]
+                    or receipt.receipt_sha256 != expected_receipt_hash
+                    or receipt.receipt_sha256 != reconciliation["receipt_hash"]
+                    or receipt.delivery_id != delivery_id
+                    or receipt.project_id != project.project_id
+                    or parse_remote_url(intent.repository_identity).identity
+                    != parse_remote_url(project.origin_url).identity
+                    or receipt.repository_identity != intent.repository_identity
+                    or parse_remote_url(receipt.repository_identity).identity
+                    != parse_remote_url(project.origin_url).identity
+                    or receipt.base_sha != intent.base_sha
+                    or receipt.intent_hash != intent.content_sha256
+                    or receipt.observed_tree_sha != intent.candidate_tree_sha
+                    or receipt.diff_sha256 != intent.diff_sha256
+                    or receipt.state != "VERIFIED"
+                    or receipt.observed_sha != session.base_sha
+                    or reconciliation["observed_sha"] != receipt.observed_sha
+                    or reconciliation["completed_task_id"] != intent.task_id
+                ):
+                    raise SessionManagerError("persisted delivery lineage binding is invalid")
+                allowed_heads = {intent.base_sha}
+            except (
+                DeliveryReconciliationError,
+                OSError,
+                json.JSONDecodeError,
+                KeyError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                raise SessionManagerError("persisted delivery lineage binding is invalid") from exc
         _validate_predecessor_chain(
             lineage,
             lineage_hash,
             (self.store.artifacts_dir / session.session_id).resolve(),
             project,
             self.store.ensure_safe_path,
+            allowed_heads,
         )
 
     def _validate_plan_identity(self, session: Session, project) -> None:
