@@ -38,6 +38,7 @@ from .git_delivery import (
 )
 from .historical_evidence import (
     EvidenceStatus,
+    load_historical_baseline,
     load_historical_evidence,
     verify_current_bindings,
 )
@@ -378,6 +379,13 @@ def _integrity_bound_decision(
     active = resolved.policy
     if active is None:
         raise ExecutionValidationError("verified active policy is required for delivery")
+    generation = resolved.snapshot.get("generation") if resolved.snapshot is not None else None
+    authority_binding = (
+        f"risk-authority:constitution={resolved.constitution.constitution_id}:"
+        f"policy={active.policy_hash}:generation={generation}"
+    )
+    if authority_binding not in risk_assessment.evidence_refs:
+        raise ExecutionValidationError("risk evidence authority binding is stale")
     policy = merge_policy_from_verified_active(project_id)
     observed_at = datetime.now(UTC).replace(microsecond=0).isoformat()
     patch_sha = attempt.patch.sha256 if attempt.patch is not None else ""
@@ -464,19 +472,18 @@ def _risk_assessment_for_attempt(
     protected_paths = tuple(sorted(set(declared_protected + discovered_protected)))
     patch_sha = attempt.patch.sha256 if attempt.patch is not None else ""
     max_age = 86400
+    authority = None
     try:
-        max_age = int(resolve_authority(project_id).policy.freshness_limits["policy_seconds"])
+        authority = resolve_authority(project_id)
+        max_age = int(authority.policy.freshness_limits["policy_seconds"])
     except (AttributeError, KeyError, TypeError, ValueError):
         pass
-    rollback_evidence = load_historical_evidence(
-        project_id, "rollback", required_start=plan.created_at,
-        required_end=datetime.now(UTC).replace(microsecond=0).isoformat(),
-        max_age_seconds=max_age,
+    decision_started = datetime.now(UTC).replace(microsecond=0).isoformat()
+    rollback_evidence = _load_prospective_evidence(
+        project_id, "rollback", decision_started, max_age
     )
-    incident_evidence = load_historical_evidence(
-        project_id, "incident", required_start=plan.created_at,
-        required_end=datetime.now(UTC).replace(microsecond=0).isoformat(),
-        max_age_seconds=max_age,
+    incident_evidence = _load_prospective_evidence(
+        project_id, "incident", decision_started, max_age
     )
     for evidence in (rollback_evidence, incident_evidence):
         if evidence is not None:
@@ -491,9 +498,32 @@ def _risk_assessment_for_attempt(
     incident_count = None
     if incident_evidence is not None:
         incident_count = incident_evidence.count
+    authority_fact = (
+        f"risk-authority:constitution={authority.constitution.constitution_id}:"
+        f"policy={authority.policy.policy_hash}:"
+        f"generation={authority.snapshot['generation']}"
+        if authority is not None
+        and authority.constitution is not None
+        and authority.policy is not None
+        and authority.snapshot is not None
+        else "risk-authority:UNAVAILABLE"
+    )
     facts = (
         f"risk-fact:rollback={rollback_evidence.status.value if rollback_evidence else 'UNKNOWN'}",
         f"risk-fact:incidents={incident_evidence.status.value if incident_evidence else 'UNKNOWN'}",
+        authority_fact,
+        *((
+            f"risk-evidence:rollback:{rollback_evidence.evidence_hash}:"
+            f"baseline={rollback_evidence.baseline_id}:"
+            f"coverage={rollback_evidence.coverage_start}/{rollback_evidence.coverage_end}:"
+            f"prebaseline={rollback_evidence.coverage_before_baseline}",
+        ) if rollback_evidence is not None else ()),
+        *((
+            f"risk-evidence:incident:{incident_evidence.evidence_hash}:"
+            f"baseline={incident_evidence.baseline_id}:"
+            f"coverage={incident_evidence.coverage_start}/{incident_evidence.coverage_end}:"
+            f"prebaseline={incident_evidence.coverage_before_baseline}",
+        ) if incident_evidence is not None else ()),
     )
     return assess_risk(
         assessment_id="risk-" + hashlib.sha256(
@@ -516,6 +546,35 @@ def _risk_assessment_for_attempt(
             *facts,
         ),
     )
+
+
+def _load_prospective_evidence(
+    project_id: str, evidence_type: str, decision_started: str, max_age: int
+):
+    """Accept only owner evidence bound to a persisted prospective baseline.
+
+    The plan may predate the baseline.  That history remains UNKNOWN; only a
+    signed record whose baseline covers the current decision can authorize it.
+    """
+    baseline = load_historical_baseline(project_id, max_age_seconds=max_age)
+    evidence = load_historical_evidence(project_id, evidence_type, max_age_seconds=max_age)
+    if (
+        baseline is None
+        or evidence is None
+        or evidence.baseline_id != baseline.baseline_id
+        or evidence.coverage_start != baseline.coverage_start
+        or evidence.coverage_before_baseline != "UNKNOWN"
+    ):
+        return None
+    try:
+        start = datetime.fromisoformat(evidence.coverage_start)
+        decision = datetime.fromisoformat(decision_started)
+        end = datetime.fromisoformat(evidence.coverage_end)
+    except ValueError:
+        return None
+    if start.tzinfo is None or end < decision or start > decision:
+        return None
+    return evidence
 
 
 def write_delivery_report(report: DeliveryReport, output: str | Path) -> None:
