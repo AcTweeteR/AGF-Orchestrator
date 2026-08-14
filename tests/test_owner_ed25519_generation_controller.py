@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import subprocess
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -62,6 +63,100 @@ def test_provider_renewal_requires_fresh_observation_for_each_profile():
     )
     with pytest.raises(RuntimeError, match="fresh profile observations"):
         controller._require_fresh_profile_observations(previous, proposed)
+
+
+def test_target_advancement_requires_exact_delivery_evidence(monkeypatch, tmp_path):
+    project_id = "project-0123456789abcdef"
+    previous = SimpleNamespace(target_sha="a" * 40)
+    proposed = SimpleNamespace(target_sha="b" * 40)
+    project = SimpleNamespace(
+        repository_root=tmp_path,
+        default_branch="main",
+        origin_url="file:///tmp/target.git",
+    )
+    intent = SimpleNamespace(
+        base_sha=previous.target_sha,
+        candidate_sha=proposed.target_sha,
+        target_branch="main",
+        repository_identity="file:///tmp/target.git",
+    )
+    receipt = SimpleNamespace(observed_sha=proposed.target_sha)
+
+    class FakeStore:
+        root = tmp_path / "delivery-intents"
+
+        def __init__(self):
+            self.root.joinpath(project_id).mkdir(parents=True, exist_ok=True)
+            self.root.joinpath(project_id, "delivery-001.json").write_text("{}")
+
+        def get(self, _project_id, _delivery_id):
+            return intent
+
+        def observe(self, _project_id, _delivery_id, _root):
+            return receipt
+
+    monkeypatch.setattr(controller, "DeliveryIntentStore", FakeStore)
+    monkeypatch.setattr(
+        controller.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0),
+    )
+    controller._verify_legitimate_target_advancement(
+        project_id, project, previous, proposed, proposed.target_sha
+    )
+
+
+def test_target_advancement_without_matching_delivery_fails_closed(monkeypatch, tmp_path):
+    project = SimpleNamespace(
+        repository_root=tmp_path,
+        default_branch="main",
+        origin_url="file:///tmp/target.git",
+    )
+    class FakeStore:
+        root = tmp_path / "delivery-intents"
+
+        def __init__(self):
+            self.root.joinpath("project-0123456789abcdef").mkdir(
+                parents=True, exist_ok=True
+            )
+
+    monkeypatch.setattr(controller, "DeliveryIntentStore", FakeStore)
+    monkeypatch.setattr(
+        controller.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0),
+    )
+    with pytest.raises(RuntimeError, match="authoritative delivery receipt"):
+        controller._verify_legitimate_target_advancement(
+            "project-0123456789abcdef",
+            project,
+            SimpleNamespace(target_sha="a" * 40),
+            SimpleNamespace(target_sha="b" * 40),
+            "b" * 40,
+        )
+
+
+def test_target_rollback_fails_closed(monkeypatch, tmp_path):
+    project = SimpleNamespace(
+        repository_root=tmp_path,
+        default_branch="main",
+        origin_url="file:///tmp/target.git",
+    )
+    monkeypatch.setattr(
+        controller.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            subprocess.CalledProcessError(1, args[0])
+        ),
+    )
+    with pytest.raises(RuntimeError, match="valid descendant"):
+        controller._verify_legitimate_target_advancement(
+            "project-0123456789abcdef",
+            project,
+            SimpleNamespace(target_sha="b" * 40),
+            SimpleNamespace(target_sha="a" * 40),
+            "a" * 40,
+        )
 
 
 def test_controller_rejects_historical_profile_without_mutating(monkeypatch, tmp_path):
