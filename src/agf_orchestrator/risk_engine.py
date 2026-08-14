@@ -23,7 +23,7 @@ def assess_risk(
     changed_paths: tuple[str, ...],
     protected_paths: tuple[str, ...],
     rollback_difficulty: RollbackDifficulty,
-    incident_count: int,
+    incident_count: int | None,
     reviewer_blockers: int,
     validation_passed: bool,
     evidence_refs: tuple[str, ...],
@@ -33,7 +33,7 @@ def assess_risk(
         raise RiskEngineError("changed_paths are invalid")
     if any(not isinstance(path, str) or not path.strip() for path in changed_paths):
         raise RiskEngineError("changed_paths are invalid")
-    if (
+    if incident_count is not None and (
         not isinstance(incident_count, int)
         or isinstance(incident_count, bool)
         or incident_count < 0
@@ -63,8 +63,11 @@ def assess_risk(
         ),
         RiskSignal(
             "signal-incidents", "INCIDENT_HISTORY",
-            SignalLevel.HIGH if incident_count else SignalLevel.LOW,
-            f"incidents={incident_count}", evidence_refs,
+            SignalLevel.UNKNOWN if incident_count is None else (
+                SignalLevel.HIGH if incident_count else SignalLevel.LOW
+            ),
+            f"incidents={incident_count if incident_count is not None else 'UNKNOWN'}",
+            evidence_refs,
         ),
         RiskSignal(
             "signal-review", "REVIEW_FINDINGS",
