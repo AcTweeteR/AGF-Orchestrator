@@ -61,6 +61,7 @@ ALLOWED_TRANSITIONS[SessionStatus.RETRY_REQUIRED].update(
     {SessionStatus.READY, SessionStatus.BLOCKED}
 )
 ALLOWED_TRANSITIONS[SessionStatus.BLOCKED].add(SessionStatus.RETRY_REQUIRED)
+ALLOWED_TRANSITIONS[SessionStatus.STALE].add(SessionStatus.READY)
 
 
 @dataclass(frozen=True)
