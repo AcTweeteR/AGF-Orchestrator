@@ -3,6 +3,7 @@ import hashlib
 import json
 import subprocess
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -85,7 +86,8 @@ def test_target_advancement_requires_exact_delivery_evidence(monkeypatch, tmp_pa
     class FakeStore:
         root = tmp_path / "delivery-intents"
 
-        def __init__(self):
+        def __init__(self, state_root):
+            assert state_root == Path.home() / ".agf-orchestrator"
             self.root.joinpath(project_id).mkdir(parents=True, exist_ok=True)
             self.root.joinpath(project_id, "delivery-001.json").write_text("{}")
 
@@ -115,7 +117,8 @@ def test_target_advancement_without_matching_delivery_fails_closed(monkeypatch, 
     class FakeStore:
         root = tmp_path / "delivery-intents"
 
-        def __init__(self):
+        def __init__(self, state_root):
+            assert state_root == Path.home() / ".agf-orchestrator"
             self.root.joinpath("project-0123456789abcdef").mkdir(
                 parents=True, exist_ok=True
             )

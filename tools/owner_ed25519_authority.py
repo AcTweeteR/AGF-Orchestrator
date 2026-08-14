@@ -189,7 +189,7 @@ def _verify_legitimate_target_advancement(
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RuntimeError("provider renewal target advancement is not a valid descendant") from exc
-    store = DeliveryIntentStore()
+    store = DeliveryIntentStore(Path.home() / ".agf-orchestrator")
     directory = store.root / project_id
     if store.root.is_symlink() or directory.is_symlink() or not directory.is_dir():
         raise RuntimeError("provider renewal target advancement lacks delivery evidence")
