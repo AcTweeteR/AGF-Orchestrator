@@ -369,7 +369,11 @@ class _AdapterArchitectProvider:
             "justified; malformed output is a provider failure, never no-work. Every value in "
             "evidence_references MUST be exactly one item from this closed evidence inventory: "
             + json.dumps(evidence_inventory, ensure_ascii=False)
-            + ". Do not cite any other string.\n"
+            + ". Do not cite any other string. For every task, validation_requirements MUST "
+            "contain only exact executable command strings, one command per item, beginning "
+            "with the executable token (for example: `python -m pytest` or `git diff --check`). "
+            "Never write prose such as 'Run the tests', never include Markdown backticks, "
+            "and never prefix a command with 'Run'.\n"
             + json.dumps(request.to_dict(), ensure_ascii=False, sort_keys=True)
         )
 

@@ -518,6 +518,18 @@ def test_architect_provider_prompt_binds_closed_evidence_inventory(tmp_path):
     assert "Do not cite any other string" in instruction
 
 
+def test_architect_provider_prompt_requires_exact_validation_commands(tmp_path):
+    root = repo(tmp_path)
+    repository = context(root)
+    assessment = assess(repository, PROJECT)
+    request = build_architect_request(
+        "Assess", repository, assessment, registered_project=registration(repository)
+    )
+    instruction = _AdapterArchitectProvider._instruction(request)
+    assert "exact executable command strings" in instruction
+    assert "Never write prose such as 'Run the tests'" in instruction
+
+
 def test_architect_request_requires_exact_registered_repository_binding(tmp_path):
     root = repo(tmp_path)
     repository = context(root)
