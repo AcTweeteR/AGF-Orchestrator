@@ -110,7 +110,12 @@ def _assessment_artifact_paths(store: SessionStore, session: Session) -> dict[st
 
 
 def _validate_predecessor_chain(
-    first_path: str, first_hash: str, expected_dir: Path, project, safe_path
+    first_path: str,
+    first_hash: str,
+    expected_dir: Path,
+    project,
+    safe_path,
+    allowed_heads: set[str] | None = None,
 ) -> None:
     raw_path = Path(first_path)
     expected_hash = first_hash
@@ -138,11 +143,16 @@ def _validate_predecessor_chain(
             load_plan(str(path))
             payload = json.loads(path.read_text(encoding="utf-8"))
             repository = payload["repository"]
+            head_matches = (
+                repository["head_sha"] in allowed_heads
+                if allowed_heads is not None
+                else repository["head_sha"] == project.current_head_sha
+            )
             if (
                 repository["root"] != project.repository_root
                 or parse_remote_url(repository["origin"]).identity
                 != parse_remote_url(project.origin_url).identity
-                or repository["head_sha"] != project.current_head_sha
+                or not head_matches
             ):
                 raise SessionManagerError("recovered plan predecessor binding differs")
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
@@ -1151,6 +1161,9 @@ class SessionManager:
             self._validate_plan_identity(session, project)
             self._validate_plan_lineage(session, project)
         except SessionManagerError as exc:
+            repaired = self._repair_reconciled_lineage_binding(session, project, root)
+            if repaired is not None:
+                return repaired
             return self._mark_stale(session, str(exc), "inspect or restore session evidence")
         if session.plan_path:
             try:
@@ -1188,6 +1201,98 @@ class SessionManager:
                 "resume-execution:" + session.session_id,
             )
         return session
+
+    def _repair_reconciled_lineage_binding(self, session, project, root: Path):
+        """Repair only a proven pre-#141 reconciliation metadata omission."""
+        try:
+            self._validate_plan_identity(session, project)
+            plan_path = self.store.ensure_safe_path(session.plan_path or "")
+            payload = json.loads(plan_path.read_text(encoding="utf-8"))
+            if self.store.artifact_hash(str(plan_path)) != session.artifact_hashes.get("plan"):
+                return None
+            scope = payload.get("scope", {})
+            reconciliation = scope.get("delivery_reconciliation", {})
+            predecessor_path = scope.get("lineage")
+            predecessor_hash = scope.get("predecessor_plan_sha256")
+            delivery_id = reconciliation.get("delivery_id")
+            if not predecessor_path or not predecessor_hash or not delivery_id:
+                return None
+            predecessor = self.store.ensure_safe_path(predecessor_path)
+            if self.store.artifact_hash(str(predecessor)) != predecessor_hash:
+                return None
+            predecessor_payload = json.loads(predecessor.read_text(encoding="utf-8"))
+            store = DeliveryIntentStore(self.store.state_dir)
+            intents = [
+                item for item in store.for_session(project.project_id, session.session_id)
+                if item.delivery_id == delivery_id
+            ]
+            if len(intents) != 1:
+                return None
+            intent = intents[0]
+            if (
+                intent.plan_id != payload.get("plan_id")
+                or intent.plan_id != predecessor_payload.get("plan_id")
+            ):
+                return None
+            if intent.plan_hash != _canonical_plan_hash(predecessor_payload):
+                return None
+            task_payloads = [
+                item for item in payload.get("tasks", [])
+                if item.get("task_id") == intent.task_id
+            ]
+            if len(task_payloads) != 1:
+                return None
+            task_hash = hashlib.sha256(
+                json.dumps(
+                    task_payloads[0], sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest()
+            if intent.task_hash != task_hash:
+                return None
+            _validate_predecessor_chain(
+                str(predecessor), predecessor_hash,
+                (self.store.artifacts_dir / session.session_id).resolve(),
+                project, self.store.ensure_safe_path,
+                {intent.base_sha},
+            )
+            receipt = store.observe(project.project_id, delivery_id, root)
+            if (
+                receipt.observed_sha != session.base_sha
+                or intent.candidate_sha != session.base_sha
+                or reconciliation.get("completed_task_id") != intent.task_id
+                or reconciliation.get("observed_sha") != receipt.observed_sha
+                or reconciliation.get("receipt_hash") != receipt.receipt_sha256
+                or reconciliation.get("intent_hash") != intent.content_sha256
+            ):
+                return None
+            updated_hashes = dict(session.artifact_hashes)
+            updated_hashes["predecessor_plan"] = predecessor_hash
+            updated = replace(
+                session,
+                status=SessionStatus.READY,
+                current_stage=SessionStatus.READY.value,
+                blocking_issues=[],
+                required_human_actions=[],
+                artifact_hashes=updated_hashes,
+            )
+            updated = self._append_event(
+                updated, session.status, SessionStatus.READY,
+                "repaired proven delivery lineage predecessor binding",
+                [str(predecessor), str(store.receipt_path(project.project_id, delivery_id))],
+                [], "RELEASE_MANAGER", "delivery-lineage-repair:" + delivery_id,
+            )
+            self._save(updated)
+            return updated
+        except (
+            DeliveryReconciliationError,
+            SessionManagerError,
+            OSError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            return None
 
     def _reconcile_verified_delivery(self, session, project, root: Path, observed_head: str):
         """Advance recovery only when a persisted intent proves the exact target state."""

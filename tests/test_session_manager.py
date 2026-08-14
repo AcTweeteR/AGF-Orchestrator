@@ -3,6 +3,7 @@ import json
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -68,6 +69,106 @@ def test_start_is_ready_and_resume_is_idempotent(tmp_path):
     stale = manager.resume(session.session_id)
     assert stale.status is SessionStatus.STALE
     assert "base SHA" in stale.blocking_issues[0]
+
+
+def test_repair_reconciled_lineage_requires_exact_receipt_binding(tmp_path, monkeypatch):
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Validate contributor links")
+    project = ProjectRegistry(state).get("alpha")
+    predecessor = Path(session.plan_path)
+    predecessor_hash = manager.store.artifact_hash(str(predecessor))
+    predecessor_payload = json.loads(predecessor.read_text())
+    task = {
+        "task_id": "task-001",
+        "title": "Validate contributor links",
+        "objective": "Validate contributor links",
+        "allowed_paths": ["x"],
+        "dependencies": [],
+        "acceptance_criteria": ["x is present"],
+        "validation_commands": ["python -m pytest"],
+        "risk_level": "low",
+        "assigned_role": "Implementer",
+        "status": "READY",
+        "requirement_refs": [],
+    }
+    predecessor_payload["tasks"] = [task]
+    predecessor.write_text(json.dumps(predecessor_payload, indent=2, sort_keys=True) + "\n")
+    predecessor_hash = manager.store.artifact_hash(str(predecessor))
+    candidate_sha = project.current_head_sha
+    receipt_sha = "r" * 64
+    intent_hash = "i" * 64
+    current_payload = json.loads(predecessor.read_text())
+    current_payload["scope"] = {
+        "lineage": str(predecessor),
+        "predecessor_plan_sha256": predecessor_hash,
+        "delivery_reconciliation": {
+            "delivery_id": "delivery-001",
+            "intent_hash": intent_hash,
+            "receipt_hash": receipt_sha,
+            "observed_sha": candidate_sha,
+            "completed_task_id": "task-001",
+        },
+    }
+    current_path, current_hash = manager.store.write_artifact(
+        session.session_id,
+        "plan-v2.json",
+        json.dumps(current_payload, indent=2, sort_keys=True) + "\n",
+    )
+    intent = SimpleNamespace(
+        delivery_id="delivery-001",
+        base_sha=candidate_sha,
+        candidate_sha=candidate_sha,
+        plan_id=predecessor_payload["plan_id"],
+        plan_hash=_canonical_plan_hash(predecessor_payload),
+        task_id="task-001",
+        task_hash=hashlib.sha256(
+            json.dumps(task, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        content_sha256=intent_hash,
+    )
+    receipt = SimpleNamespace(observed_sha=candidate_sha, receipt_sha256=receipt_sha)
+
+    class FakeDeliveryStore:
+        def __init__(self, _state):
+            pass
+
+        def for_session(self, _project_id, _session_id):
+            return [intent]
+
+        def observe(self, _project_id, _delivery_id, _root):
+            return receipt
+
+        def receipt_path(self, _project_id, _delivery_id):
+            return tmp_path / "receipt.json"
+
+    monkeypatch.setattr("agf_orchestrator.session_manager.DeliveryIntentStore", FakeDeliveryStore)
+    monkeypatch.setattr(manager, "_validate_plan_identity", lambda *_args: None)
+    stale = replace(
+        session,
+        status=SessionStatus.STALE,
+        current_stage=SessionStatus.STALE.value,
+        plan_path=current_path,
+        artifact_hashes={"plan": current_hash},
+    )
+    manager.store.save(stale)
+
+    repaired = manager._repair_reconciled_lineage_binding(
+        stale, project, Path(project.repository_root)
+    )
+    assert repaired.status is SessionStatus.READY
+    assert repaired.artifact_hashes["predecessor_plan"] == predecessor_hash
+
+    current_payload["scope"]["delivery_reconciliation"]["observed_sha"] = "f" * 40
+    Path(current_path).write_text(json.dumps(current_payload, indent=2, sort_keys=True) + "\n")
+    tampered = replace(
+        repaired,
+        plan_path=current_path,
+        artifact_hashes={"plan": manager.store.artifact_hash(current_path)},
+    )
+    assert manager._repair_reconciled_lineage_binding(
+        tampered, project, Path(project.repository_root)
+    ) is None
 
 
 def test_assess_placeholder_persists_evidence_and_blocks_unsupported_scope(tmp_path):
