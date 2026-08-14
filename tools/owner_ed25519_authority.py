@@ -30,6 +30,7 @@ from agf_orchestrator.authority_generation import (
     build_generation,
 )
 from agf_orchestrator.constitution import ConstitutionAuthority, canonical_json
+from agf_orchestrator.delivery_reconciliation import DeliveryIntentStore
 from agf_orchestrator.historical_evidence import (
     EvidenceStatus,
     HistoricalEvidenceError,
@@ -47,7 +48,7 @@ from agf_orchestrator.owner_authority import (
 )
 from agf_orchestrator.policy_authority import PolicyAuthority
 from agf_orchestrator.policy_state_store import PolicyStateStore
-from agf_orchestrator.project_registry import ProjectRegistry
+from agf_orchestrator.project_registry import ProjectRegistry, parse_remote_url
 from agf_orchestrator.provider_intelligence import ProviderIntelligenceStore, state_from_dict
 
 _PROJECT_ID = re.compile(r"^project-[0-9a-f]{16}$")
@@ -169,6 +170,52 @@ def _activate_provider_candidate(
     return {"project_id": project_id, "state_sha256": signed.state_sha256}
 
 
+def _verify_legitimate_target_advancement(
+    project_id: str, project, previous, proposed, actual_target_sha: str
+) -> None:
+    """Require repository-derived delivery evidence for a provider target advance."""
+    if proposed.target_sha == previous.target_sha:
+        return
+    if proposed.target_sha != actual_target_sha:
+        raise RuntimeError("provider renewal target is not the current repository HEAD")
+    try:
+        subprocess.run(
+            [
+                "git", "-C", project.repository_root, "merge-base", "--is-ancestor",
+                previous.target_sha, proposed.target_sha,
+            ],
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("provider renewal target advancement is not a valid descendant") from exc
+    store = DeliveryIntentStore()
+    directory = store.root / project_id
+    if store.root.is_symlink() or directory.is_symlink() or not directory.is_dir():
+        raise RuntimeError("provider renewal target advancement lacks delivery evidence")
+    matches = []
+    for path in sorted(directory.glob("*.json")):
+        if path.name.endswith(".receipt.json") or path.is_symlink():
+            continue
+        delivery_id = path.stem
+        intent = store.get(project_id, delivery_id)
+        if intent is None:
+            continue
+        if (
+            intent.base_sha == previous.target_sha
+            and intent.candidate_sha == proposed.target_sha
+            and intent.target_branch == project.default_branch
+            and parse_remote_url(intent.repository_identity).identity
+            == parse_remote_url(project.origin_url).identity
+        ):
+            receipt = store.observe(project_id, delivery_id, project.repository_root)
+            if receipt.observed_sha != proposed.target_sha:
+                raise RuntimeError("provider renewal delivery receipt target differs")
+            matches.append((intent, receipt))
+    if len(matches) != 1:
+        raise RuntimeError("provider renewal requires one authoritative delivery receipt")
+
+
 def activate_provider_candidate(project_id: str, candidate: Path) -> dict[str, str]:
     with project_lock(Path.home() / ".agf-orchestrator", project_id, "provider-activate"):
         return _activate_provider_candidate(project_id, candidate, allow_renewal=False)
@@ -181,8 +228,19 @@ def renew_provider_candidate(project_id: str, candidate: Path) -> dict[str, str]
         previous = store._load_for_owner_recovery()
         candidate_path = _candidate_path(project_id, candidate)
         proposed = state_from_dict(json.loads(candidate_path.read_text(encoding="utf-8")))
-        if proposed.project_id != previous.project_id or proposed.target_sha != previous.target_sha:
+        if proposed.project_id != previous.project_id:
             raise RuntimeError("provider renewal binding differs from active evidence")
+        if proposed.target_sha != previous.target_sha:
+            project = ProjectRegistry().verify(project_id)
+            actual_target_sha = subprocess.run(
+                ["git", "-C", project.repository_root, "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            _verify_legitimate_target_advancement(
+                project_id, project, previous, proposed, actual_target_sha
+            )
         old_versions = {
             item.profile.profile_id: item.profile.profile_version
             for item in previous.candidates
