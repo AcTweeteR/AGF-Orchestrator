@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from agf_orchestrator.git_delivery import (
@@ -6,7 +8,12 @@ from agf_orchestrator.git_delivery import (
     _validate_delivery_authorization,
 )
 from agf_orchestrator.merge_models import GateEvidence, GateStatus, RiskClass
-from agf_orchestrator.merge_policy import REQUIRED_GATES, MergePolicy, MergePolicyEngine
+from agf_orchestrator.merge_policy import (
+    REQUIRED_GATES,
+    MergePolicy,
+    MergePolicyEngine,
+    merge_policy_from_verified_active,
+)
 from agf_orchestrator.policy_state_store import KillSwitchSnapshot
 from agf_orchestrator.risk_engine import assess_risk
 from agf_orchestrator.risk_models import RollbackDifficulty
@@ -156,3 +163,33 @@ def test_delivery_rechecks_owner_stop_at_final_boundary():
     # Missing authoritative state must fail closed at the final boundary.
     with pytest.raises(GitDeliveryError, match="authority state is (not bootstrapped|unreadable)"):
         _ensure_emergency_stop_clear("project-efc8e8ef7be7050b")
+
+
+def test_verified_active_policy_preserves_freshness_limits(monkeypatch):
+    import agf_orchestrator.authority_context as authority_context
+
+    active = SimpleNamespace(
+        policy_id="policy-agf",
+        version="1",
+        policy_hash="a" * 64,
+        freshness_limits={"policy_seconds": 123, "gate_seconds": 456},
+        allows_autonomous_merge=lambda risk: True,
+    )
+    monkeypatch.setattr(
+        authority_context,
+        "resolve_authority",
+        lambda project_id: SimpleNamespace(
+            policy=active,
+            snapshot={
+                "kill_switch_active": False,
+                "generation": 7,
+                "operation_id": "op-7",
+                "changed_at": "2026-08-14T12:00:00Z",
+                "reason": "",
+            },
+        ),
+    )
+
+    policy = merge_policy_from_verified_active("project-test")
+
+    assert policy.freshness_limits == {"policy_seconds": 123, "gate_seconds": 456}

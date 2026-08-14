@@ -57,6 +57,9 @@ class MergePolicy:
         RiskClass.UNKNOWN,
     )
     policy_hash: str = ""
+    freshness_limits: dict[str, Any] = field(
+        default_factory=lambda: {"policy_seconds": 86400, "gate_seconds": 86400}
+    )
     stop_signal: KillSwitchSnapshot = field(
         default_factory=KillSwitchSnapshot.disabled, init=False, repr=False
     )
@@ -254,6 +257,7 @@ def merge_policy_from_verified_active(project_id: str) -> MergePolicy:
         require_human_merge=False,
         permanently_forbidden=(RiskClass.CRITICAL, RiskClass.UNKNOWN),
         policy_hash=active_policy.policy_hash,
+        freshness_limits=dict(active_policy.freshness_limits),
     )
 
 
