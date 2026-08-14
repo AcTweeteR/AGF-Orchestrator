@@ -590,6 +590,7 @@ def _load_prospective_evidence(
     evidence = load_historical_evidence(project_id, evidence_type, max_age_seconds=max_age)
     if (
         baseline is None
+        or not baseline.authoritative
         or evidence is None
         or evidence.baseline_id != baseline.baseline_id
         or evidence.coverage_start < baseline.coverage_start
