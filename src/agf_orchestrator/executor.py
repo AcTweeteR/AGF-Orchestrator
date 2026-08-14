@@ -66,7 +66,14 @@ def _changed_paths(before: list[str], after: list[str]) -> list[str]:
         value = line[3:] if len(line) >= 3 else line
         if " -> " in value:
             paths.update(value.split(" -> ", 1))
-        elif value:
+        elif value and not (
+            line.startswith("??")
+            and any(
+                component in {"__pycache__", ".pytest_cache"}
+                for component in PurePosixPath(value.replace("\\", "/")).parts
+            )
+            or line.startswith("??") and value.endswith((".pyc", ".pyo"))
+        ):
             paths.add(value.replace("\\", "/"))
     return sorted(paths)
 
