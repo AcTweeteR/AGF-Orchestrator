@@ -1207,6 +1207,8 @@ class SessionManager:
             old_hash = session.artifact_hashes.get("plan")
             if not old_hash or not old_plan.is_file():
                 return None
+            if self.store.artifact_hash(str(old_plan)) != old_hash:
+                return None
             payload = json.loads(old_plan.read_text(encoding="utf-8"))
             if intent.plan_id != payload.get("plan_id"):
                 return None
@@ -1251,6 +1253,7 @@ class SessionManager:
             )
             session.artifact_hashes.update({
                 "plan": plan_hash,
+                "predecessor_plan": old_hash,
                 "delivery_intent": intent.content_sha256,
                 "delivery_receipt": receipt.receipt_sha256,
             })
