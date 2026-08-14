@@ -22,6 +22,7 @@ from .architect_planning import (
 from .authority_context import AuthorityContextError
 from .capability_selection import CapabilityCandidate, SelectionGates
 from .constitution import ConstitutionAuthority, ConstitutionVerificationError
+from .delivery_reconciliation import DeliveryIntentStore, DeliveryReconciliationError
 from .director import Director
 from .locking import lock_status, project_lock, session_lock
 from .models import PlanStatus, plan_from_dict
@@ -1127,6 +1128,9 @@ class SessionManager:
                 "restore the registered repository identity",
             )
         if head != session.base_sha:
+            reconciled = self._reconcile_verified_delivery(session, project, root, head)
+            if reconciled is not None:
+                return reconciled
             return self._mark_stale(
                 session,
                 f"base SHA drifted: expected {session.base_sha}, found {head}",
@@ -1137,6 +1141,17 @@ class SessionManager:
             self._validate_plan_lineage(session, project)
         except SessionManagerError as exc:
             return self._mark_stale(session, str(exc), "inspect or restore session evidence")
+        if session.plan_path:
+            try:
+                recovered_scope = json.loads(
+                    Path(session.plan_path).read_text(encoding="utf-8")
+                ).get("scope", {})
+            except (OSError, json.JSONDecodeError, TypeError):
+                return self._mark_stale(
+                    session, "reconciled plan is unreadable", "restore session evidence"
+                )
+            if recovered_scope.get("delivery_reconciliation", {}).get("completed_task_id"):
+                return session
         if session.status is SessionStatus.READY and "provider_evidence" in session.artifact_hashes:
             evidence_path = _assessment_artifact_paths(self.store, session)["provider_evidence"]
             return self._mark_retry_required(
@@ -1162,6 +1177,93 @@ class SessionManager:
                 "resume-execution:" + session.session_id,
             )
         return session
+
+    def _reconcile_verified_delivery(self, session, project, root: Path, observed_head: str):
+        """Advance recovery only when a persisted intent proves the exact target state."""
+        try:
+            store = DeliveryIntentStore(self.store.state_dir)
+            intents = [
+                item for item in store.for_session(project.project_id, session.session_id)
+                if item.base_sha == session.base_sha
+            ]
+            if len(intents) != 1:
+                return None
+            intent = intents[0]
+            receipt = store.observe(project.project_id, intent.delivery_id, root)
+            if receipt.observed_sha != observed_head:
+                return None
+            old_plan = Path(session.plan_path or "")
+            old_hash = session.artifact_hashes.get("plan")
+            if not old_hash or not old_plan.is_file():
+                return None
+            payload = json.loads(old_plan.read_text(encoding="utf-8"))
+            if intent.plan_id != payload.get("plan_id"):
+                return None
+            if intent.plan_hash != old_hash:
+                return None
+            task_payloads = [
+                item for item in payload.get("tasks", [])
+                if item.get("task_id") == intent.task_id
+            ]
+            if len(task_payloads) != 1:
+                return None
+            task_hash = hashlib.sha256(
+                json.dumps(task_payloads[0], sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            if intent.task_hash != task_hash:
+                return None
+            payload["repository"]["head_sha"] = observed_head
+            payload["scope"] = {
+                **payload.get("scope", {}),
+                "lineage": str(old_plan),
+                "predecessor_plan_sha256": old_hash,
+                "delivery_reconciliation": {
+                    "delivery_id": intent.delivery_id,
+                    "intent_hash": intent.content_sha256,
+                    "receipt_hash": receipt.receipt_sha256,
+                    "observed_sha": observed_head,
+                    "completed_task_id": intent.task_id,
+                },
+            }
+            reconciled = plan_from_dict(payload)
+            version = _assessment_version(self.store, session)
+            plan_path, plan_hash = self.store.write_artifact(
+                session.session_id,
+                f"plan-v{version}.json",
+                json.dumps(reconciled.to_dict(), indent=2, sort_keys=True) + "\n",
+            )
+            session.plan_path = plan_path
+            session.base_sha = observed_head
+            session.delivery_branch = intent.delivery_branch
+            session.delivery_report_path = str(
+                store.receipt_path(project.project_id, intent.delivery_id)
+            )
+            session.artifact_hashes.update({
+                "plan": plan_hash,
+                "delivery_intent": intent.content_sha256,
+                "delivery_receipt": receipt.receipt_sha256,
+            })
+            updated = self._append_event(
+                session,
+                session.status,
+                SessionStatus.READY,
+                "verified external delivery reconciled from persisted intent and receipt",
+                [session.delivery_report_path, plan_path],
+                [],
+                "RELEASE_MANAGER",
+                "delivery-reconcile:" + intent.delivery_id,
+            )
+            self._save(updated)
+            return updated
+        except (
+            DeliveryReconciliationError,
+            OSError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            return None
 
     def _validate_plan_lineage(self, session: Session, project) -> None:
         """Validate every persisted predecessor before normal continuation."""

@@ -123,6 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     deliver = commands.add_parser("deliver", help="run the autonomous delivery pipeline")
     deliver.add_argument("--plan", required=True)
     deliver.add_argument("--task", required=True)
+    deliver.add_argument("--session", help="persist delivery intent for a managed session")
     deliver.add_argument("--repository")
     deliver.add_argument("--project", help="registered project name or ID")
     deliver.add_argument("--adapter", choices=["codex", "openhands", "ollama"], default="codex")
@@ -1014,6 +1015,7 @@ def run_deliver(args: argparse.Namespace) -> int:
             str(target_root),
             execute=args.execute,
             project_id=project.project_id,
+            session_id=args.session,
         )
         write_delivery_report(report, output)
     except (

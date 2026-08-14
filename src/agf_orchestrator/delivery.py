@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 import tempfile
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -16,6 +16,8 @@ from .adapters.codex import CodexAdapter, CodexProcessResult, redact_secrets
 from .adapters.openhands import parse_openhands_output
 from .authority_context import resolve_authority
 from .compliance import ComplianceChecker
+from .delivery_reconciliation import DeliveryIntent, DeliveryIntentStore
+from .delivery_reconciliation import _git as _reconcile_git
 from .execution_models import ExecutionStatus
 from .executor import (
     ExecutionValidationError,
@@ -646,6 +648,7 @@ class DeliveryPipeline:
         execute: bool,
         merge_decision: MergeDecision | dict[str, object] | None = None,
         project_id: str | None = None,
+        session_id: str | None = None,
     ) -> DeliveryReport:
         task = _task(plan, task_id)
         delivery_id = _delivery_id(plan.plan_id, task_id)
@@ -877,6 +880,83 @@ class DeliveryPipeline:
                 raise ExecutionValidationError(
                     "E6-T2 delivery requires an externally evidenced LOW decision"
                 )
+            def persist_delivery_intent(
+                target_commit: str, candidate_root: str, changed_files: list[str]
+            ) -> None:
+                if project_id is None or session_id is None:
+                    return
+                resolved = resolve_authority(project_id)
+                if (
+                    resolved.constitution is None
+                    or resolved.policy is None
+                    or resolved.snapshot is None
+                ):
+                    raise ExecutionValidationError("delivery authority is unavailable")
+                target_context = collect_repository(repository)
+                diff_bytes = subprocess.run(
+                    ["git", "-C", candidate_root, "diff", f"{base_sha}..{target_commit}"],
+                    check=True, capture_output=True,
+                ).stdout
+                intent_payload = {
+                    "schema_version": "1.0",
+                    "delivery_id": delivery_id,
+                    "project_id": project_id,
+                    "session_id": session_id,
+                    "plan_id": plan.plan_id,
+                    "plan_hash": hashlib.sha256(
+                        json.dumps(plan.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+                    ).hexdigest(),
+                    "task_id": task.task_id,
+                    "task_hash": hashlib.sha256(
+                        json.dumps(asdict(task), sort_keys=True, separators=(",", ":")).encode()
+                    ).hexdigest(),
+                    "repository_identity": target_context.origin,
+                    "base_sha": base_sha,
+                    "candidate_sha": target_commit,
+                    "candidate_tree_sha": _reconcile_git(
+                        candidate_root, "rev-parse", f"{target_commit}^{{tree}}"
+                    ),
+                    "delivery_branch": branch,
+                    "target_branch": target_context.branch,
+                    "allowed_paths": tuple(task.allowed_paths),
+                    "changed_files": tuple(changed_files),
+                    "diff_sha256": hashlib.sha256(diff_bytes).hexdigest(),
+                    "review_sha256": hashlib.sha256(
+                        json.dumps(review.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+                    ).hexdigest(),
+                    "compliance_sha256": hashlib.sha256(
+                        json.dumps(
+                            compliance.to_dict(), sort_keys=True, separators=(",", ":")
+                        ).encode()
+                    ).hexdigest(),
+                    "authorization_sha256": hashlib.sha256(
+                        json.dumps(
+                            merge_decision.to_dict() if merge_decision is not None else {},
+                            sort_keys=True, separators=(",", ":"),
+                        ).encode()
+                    ).hexdigest(),
+                    "review_evidence": review.to_dict(),
+                    "compliance_evidence": compliance.to_dict(),
+                    "authorization_evidence": (
+                        merge_decision.to_dict() if merge_decision is not None else {}
+                    ),
+                    "policy_hash": resolved.policy.policy_hash,
+                    "constitution_id": resolved.constitution.constitution_id,
+                    "authority_generation": int(resolved.snapshot["generation"]),
+                    "evidence_generation": 1,
+                    "created_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace(
+                        "+00:00", "Z"
+                    ),
+                    "state": "EXTERNAL_ACTION_REQUIRED",
+                }
+                intent = DeliveryIntent(
+                    **intent_payload,
+                    content_sha256=hashlib.sha256(
+                        json.dumps(intent_payload, sort_keys=True, separators=(",", ":")).encode()
+                    ).hexdigest(),
+                )
+                DeliveryIntentStore(Path.home() / ".agf-orchestrator").put(intent)
+
             git_result = GitDelivery().deliver(
                 repository,
                 base_sha,
@@ -887,6 +967,7 @@ class DeliveryPipeline:
                 project_id=project_id,
                 expected_patch_sha256=attempt.patch.sha256,
                 validation_timeout=self.validation_timeout,
+                before_push=persist_delivery_intent,
             )
             body = self._pr_body(
                 plan, task, attempt, review, compliance, correction_rounds, git_result

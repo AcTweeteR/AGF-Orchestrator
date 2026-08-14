@@ -299,6 +299,7 @@ class GitDelivery:
         project_id: str | None = None,
         expected_patch_sha256: str | None = None,
         validation_timeout: float = 60.0,
+        before_push: Callable[[str, str, list[str]], None] | None = None,
     ) -> GitDeliveryResult:
         handler = (
             None
@@ -389,6 +390,8 @@ class GitDelivery:
             _git(worktree, "add", "--", *changed_files)
             _git(worktree, "commit", "-m", f"AGF: {task.title}")
             commit_sha = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+            if before_push is not None:
+                before_push(commit_sha, worktree, changed_files)
             if self.push:
                 pushed = _git(worktree, "push", "-u", "origin", branch, check=False)
                 if pushed.returncode != 0:
