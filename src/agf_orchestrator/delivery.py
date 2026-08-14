@@ -36,6 +36,11 @@ from .git_delivery import (
     persist_remote_uncertainty,
     sanitize_branch_name,
 )
+from .historical_evidence import (
+    EvidenceStatus,
+    load_historical_evidence,
+    verify_current_bindings,
+)
 from .merge_models import GateEvidence, GateStatus, MergeDecision, RiskClass
 from .merge_policy import REQUIRED_GATES, MergePolicyEngine, merge_policy_from_verified_active
 from .models import ExecutionPlan, Task
@@ -458,6 +463,38 @@ def _risk_assessment_for_attempt(
     )
     protected_paths = tuple(sorted(set(declared_protected + discovered_protected)))
     patch_sha = attempt.patch.sha256 if attempt.patch is not None else ""
+    max_age = 86400
+    try:
+        max_age = int(resolve_authority(project_id).policy.freshness_limits["policy_seconds"])
+    except (AttributeError, KeyError, TypeError, ValueError):
+        pass
+    rollback_evidence = load_historical_evidence(
+        project_id, "rollback", required_start=plan.created_at,
+        required_end=datetime.now(UTC).replace(microsecond=0).isoformat(),
+        max_age_seconds=max_age,
+    )
+    incident_evidence = load_historical_evidence(
+        project_id, "incident", required_start=plan.created_at,
+        required_end=datetime.now(UTC).replace(microsecond=0).isoformat(),
+        max_age_seconds=max_age,
+    )
+    for evidence in (rollback_evidence, incident_evidence):
+        if evidence is not None:
+            verify_current_bindings(evidence, expected_project_id=project_id)
+    rollback_difficulty = RollbackDifficulty.UNKNOWN
+    if rollback_evidence is not None:
+        rollback_difficulty = (
+            RollbackDifficulty.EASY
+            if rollback_evidence.status is EvidenceStatus.VERIFIED_ZERO
+            else RollbackDifficulty.HARD
+        )
+    incident_count = None
+    if incident_evidence is not None:
+        incident_count = incident_evidence.count
+    facts = (
+        f"risk-fact:rollback={rollback_evidence.status.value if rollback_evidence else 'UNKNOWN'}",
+        f"risk-fact:incidents={incident_evidence.status.value if incident_evidence else 'UNKNOWN'}",
+    )
     return assess_risk(
         assessment_id="risk-" + hashlib.sha256(
             f"{project_id}:{delivery_id}:{patch_sha}".encode()
@@ -466,8 +503,8 @@ def _risk_assessment_for_attempt(
         task_id=task.task_id,
         changed_paths=tuple(attempt.changed_files),
         protected_paths=protected_paths,
-        rollback_difficulty=RollbackDifficulty.UNKNOWN,
-        incident_count=None,
+        rollback_difficulty=rollback_difficulty,
+        incident_count=incident_count,
         reviewer_blockers=sum(
             finding.severity in {"blocker", "major"} for finding in review.findings
         ),
@@ -476,8 +513,7 @@ def _risk_assessment_for_attempt(
         evidence_refs=(
             f"delivery:{delivery_id}",
             f"patch:{patch_sha}",
-            "risk-fact:rollback-assessment-unknown",
-            "risk-fact:incident-history-unknown",
+            *facts,
         ),
     )
 
