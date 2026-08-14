@@ -71,6 +71,7 @@ def _setup(monkeypatch, tmp_path):
             target_identity=payload["target_identity"],
             coverage_start=payload["coverage_start"],
             baseline_generation=payload["baseline_generation"],
+            authoritative=True,
         )
 
     monkeypatch.setattr(controller, "load_historical_baseline", fake_load)
@@ -115,6 +116,20 @@ def test_external_baseline_rejects_invalid_operation_identity(monkeypatch, tmp_p
     _setup(monkeypatch, tmp_path)
     with pytest.raises(RuntimeError, match="identity"):
         controller.create_prospective_baseline(PROJECT, "operation-1")
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["historical-baseline-test-00000000", "historical-renewal-test-00000000"],
+)
+def test_external_controller_rejects_project_path_traversal(monkeypatch, tmp_path, operation):
+    _setup(monkeypatch, tmp_path)
+    malicious_project = "project-../../outside"
+    with pytest.raises(RuntimeError, match="identity"):
+        if operation.startswith("historical-baseline"):
+            controller.create_prospective_baseline(malicious_project, operation)
+        else:
+            controller.renew_prospective_evidence(malicious_project, operation)
 
 
 def test_external_baseline_rejects_incomplete_replay_journal(monkeypatch, tmp_path):
@@ -205,6 +220,7 @@ def test_verifier_rejects_tampered_source_and_target_drift(monkeypatch, tmp_path
     controller.create_prospective_baseline(
         PROJECT, "historical-baseline-test-00000000", target_sha=head
     )
+    monkeypatch.setattr(controller, "_now", lambda: "2099-01-01T00:00:02Z")
     authority = SimpleNamespace(
         constitution=SimpleNamespace(constitution_id="constitution-v1", record_hash="c" * 64),
         policy=SimpleNamespace(policy_id="merge-policy-adr-0003", policy_hash="a" * 64),
@@ -229,6 +245,7 @@ def test_verifier_rejects_target_drift(monkeypatch, tmp_path):
     controller.create_prospective_baseline(
         PROJECT, "historical-baseline-test-00000000", target_sha=head
     )
+    monkeypatch.setattr(controller, "_now", lambda: "2099-01-01T00:00:02Z")
     authority = SimpleNamespace(
         constitution=SimpleNamespace(constitution_id="constitution-v1", record_hash="c" * 64),
         policy=SimpleNamespace(policy_id="merge-policy-adr-0003", policy_hash="a" * 64),
@@ -244,3 +261,152 @@ def test_verifier_rejects_target_drift(monkeypatch, tmp_path):
     )
     with pytest.raises(historical_evidence.HistoricalEvidenceError, match="stale"):
         historical_evidence.load_historical_baseline(PROJECT, state_root=state)
+
+
+def test_external_renewal_signs_zero_evidence_and_preserves_unknown(monkeypatch, tmp_path):
+    state, _root, head = _setup(monkeypatch, tmp_path)
+    controller.create_prospective_baseline(
+        PROJECT, "historical-baseline-test-00000000", target_sha=head
+    )
+    monkeypatch.setattr(controller, "_now", lambda: "2099-01-01T00:00:02Z")
+    calls = 0
+
+    def load_current(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            return None
+        return SimpleNamespace(
+            evidence_generation=1,
+            renewal_operation_id="historical-renewal-test-00000000",
+            evidence_hash="e" * 64,
+        )
+
+    monkeypatch.setattr(controller, "load_historical_evidence", load_current)
+    result = controller.renew_prospective_evidence(
+        PROJECT, "historical-renewal-test-00000000"
+    )
+    assert result["status"] == "COMMITTED"
+    assert result["rollback"] == "VERIFIED_ZERO"
+    assert result["incident"] == "VERIFIED_ZERO"
+    for evidence_type in ("rollback", "incident"):
+        payload = json.loads(
+            (state / "historical-evidence" / PROJECT / f"{evidence_type}.json").read_text()
+        )["payload"]
+        assert payload["coverage_before_baseline"] == "UNKNOWN"
+        assert payload["count"] == 0
+        assert payload["evidence_generation"] == 1
+    activation = json.loads(
+        (state / "historical-evidence" / PROJECT / "evidence-activation.json").read_text()
+    )["payload"]
+    assert activation["status"] == "COMMITTED"
+    assert activation["evidence_generation"] == 1
+
+
+def test_external_renewal_is_idempotent_and_advances_generation(monkeypatch, tmp_path):
+    state, _root, head = _setup(monkeypatch, tmp_path)
+    controller.create_prospective_baseline(
+        PROJECT, "historical-baseline-test-00000000", target_sha=head
+    )
+    monkeypatch.setattr(controller, "_now", lambda: "2099-01-01T00:00:02Z")
+    calls = 0
+
+    def load_current(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            return None
+        return SimpleNamespace(
+            evidence_generation=1,
+            renewal_operation_id="historical-renewal-test-00000000",
+            evidence_hash="e" * 64,
+        )
+
+    monkeypatch.setattr(controller, "load_historical_evidence", load_current)
+    first = controller.renew_prospective_evidence(
+        PROJECT, "historical-renewal-test-00000000"
+    )
+    assert first["evidence_generation"] == 1
+    second = controller.renew_prospective_evidence(
+        PROJECT, "historical-renewal-test-00000000"
+    )
+    assert second["status"] == "ALREADY_COMMITTED"
+    assert second["evidence_generation"] == 1
+
+
+def test_current_ledger_source_rejects_namespace_escape(tmp_path):
+    directory = tmp_path / "historical-evidence" / PROJECT
+    directory.mkdir(parents=True)
+    evidence = SimpleNamespace(
+        project_id=PROJECT,
+        baseline_id="baseline-test-00000000",
+        evidence_type="rollback",
+        source_refs=(f"ledger:{PROJECT}:../outside.json",),
+        source_hashes=("a" * 64,),
+    )
+    with pytest.raises(historical_evidence.HistoricalEvidenceError, match="escapes"):
+        historical_evidence._verify_current_ledger_sources(evidence, directory)
+
+
+def test_current_ledger_source_rejects_symlinked_intermediate_directory(tmp_path):
+    directory = tmp_path / "historical-evidence" / PROJECT
+    directory.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (directory / "ledgers").symlink_to(outside, target_is_directory=True)
+    evidence = SimpleNamespace(
+        project_id=PROJECT,
+        baseline_id="baseline-test-00000000",
+        evidence_type="rollback",
+        source_refs=(f"ledger:{PROJECT}:ledgers/rollback-ledger.json",),
+        source_hashes=("a" * 64,),
+    )
+    with pytest.raises(historical_evidence.HistoricalEvidenceError, match="symlinks"):
+        historical_evidence._verify_current_ledger_sources(evidence, directory)
+
+
+def test_stale_predecessor_fallback_rejects_symlinked_current_evidence(monkeypatch, tmp_path):
+    directory = tmp_path / "historical-evidence" / PROJECT
+    directory.mkdir(parents=True)
+    (directory / "rollback.json").symlink_to(tmp_path / "outside.json")
+    evidence = SimpleNamespace(
+        baseline_id="baseline-test-00000000",
+        renewal_operation_id="historical-renewal-test-00000000",
+        evidence_generation=1,
+        evidence_hash="e" * 64,
+        source_hashes=("a" * 64,),
+        policy_hash="a" * 64,
+        constitution_id="constitution-v1",
+        authority_generation=1,
+        predecessor_evidence_hash=None,
+    )
+    monkeypatch.setattr(controller, "verify_current_bindings", lambda *_a, **_k: None)
+    with pytest.raises(RuntimeError, match="symlinks"):
+        controller._verify_committed_renewal_state(
+            tmp_path, PROJECT, "rollback", evidence
+        )
+
+
+def test_external_renewal_rejects_asymmetric_evidence_state(monkeypatch, tmp_path):
+    state, _root, head = _setup(monkeypatch, tmp_path)
+    controller.create_prospective_baseline(
+        PROJECT, "historical-baseline-test-00000000", target_sha=head
+    )
+    monkeypatch.setattr(controller, "_now", lambda: "2099-01-01T00:00:02Z")
+    calls = 0
+
+    def load_asymmetric(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return None if calls == 1 else SimpleNamespace(
+            evidence_generation=1,
+            renewal_operation_id="historical-renewal-old-00000000",
+            evidence_hash="e" * 64,
+        )
+
+    monkeypatch.setattr(controller, "load_historical_evidence", load_asymmetric)
+    with pytest.raises(RuntimeError, match="asymmetric"):
+        controller.renew_prospective_evidence(
+            PROJECT, "historical-renewal-test-00000000"
+        )
+    assert not (state / "historical-evidence" / PROJECT / "renewal-journal.json").exists()

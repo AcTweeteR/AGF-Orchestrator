@@ -119,6 +119,9 @@ def load_historical_evidence(
     except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise HistoricalEvidenceError("historical evidence is unreadable") from exc
     evidence = _parse(payload, evidence_type, expected_project_id=project_id)
+    if evidence.provenance.startswith("external-owner-controller:post-baseline"):
+        _verify_current_ledger_sources(evidence, directory)
+        _verify_evidence_activation(evidence, directory)
     if evidence.evidence_generation > 1:
         history_dir = directory / "history"
         predecessor_path = directory / "history" / (
@@ -203,6 +206,66 @@ def load_historical_evidence(
     except (TypeError, ValueError):
         return None
     return evidence
+
+
+def _verify_current_ledger_sources(evidence: HistoricalEvidence, directory: Path) -> None:
+    prefix = f"ledger:{evidence.project_id}:"
+    for source_ref, expected_hash in zip(evidence.source_refs, evidence.source_hashes):
+        if not source_ref.startswith(prefix):
+            raise HistoricalEvidenceError("historical source binding is invalid")
+        relative_source = Path(source_ref[len(prefix):])
+        if relative_source.is_absolute() or ".." in relative_source.parts:
+            raise HistoricalEvidenceError("historical source path escapes namespace")
+        source_path = directory
+        for component in relative_source.parts[:-1]:
+            source_path /= component
+            if source_path.is_symlink():
+                raise HistoricalEvidenceError("historical source namespace uses symlinks")
+        source_path /= relative_source.parts[-1]
+        try:
+            source_path.resolve().relative_to(directory.resolve())
+        except ValueError as exc:
+            raise HistoricalEvidenceError("historical source path escapes namespace") from exc
+        if source_path.is_symlink() or not source_path.is_file():
+            raise HistoricalEvidenceError("historical source is unavailable")
+        try:
+            source_payload = json.loads(source_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise HistoricalEvidenceError("historical source is unreadable") from exc
+        if _object_hash(source_payload) != expected_hash:
+            raise HistoricalEvidenceError("historical source integrity is invalid")
+        if (
+            source_payload.get("project_id") != evidence.project_id
+            or source_payload.get("baseline_id") != evidence.baseline_id
+            or source_payload.get("evidence_type") != evidence.evidence_type
+            or source_payload.get("coverage_before_baseline") != "UNKNOWN"
+        ):
+            raise HistoricalEvidenceError("historical source binding is invalid")
+
+
+def _verify_evidence_activation(evidence: HistoricalEvidence, directory: Path) -> None:
+    path = directory / "evidence-activation.json"
+    try:
+        if path.is_symlink():
+            raise HistoricalEvidenceError("historical activation uses a symlink")
+        document = json.loads(path.read_text(encoding="utf-8"))
+        payload, envelope = document["payload"], document["envelope"]
+        verify_envelope(payload, envelope)
+    except HistoricalEvidenceError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise HistoricalEvidenceError("historical evidence activation is unavailable") from exc
+    if (
+        payload.get("status") != "COMMITTED"
+        or payload.get("project_id") != evidence.project_id
+        or payload.get("baseline_id") != evidence.baseline_id
+        or payload.get("operation_id") != evidence.renewal_operation_id
+        or payload.get("evidence_generation") != evidence.evidence_generation
+        or payload.get("evidence_hashes", {}).get(evidence.evidence_type) != evidence.evidence_hash
+        or payload.get("source_hashes", {}).get(evidence.evidence_type)
+        != evidence.source_hashes[0]
+    ):
+        raise HistoricalEvidenceError("historical evidence activation is invalid")
 
 
 def load_historical_baseline(

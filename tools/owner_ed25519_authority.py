@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import subprocess
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -30,19 +31,26 @@ from agf_orchestrator.authority_generation import (
 )
 from agf_orchestrator.constitution import ConstitutionAuthority, canonical_json
 from agf_orchestrator.historical_evidence import (
+    EvidenceStatus,
     HistoricalEvidenceError,
     load_historical_baseline,
+    load_historical_evidence,
+    verify_current_bindings,
 )
+from agf_orchestrator.historical_evidence import _parse as _parse_historical_evidence
 from agf_orchestrator.locking import project_lock
 from agf_orchestrator.owner_authority import (
     PINNED_OWNER_FINGERPRINT,
     canonical_bytes,
     load_pinned_anchor,
+    verify_envelope,
 )
 from agf_orchestrator.policy_authority import PolicyAuthority
 from agf_orchestrator.policy_state_store import PolicyStateStore
 from agf_orchestrator.project_registry import ProjectRegistry
 from agf_orchestrator.provider_intelligence import ProviderIntelligenceStore, state_from_dict
+
+_PROJECT_ID = re.compile(r"^project-[0-9a-f]{16}$")
 
 
 def _now() -> str:
@@ -205,7 +213,9 @@ def create_prospective_baseline(
     This is intentionally an external owner operation.  Runtime historical
     verification has no mutation path and cannot call this function.
     """
-    if not project_id.startswith("project-") or not operation_id.startswith("historical-baseline-"):
+    if not _PROJECT_ID.fullmatch(project_id) or not operation_id.startswith(
+        "historical-baseline-"
+    ):
         raise RuntimeError("baseline identity is invalid")
     state_dir = _migration_state_dir()
     with project_lock(state_dir, project_id, "historical-baseline-create"):
@@ -407,6 +417,213 @@ def create_prospective_baseline(
         }
 
 
+def renew_prospective_evidence(project_id: str, operation_id: str) -> dict[str, object]:
+    """Inspect append-only prospective ledgers and sign their current observation."""
+    if not _PROJECT_ID.fullmatch(project_id) or not operation_id.startswith(
+        "historical-renewal-"
+    ):
+        raise RuntimeError("historical renewal identity is invalid")
+    state_dir = _migration_state_dir()
+    with project_lock(state_dir, project_id, "historical-evidence-renew"):
+        project = ProjectRegistry(state_dir).verify_read_only(project_id)
+        if project.status.value != "ACTIVE":
+            raise RuntimeError("project registration is not ACTIVE")
+        authority = resolve_authority(project_id)
+        if authority.constitution is None or authority.policy is None or authority.snapshot is None:
+            raise RuntimeError("current project authority is unavailable")
+        baseline = load_historical_baseline(project_id, state_root=state_dir)
+        if baseline is None or not baseline.authoritative:
+            raise RuntimeError("an authoritative prospective baseline is required")
+        observed_sha = subprocess.run(
+            ["git", "-C", project.repository_root, "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True, shell=False,
+        ).stdout.strip()
+        if observed_sha != baseline.target_sha or project.current_head_sha != observed_sha:
+            raise RuntimeError("prospective evidence target SHA is stale")
+        current = {}
+        for evidence_type in ("rollback", "incident"):
+            try:
+                current[evidence_type] = load_historical_evidence(
+                    project_id, evidence_type, state_root=state_dir, max_age_seconds=10**9
+                )
+            except HistoricalEvidenceError:
+                # An append-only ledger may have advanced since the last signed
+                # observation. Preserve the signed predecessor, but do not use
+                # its stale source snapshot as current evidence.
+                path = state_dir / "historical-evidence" / project_id / f"{evidence_type}.json"
+                try:
+                    document = _read_object(path)
+                    verify_envelope(document["payload"], document["envelope"])
+                    current[evidence_type] = _parse_historical_evidence(
+                        document["payload"], evidence_type, expected_project_id=project_id
+                    )
+                    _verify_committed_renewal_state(
+                        state_dir, project_id, evidence_type, current[evidence_type]
+                    )
+                except (
+                    OSError,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                    HistoricalEvidenceError,
+                ) as fallback_exc:
+                    raise RuntimeError("existing prospective evidence is invalid") from fallback_exc
+        existing_generations = {
+            item.evidence_generation for item in current.values() if item is not None
+        }
+        present = [item is not None for item in current.values()]
+        if any(present) and not all(present):
+            raise RuntimeError("rollback and incident evidence state is asymmetric")
+        if len(existing_generations) > 1:
+            raise RuntimeError("rollback and incident evidence generations disagree")
+        if current and all(item is not None and item.renewal_operation_id == operation_id
+                            for item in current.values()):
+            return {"status": "ALREADY_COMMITTED", "project_id": project_id,
+                    "operation_id": operation_id,
+                    "evidence_generation": next(iter(existing_generations), 1),
+                    "baseline_id": baseline.baseline_id}
+        generation = next(iter(existing_generations), 0) + 1
+        predecessors = {
+            key: (value.evidence_hash if value is not None else None)
+            for key, value in current.items()
+        }
+        now = _now()
+        coverage_start = (
+            next(iter(current.values())).coverage_end
+            if current and all(value is not None for value in current.values())
+            else baseline.coverage_start
+        )
+        if datetime.fromisoformat(now.replace("Z", "+00:00")) <= datetime.fromisoformat(
+            coverage_start.replace("Z", "+00:00")
+        ):
+            raise RuntimeError("prospective evidence interval has not advanced")
+        directory = state_dir / "historical-evidence" / project_id
+        journal_path = directory / "renewal-journal.json"
+        activation_path = directory / "evidence-activation.json"
+        ledger_directory = directory / "ledgers"
+        history_dir = directory / "history"
+        if any(
+            path.is_symlink()
+            for path in (directory, ledger_directory, history_dir, journal_path, activation_path)
+        ):
+            raise RuntimeError("historical evidence namespace must not use symlinks")
+        evidence_payloads = {}
+        source_hashes = {}
+        for evidence_type in ("rollback", "incident"):
+            source_path = directory / "ledgers" / f"{evidence_type}-ledger.json"
+            if source_path.is_symlink() or not source_path.is_file():
+                raise RuntimeError("authoritative prospective ledger is unavailable")
+            ledger = _read_object(source_path)
+            if (
+                ledger.get("project_id") != project_id
+                or ledger.get("baseline_id") != baseline.baseline_id
+                or ledger.get("evidence_type") != evidence_type
+                or ledger.get("coverage_before_baseline") != "UNKNOWN"
+                or ledger.get("coverage_status_from_baseline") != "AUTHORITATIVE"
+                or not isinstance(ledger.get("records"), list)
+            ):
+                raise RuntimeError("authoritative prospective ledger binding is invalid")
+            records = ledger["records"]
+            for record in records:
+                if not isinstance(record, dict) or not any(
+                    isinstance(record.get(key), str) and record[key]
+                    for key in ("event_id", "record_id", "id")
+                ):
+                    raise RuntimeError("qualifying ledger record lacks an event identity")
+            source_ref = f"ledger:{project_id}:ledgers/{evidence_type}-ledger.json"
+            source_hash = _object_hash(ledger)
+            source_hashes[evidence_type] = source_hash
+            count = len(records)
+            evidence_payloads[evidence_type] = {
+                "schema_version": "1.0", "project_id": project_id,
+                "evidence_type": evidence_type,
+                "status": EvidenceStatus.VERIFIED_ZERO.value if count == 0
+                else EvidenceStatus.VERIFIED_EVENTS.value,
+                "count": count, "baseline_id": baseline.baseline_id,
+                "coverage_before_baseline": "UNKNOWN", "coverage_start": coverage_start,
+                "coverage_end": now, "evidence_generation": generation,
+                "predecessor_evidence_hash": predecessors[evidence_type],
+                "renewal_operation_id": operation_id,
+                "definition_version": "agf-historical-events-v1",
+                "source_refs": [source_ref], "source_hashes": [source_hash],
+                "policy_hash": authority.policy.policy_hash,
+                "constitution_id": authority.constitution.constitution_id,
+                "authority_generation": int(authority.snapshot["generation"]),
+                "generated_at": now,
+                "provenance": "external-owner-controller:post-baseline;pre-baseline=UNKNOWN",
+                "coverage_complete": True,
+                "completeness_basis": "owner-completeness-v1:prospective-ledger-inspection",
+            }
+            payload = evidence_payloads[evidence_type]
+            payload["evidence_hash"] = _object_hash(payload)
+        journal_payload = {
+            "status": "PREPARED", "operation_id": operation_id, "project_id": project_id,
+            "baseline_id": baseline.baseline_id, "evidence_type": "rollback+incident",
+            "evidence_generation": generation,
+            "predecessor_evidence_hashes": predecessors,
+            "evidence_hashes": {
+                key: value["evidence_hash"] for key, value in evidence_payloads.items()
+            },
+            "source_hashes": source_hashes, "policy_hash": authority.policy.policy_hash,
+            "constitution_id": authority.constitution.constitution_id,
+            "authority_generation": int(authority.snapshot["generation"]),
+            "coverage_start": coverage_start, "coverage_end": now,
+        }
+        _atomic_write(
+            journal_path,
+            {
+                "payload": journal_payload,
+                "envelope": sign_envelope(journal_payload, _generation_root()),
+            },
+        )
+        for evidence_type, previous in current.items():
+            if previous is not None:
+                old_path = directory / f"{evidence_type}.json"
+                history_path = history_dir / f"{evidence_type}-{previous.evidence_hash}.json"
+                if history_path.exists() or history_path.is_symlink():
+                    raise RuntimeError("historical evidence predecessor already exists")
+                _atomic_write(history_path, _read_object(old_path))
+        for evidence_type, payload in evidence_payloads.items():
+            _atomic_write(
+                directory / f"{evidence_type}.json",
+                {
+                    "payload": payload,
+                    "envelope": sign_envelope(payload, _generation_root()),
+                },
+            )
+        journal_payload = {**journal_payload, "status": "COMMITTED"}
+        _atomic_write(
+            journal_path,
+            {
+                "payload": journal_payload,
+                "envelope": sign_envelope(journal_payload, _generation_root()),
+            },
+        )
+        activation_payload = {
+            "status": "COMMITTED", "project_id": project_id,
+            "baseline_id": baseline.baseline_id, "operation_id": operation_id,
+            "evidence_generation": generation,
+            "evidence_hashes": journal_payload["evidence_hashes"],
+            "source_hashes": source_hashes, "committed_at": _now(),
+        }
+        _atomic_write(
+            activation_path,
+            {
+                "payload": activation_payload,
+                "envelope": sign_envelope(activation_payload, _generation_root()),
+            },
+        )
+        for evidence_type in ("rollback", "incident"):
+            verified = load_historical_evidence(project_id, evidence_type, state_root=state_dir)
+            if verified is None:
+                raise RuntimeError("prospective evidence post-commit verification failed")
+        return {"status": "COMMITTED", "project_id": project_id,
+                "operation_id": operation_id, "baseline_id": baseline.baseline_id,
+                "evidence_generation": generation,
+                "rollback": evidence_payloads["rollback"]["status"],
+                "incident": evidence_payloads["incident"]["status"]}
+
+
 def _require_fresh_profile_observations(previous, proposed) -> None:
     old_observations = {
         item.profile.profile_id: item.profile.observed_at for item in previous.candidates
@@ -420,6 +637,58 @@ def _require_fresh_profile_observations(previous, proposed) -> None:
         for key in old_observations
     ):
         raise RuntimeError("provider renewal requires fresh profile observations")
+
+
+def _verify_committed_renewal_state(
+    state_dir: Path, project_id: str, evidence_type: str, evidence: object
+) -> None:
+    """Permit stale-source predecessor use only after committed-state proof."""
+    directory = state_dir / "historical-evidence" / project_id
+    activation_path = directory / "evidence-activation.json"
+    journal_path = directory / "renewal-journal.json"
+    history_dir = directory / "history"
+    evidence_paths = tuple(directory / f"{kind}.json" for kind in ("rollback", "incident"))
+    if any(
+        path.is_symlink()
+        for path in (directory, activation_path, journal_path, history_dir, *evidence_paths)
+    ):
+        raise RuntimeError("historical evidence namespace must not use symlinks")
+    activation = _read_object(activation_path)
+    verify_envelope(activation["payload"], activation["envelope"])
+    activation_payload = activation["payload"]
+    verify_current_bindings(evidence, expected_project_id=project_id)
+    if (
+        activation_payload.get("status") != "COMMITTED"
+        or activation_payload.get("project_id") != project_id
+        or activation_payload.get("baseline_id") != evidence.baseline_id
+        or activation_payload.get("operation_id") != evidence.renewal_operation_id
+        or activation_payload.get("evidence_generation") != evidence.evidence_generation
+        or activation_payload.get("evidence_hashes", {}).get(evidence_type)
+        != evidence.evidence_hash
+        or activation_payload.get("source_hashes", {}).get(evidence_type)
+        != evidence.source_hashes[0]
+    ):
+        raise RuntimeError("incomplete prospective evidence activation")
+    journal = _read_object(journal_path)
+    verify_envelope(journal["payload"], journal["envelope"])
+    journal_payload = journal["payload"]
+    if (
+        journal_payload.get("status") != "COMMITTED"
+        or journal_payload.get("project_id") != project_id
+        or journal_payload.get("baseline_id") != evidence.baseline_id
+        or journal_payload.get("operation_id") != evidence.renewal_operation_id
+        or journal_payload.get("evidence_generation") != evidence.evidence_generation
+        or journal_payload.get("evidence_hashes", {}).get(evidence_type)
+        != evidence.evidence_hash
+        or journal_payload.get("source_hashes", {}).get(evidence_type)
+        != evidence.source_hashes[0]
+        or journal_payload.get("policy_hash") != evidence.policy_hash
+        or journal_payload.get("constitution_id") != evidence.constitution_id
+        or journal_payload.get("authority_generation") != evidence.authority_generation
+        or journal_payload.get("predecessor_evidence_hashes", {}).get(evidence_type)
+        != evidence.predecessor_evidence_hash
+    ):
+        raise RuntimeError("incomplete prospective evidence journal")
 
 
 def _migration_state_dir() -> Path:
@@ -831,6 +1100,7 @@ def main() -> int:
     parser.add_argument("--cutover-generation")
     parser.add_argument("--renew-provider-candidate")
     parser.add_argument("--create-prospective-baseline", action="store_true")
+    parser.add_argument("--renew-prospective-evidence", action="store_true")
     parser.add_argument("--target-sha")
     args = parser.parse_args()
     if args.prepare_generation:
@@ -845,6 +1115,8 @@ def main() -> int:
         result = create_prospective_baseline(
             args.project, args.operation_id, target_sha=args.target_sha
         )
+    elif args.renew_prospective_evidence:
+        result = renew_prospective_evidence(args.project, args.operation_id)
     else:
         result = prepare_root(args.project, args.operation_id, Path.home() / ".agf-owner-root")
     print(json.dumps(result, sort_keys=True))
