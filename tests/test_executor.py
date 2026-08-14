@@ -45,7 +45,8 @@ def make_plan(repo, *, branch="feature", task=None, architecture=None, status=Pl
         "low", "Implementer", PlanStatus.READY,
     )
     repository = RepositoryContext(
-        str(repo), branch, "https://example.invalid/repo.git", True, "abc123"
+        str(repo), branch, "https://example.invalid/repo.git", True,
+        git(repo, "rev-parse", "HEAD").stdout.strip(),
     )
     plan = ExecutionPlan(
         "1.0", "plan-test", "1970-01-01T00:00:00Z", repository, "Update the file",
@@ -126,12 +127,12 @@ def test_unverified_invocation_syntax_requires_human(monkeypatch, tmp_path):
     assert git(tmp_path, "status", "--porcelain").stdout == ""
 
 
-def test_dry_run_blocks_main_and_missing_allowed_paths(tmp_path):
+def test_dry_run_allows_isolated_execution_from_main_and_checks_allowed_paths(tmp_path):
     init_repo(tmp_path, branch="main")
     plan = make_plan(tmp_path, branch="main")
     result = Executor().execute(plan, "task-001", str(tmp_path))
-    assert result.status is ExecutionStatus.BLOCKED
-    assert "main or master" in result.blocking_issues[0]
+    assert result.status is ExecutionStatus.DRY_RUN
+    assert any("isolated temporary worktree" in item for item in result.evidence)
 
     git(tmp_path, "checkout", "-b", "feature")
     invalid_task = replace(plan.tasks[0], allowed_paths=[])
@@ -139,6 +140,105 @@ def test_dry_run_blocks_main_and_missing_allowed_paths(tmp_path):
     result = Executor().execute(invalid_plan, "task-001", str(tmp_path))
     assert result.status is ExecutionStatus.BLOCKED
     assert "allowed_paths" in result.blocking_issues[0]
+
+
+def test_live_execution_from_main_mutates_only_isolated_worktree(tmp_path):
+    init_repo(tmp_path, branch="main")
+    plan = make_plan(tmp_path, branch="main")
+    head_before = git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+    worktrees_before = git(tmp_path, "worktree", "list", "--porcelain").stdout
+    result = Executor(
+        CodexAdapter(
+            str(fake_codex(tmp_path)), timeout=2, profile=CodexInvocationProfile()
+        )
+    ).execute(plan, "task-001", str(tmp_path), dry_run=False)
+    assert result.status is ExecutionStatus.COMPLETED
+    assert git(tmp_path, "rev-parse", "HEAD").stdout.strip() == head_before
+    assert git(tmp_path, "status", "--porcelain").stdout == ""
+    assert git(tmp_path, "worktree", "list", "--porcelain").stdout == worktrees_before
+
+
+def test_head_drift_before_isolated_worktree_is_fail_closed(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    plan = make_plan(tmp_path)
+    from agf_orchestrator import executor as executor_module
+
+    original = executor_module._create_worktree
+
+    def drift_then_create(repository, head_sha):
+        (Path(repository) / "allowed.txt").write_text("drift\n")
+        git(repository, "add", "allowed.txt")
+        git(repository, "commit", "-m", "unexpected drift")
+        return original(repository, head_sha)
+
+    monkeypatch.setattr(executor_module, "_create_worktree", drift_then_create)
+    result = Executor(
+        CodexAdapter(
+            str(fake_codex(tmp_path)), timeout=2, profile=CodexInvocationProfile()
+        )
+    ).execute(plan, "task-001", str(tmp_path), dry_run=False)
+    assert result.status is ExecutionStatus.FAILED
+    assert "repository HEAD changed" in result.blocking_issues[0]
+
+
+def test_head_drift_during_worktree_creation_is_fail_closed(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    plan = make_plan(tmp_path)
+    from agf_orchestrator import executor as executor_module
+
+    original_run = executor_module.subprocess.run
+    drifted = False
+
+    def drift_during_add(command, *args, **kwargs):
+        nonlocal drifted
+        if not drifted and command[:5] == ["git", "-C", str(tmp_path), "worktree", "add"]:
+            drifted = True
+            (Path(tmp_path) / "allowed.txt").write_text("drift\n")
+            git(tmp_path, "add", "allowed.txt")
+            git(tmp_path, "commit", "-m", "unexpected concurrent drift")
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(executor_module.subprocess, "run", drift_during_add)
+    result = Executor(
+        CodexAdapter(
+            str(fake_codex(tmp_path)), timeout=2, profile=CodexInvocationProfile()
+        )
+    ).execute(plan, "task-001", str(tmp_path), dry_run=False)
+    assert result.status is ExecutionStatus.FAILED
+    assert "during isolated worktree creation" in result.blocking_issues[0]
+
+
+def test_head_drift_before_provider_invocation_is_fail_closed(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    plan = make_plan(tmp_path)
+    from agf_orchestrator import executor as executor_module
+
+    original = executor_module._create_worktree
+
+    def create_then_drift(repository, head_sha):
+        worktree = original(repository, head_sha)
+        (Path(repository) / "allowed.txt").write_text("drift\n")
+        git(repository, "add", "allowed.txt")
+        git(repository, "commit", "-m", "unexpected pre-invocation drift")
+        return worktree
+
+    monkeypatch.setattr(executor_module, "_create_worktree", create_then_drift)
+    result = Executor(
+        CodexAdapter(
+            str(fake_codex(tmp_path)), timeout=2, profile=CodexInvocationProfile()
+        )
+    ).execute(plan, "task-001", str(tmp_path), dry_run=False)
+    assert result.status is ExecutionStatus.FAILED
+    assert "before provider invocation" in result.blocking_issues[0]
+    assert git(tmp_path, "worktree", "list", "--porcelain").stdout.count("worktree ") == 1
+
+
+def test_plan_branch_and_base_sha_mismatch_is_fail_closed(tmp_path):
+    init_repo(tmp_path, branch="main")
+    plan = make_plan(tmp_path, branch="feature")
+    result = Executor().execute(plan, "task-001", str(tmp_path))
+    assert result.status is ExecutionStatus.BLOCKED
+    assert "branch does not match" in result.blocking_issues[0]
 
 
 def test_fake_codex_success_is_completed_with_scoped_change(tmp_path):
@@ -240,7 +340,7 @@ def test_validation_command_policy_rejects_shell_syntax(tmp_path):
 def test_quoted_python_validation_command_is_allowed(tmp_path):
     init_repo(tmp_path)
     command = (
-        'python -B -c "from pathlib import Path; '
+        'python3 -B -c "from pathlib import Path; '
         "assert Path('allowed.txt').read_text().strip() == 'before'\""
     )
     task = replace(make_plan(tmp_path).tasks[0], validation_commands=[command])
@@ -300,17 +400,14 @@ def test_nonexistent_validation_executable_is_blocked(tmp_path):
     assert "cannot be resolved" in result.blocking_issues[0]
 
 
-@pytest.mark.parametrize(
-    "branch, expected",
-    [("main", "main or master"), ("master", "main or master")],
-)
-def test_default_branches_are_blocked(tmp_path, branch, expected):
+@pytest.mark.parametrize("branch", ["main", "master"])
+def test_default_branches_are_safe_as_isolated_execution_sources(tmp_path, branch):
     init_repo(tmp_path, branch=branch)
     result = Executor().execute(
         make_plan(tmp_path, branch=branch), "task-001", str(tmp_path), dry_run=False
     )
-    assert result.status in {ExecutionStatus.BLOCKED, ExecutionStatus.HUMAN_REQUIRED}
-    assert expected in result.blocking_issues[0]
+    assert result.status is not ExecutionStatus.BLOCKED
+    assert any("isolated temporary worktree" in item for item in result.evidence)
 
 
 def test_detached_head_is_blocked(tmp_path):
