@@ -6,7 +6,7 @@ import pytest
 
 from agf_orchestrator.adapters.codex import CodexAdapter, CodexInvocationProfile
 from agf_orchestrator.execution_models import ExecutionStatus
-from agf_orchestrator.executor import Executor, write_execution_result
+from agf_orchestrator.executor import Executor, _changed_paths, write_execution_result
 from agf_orchestrator.models import ExecutionPlan, PlanStatus, RepositoryContext, Task
 
 
@@ -14,6 +14,18 @@ def git(path, *args):
     return subprocess.run(
         ["git", "-C", str(path), *args], check=True, capture_output=True, text=True
     )
+
+
+def test_changed_paths_ignores_generated_python_cache_but_keeps_real_changes():
+    assert _changed_paths(
+        [],
+        [
+            " M calculator.py",
+            "?? __pycache__/calculator.cpython-314.pyc",
+            "?? tests/.pytest_cache/v/cache/lastfailed",
+            " M tracked.pyc",
+        ],
+    ) == ["calculator.py", "tracked.pyc"]
 
 
 def init_repo(tmp_path, branch="feature"):
