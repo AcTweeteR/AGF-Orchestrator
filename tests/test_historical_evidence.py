@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -29,6 +30,9 @@ def payload(project="project-ec392dd7e95cf253", evidence_type="incident", count=
         "count": count,
         "baseline_id": "baseline-test-00000000",
         "coverage_before_baseline": "UNKNOWN",
+        "evidence_generation": 1,
+        "predecessor_evidence_hash": None,
+        "renewal_operation_id": "historical-renewal-initial",
         "coverage_start": "2026-08-13T12:28:22+00:00",
         "coverage_end": "2026-08-14T12:28:22+00:00",
         "definition_version": "1.0",
@@ -146,6 +150,118 @@ def test_generated_before_coverage_start_is_unknown(monkeypatch, tmp_path):
     assert load_historical_evidence(
         "project-ec392dd7e95cf253", "incident", state_root=tmp_path
     ) is None
+
+
+def test_symlinked_historical_namespace_is_rejected(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    namespace = tmp_path / "historical-evidence"
+    os.symlink(outside, namespace)
+    with pytest.raises(HistoricalEvidenceError, match="symlinks"):
+        load_historical_evidence(
+            "project-ec392dd7e95cf253", "incident", state_root=tmp_path
+        )
+
+
+def test_symlinked_predecessor_namespace_is_rejected(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "agf_orchestrator.historical_evidence.verify_envelope", lambda payload, envelope: None
+    )
+    path = tmp_path / "historical-evidence" / "project-ec392dd7e95cf253"
+    path.mkdir(parents=True)
+    document = payload()
+    document.update({
+        "evidence_generation": 2,
+        "predecessor_evidence_hash": "a" * 64,
+        "renewal_operation_id": "historical-renewal-test-00000000",
+    })
+    document["evidence_hash"] = hashlib.sha256(
+        json.dumps({k: v for k, v in document.items() if k != "evidence_hash"},
+                   sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    os.symlink(outside, path / "history")
+    (path / "incident.json").write_text(
+        json.dumps({"payload": document, "envelope": {}}), encoding="utf-8"
+    )
+    with pytest.raises(HistoricalEvidenceError, match="unavailable|symlinks"):
+        load_historical_evidence(
+            "project-ec392dd7e95cf253", "incident", state_root=tmp_path
+        )
+
+
+def test_generation_two_requires_signed_predecessor_and_journal(monkeypatch, tmp_path):
+    key = Ed25519PrivateKey.generate()
+    public = key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    fingerprint = hashlib.sha256(public).hexdigest()
+    root = tmp_path / "owner-root"
+    root.mkdir(mode=0o700)
+    (root / "owner-public.key").write_text(base64.b64encode(public).decode())
+    (root / "anchor.json").write_text(json.dumps({
+        "schema_version": "1.0", "signature_scheme": "Ed25519",
+        "key_id": "owner-key-1", "fingerprint": fingerprint,
+    }))
+    monkeypatch.setattr("agf_orchestrator.owner_authority.DEFAULT_ROOT", root)
+    monkeypatch.setattr("agf_orchestrator.owner_authority.PINNED_OWNER_FINGERPRINT", fingerprint)
+
+    def signed(value):
+        canonical = json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+        return {
+            "signature_scheme": "Ed25519", "signature_version": "1", "key_id": "owner-key-1",
+            "public_key_fingerprint": fingerprint,
+            "payload_hash": hashlib.sha256(canonical).hexdigest(),
+            "signature": base64.b64encode(key.sign(canonical)).decode(),
+        }
+
+    path = tmp_path / "historical-evidence" / "project-ec392dd7e95cf253"
+    (path / "history").mkdir(parents=True)
+    previous = payload()
+    now = datetime.now(UTC).replace(microsecond=0)
+    previous["coverage_start"] = (now - timedelta(hours=2)).isoformat()
+    previous["coverage_end"] = (now - timedelta(hours=1)).isoformat()
+    previous["generated_at"] = previous["coverage_end"]
+    previous["evidence_hash"] = hashlib.sha256(
+        json.dumps({k: v for k, v in previous.items() if k != "evidence_hash"},
+                   sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    previous_hash = previous["evidence_hash"]
+    now = now.isoformat()
+    current = payload()
+    current.update({
+        "coverage_start": previous["coverage_end"], "coverage_end": now,
+        "generated_at": now, "evidence_generation": 2,
+        "predecessor_evidence_hash": previous_hash,
+        "renewal_operation_id": "historical-renewal-test-00000000",
+    })
+    current["evidence_hash"] = hashlib.sha256(
+        json.dumps({k: v for k, v in current.items() if k != "evidence_hash"},
+                   sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    (path / "history" / f"incident-{previous_hash}.json").write_text(
+        json.dumps({"payload": previous, "envelope": signed(previous)}), encoding="utf-8"
+    )
+    journal = {
+        "status": "COMMITTED", "operation_id": current["renewal_operation_id"],
+        "project_id": current["project_id"], "baseline_id": current["baseline_id"],
+        "evidence_type": "incident", "evidence_generation": 2,
+        "predecessor_evidence_hashes": {"incident": previous_hash},
+        "policy_hash": current["policy_hash"], "constitution_id": current["constitution_id"],
+        "authority_generation": 1, "evidence_hashes": {"incident": current["evidence_hash"]},
+    }
+    (path / "renewal-journal.json").write_text(
+        json.dumps({"payload": journal, "envelope": signed(journal)}), encoding="utf-8"
+    )
+    (path / "incident.json").write_text(
+        json.dumps({"payload": current, "envelope": signed(current)}), encoding="utf-8"
+    )
+    assert load_historical_evidence(
+        "project-ec392dd7e95cf253", "incident", state_root=tmp_path
+    ).evidence_generation == 2
 
 
 def test_valid_ed25519_record_is_consumed_with_pinned_test_anchor(monkeypatch, tmp_path):

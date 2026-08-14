@@ -386,6 +386,26 @@ def _integrity_bound_decision(
     )
     if authority_binding not in risk_assessment.evidence_refs:
         raise ExecutionValidationError("risk evidence authority binding is stale")
+    snapshot_refs = [
+        item for item in risk_assessment.evidence_refs if item.startswith("risk-snapshot:")
+    ]
+    if len(snapshot_refs) != 1:
+        raise ExecutionValidationError("risk evidence snapshot binding is missing")
+    try:
+        snapshot_end = datetime.fromisoformat(snapshot_refs[0].split("=", 1)[1])
+        now = datetime.now(UTC)
+        if snapshot_end.tzinfo is None or snapshot_end > now or now - snapshot_end > timedelta(
+            seconds=int(active.freshness_limits["policy_seconds"])
+        ):
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise ExecutionValidationError("risk evidence snapshot binding is stale")
+    snapshot_value = snapshot_refs[0].split("=", 1)[1]
+    for evidence_ref in (
+        item for item in risk_assessment.evidence_refs if item.startswith("risk-evidence:")
+    ):
+        if "coverage=" not in evidence_ref or snapshot_value not in evidence_ref:
+            raise ExecutionValidationError("risk evidence coverage is not snapshot-bound")
     policy = merge_policy_from_verified_active(project_id)
     observed_at = datetime.now(UTC).replace(microsecond=0).isoformat()
     patch_sha = attempt.patch.sha256 if attempt.patch is not None else ""
@@ -508,10 +528,18 @@ def _risk_assessment_for_attempt(
         and authority.snapshot is not None
         else "risk-authority:UNAVAILABLE"
     )
+    snapshot_ends = tuple(
+        evidence.coverage_end
+        for evidence in (rollback_evidence, incident_evidence)
+        if evidence is not None
+    )
+    if snapshot_ends and len(set(snapshot_ends)) != 1:
+        raise ExecutionValidationError("historical evidence coverage snapshots disagree")
     facts = (
         f"risk-fact:rollback={rollback_evidence.status.value if rollback_evidence else 'UNKNOWN'}",
         f"risk-fact:incidents={incident_evidence.status.value if incident_evidence else 'UNKNOWN'}",
         authority_fact,
+        f"risk-snapshot:historical-coverage-end={snapshot_ends[0] if snapshot_ends else 'NONE'}",
         *((
             f"risk-evidence:rollback:{rollback_evidence.evidence_hash}:"
             f"baseline={rollback_evidence.baseline_id}:"
@@ -562,7 +590,7 @@ def _load_prospective_evidence(
         baseline is None
         or evidence is None
         or evidence.baseline_id != baseline.baseline_id
-        or evidence.coverage_start != baseline.coverage_start
+        or evidence.coverage_start < baseline.coverage_start
         or evidence.coverage_before_baseline != "UNKNOWN"
     ):
         return None
@@ -572,7 +600,7 @@ def _load_prospective_evidence(
         end = datetime.fromisoformat(evidence.coverage_end)
     except ValueError:
         return None
-    if start.tzinfo is None or end < decision or start > decision:
+    if start.tzinfo is None or end < start or start > decision:
         return None
     return evidence
 

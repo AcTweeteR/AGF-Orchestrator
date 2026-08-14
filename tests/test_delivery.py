@@ -2,10 +2,13 @@ import subprocess
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
 from agf_orchestrator.adapters.codex import CodexAdapter, CodexInvocationProfile
 from agf_orchestrator.delivery import (
     Attempt,
     DeliveryPipeline,
+    ExecutionValidationError,
     PatchArtifact,
     _load_prospective_evidence,
     _patch_policy,
@@ -114,13 +117,13 @@ def test_prospective_evidence_uses_persisted_baseline_and_preserves_unknown(monk
     assert evidence.coverage_before_baseline == "UNKNOWN"
 
 
-def test_narrow_prospective_evidence_does_not_authorize_current_decision(monkeypatch):
+def test_future_prospective_evidence_does_not_authorize_current_decision(monkeypatch):
     decision = "2026-08-14T08:15:00+00:00"
     evidence = SimpleNamespace(
         baseline_id="baseline-test-00000000",
         coverage_before_baseline="UNKNOWN",
-        coverage_start="2026-08-14T08:12:35+00:00",
-        coverage_end="2026-08-14T08:14:59+00:00",
+        coverage_start="2026-08-14T08:15:01+00:00",
+        coverage_end="2026-08-14T08:16:00+00:00",
     )
     monkeypatch.setattr(
         "agf_orchestrator.delivery.load_historical_evidence",
@@ -178,6 +181,50 @@ def test_mismatched_baseline_keeps_delivery_risk_fail_closed(monkeypatch, tmp_pa
     )
     assert report.level.name == "CRITICAL"
     assert "risk-fact:rollback=UNKNOWN" in report.evidence_refs
+
+
+def test_unequal_historical_snapshots_fail_closed(monkeypatch, tmp_path):
+    root = setup_repo(tmp_path)
+    base = SimpleNamespace(
+        project_id="project-ec392dd7e95cf253", policy_hash="b" * 64,
+        constitution_id="constitution-v1", authority_generation=1,
+        baseline_id="baseline-test-00000000", coverage_before_baseline="UNKNOWN",
+        coverage_start="2026-08-14T08:12:35+00:00", status=SimpleNamespace(value="VERIFIED_ZERO"),
+        count=0, evidence_hash="a" * 64,
+    )
+    rollback = SimpleNamespace(**base.__dict__, coverage_end="2026-08-14T08:20:00+00:00")
+    incident = SimpleNamespace(**base.__dict__, coverage_end="2026-08-14T08:21:00+00:00")
+    monkeypatch.setattr(
+        "agf_orchestrator.delivery.load_historical_baseline",
+        lambda *args, **kwargs: base,
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.delivery.load_historical_evidence",
+        lambda project_id, evidence_type, **kwargs: (
+            rollback if evidence_type == "rollback" else incident
+        ),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.delivery.verify_current_bindings", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.delivery.resolve_authority",
+        lambda project_id: SimpleNamespace(
+            constitution=SimpleNamespace(constitution_id="constitution-v1"),
+            policy=SimpleNamespace(
+                freshness_limits={"policy_seconds": 86400}, policy_hash="b" * 64
+            ),
+            snapshot={"generation": 1},
+        ),
+    )
+    with pytest.raises(ExecutionValidationError, match="snapshots disagree"):
+        _risk_assessment_for_attempt(
+            plan_for(root), plan_for(root).tasks[0], Attempt(
+                ExecutionStatus.COMPLETED, ["allowed.txt"], ["validation: exit_code=0"], [], [],
+                PatchArtifact("/tmp/patch", "a" * 64, ["allowed.txt"], "patch"), True,
+            ), ReviewReport("reviewer", ReviewStatus.APPROVE, [], [], []),
+            project_id="project-ec392dd7e95cf253", delivery_id="delivery-snapshot-mismatch",
+        )
 
 
 def fake_adapter(tmp_path, body=None):
