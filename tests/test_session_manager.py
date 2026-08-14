@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -18,6 +19,7 @@ from agf_orchestrator.project_registry import ProjectRegistry, ProjectRegistryEr
 from agf_orchestrator.session_manager import (
     SessionManager,
     SessionManagerError,
+    _assessment_artifact_paths,
     _canonical_plan_hash,
 )
 from agf_orchestrator.session_models import SessionStatus
@@ -271,6 +273,25 @@ def test_target_advancement_reassesses_historical_assessment(tmp_path):
         for path in (state / "artifacts" / session.session_id).glob("assessment*.json")
     ]
     assert any(payload["baseline_sha"] == new_head for payload in assessment_payloads)
+
+
+def test_reconciled_plan_resolves_retained_artifacts_by_hash(tmp_path):
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Identify a genuinely useful bounded improvement")
+    assessed = manager.assess(session.session_id)
+    plan = Path(assessed.plan_path)
+    renamed = plan.with_name("plan-v99.json")
+    shutil.copyfile(plan, renamed)
+    reconciled = replace(assessed, plan_path=str(renamed))
+    artifact_dir = state / "artifacts" / session.session_id
+    (artifact_dir / "assessment-v99.json").write_text("{\"tampered\": true}\n")
+    shutil.copyfile(artifact_dir / "assessment.json", artifact_dir / "assessment-v98.json")
+    paths = _assessment_artifact_paths(manager.store, reconciled)
+    assert paths["assessment"].name != "assessment-v99.json"
+    assert manager.store.artifact_hash(str(paths["assessment"])) == assessed.artifact_hashes[
+        "assessment"
+    ]
 
 
 def test_recovery_requires_fresh_evaluation_and_preserves_versioned_lineage(tmp_path):

@@ -100,16 +100,65 @@ def _assessment_artifact_paths(store: SessionStore, session: Session) -> dict[st
     version = int(Path(session.plan_path).stem.removeprefix("plan-v"))
     suffix = "" if version == 2 else f"-v{version}"
     directory = store.artifacts_dir / session.session_id
+    prefixes = {
+        "assessment": "assessment",
+        "architecture": "architecture",
+        "architect_request": "architect-request",
+        "provider_evidence": "provider-evidence",
+        "architect_response": "architect-response",
+    }
+
+    def persisted_path(key: str, default: Path) -> Path:
+        """Resolve retained evidence by its persisted hash after reconciliation.
+
+        Delivery reconciliation may create a new plan version while retaining
+        the assessment/provider artifacts from the pre-delivery target.  The
+        session hash is authoritative; artifact version suffixes are only a
+        naming convention.
+        """
+        expected_hash = session.artifact_hashes.get(key)
+        if not expected_hash:
+            return default
+        if (
+            default.exists()
+            and not default.is_symlink()
+            and store.artifact_hash(str(default)) == expected_hash
+        ):
+            return default
+        matches = [
+            path
+            for path in directory.glob(f"{prefixes[key]}*.json")
+            if not path.is_symlink() and store.artifact_hash(str(path)) == expected_hash
+        ]
+        if not matches:
+            return default
+        # Repeated recovery may retain byte-identical historical copies.  The
+        # hash, not the filename, proves identity; choose the newest retained
+        # copy deterministically when the hash matches all of them.
+        def version_key(path: Path) -> int:
+            try:
+                return int(path.stem.rsplit("-v", 1)[1])
+            except (IndexError, ValueError):
+                return 2
+
+        return max(matches, key=version_key)
+
     paths = {
-        "assessment": directory / f"assessment{suffix}.json",
-        "architecture": directory / f"architecture{suffix}.json",
-        "architect_request": directory / f"architect-request{suffix}.json",
+        "assessment": persisted_path("assessment", directory / f"assessment{suffix}.json"),
+        "architecture": persisted_path("architecture", directory / f"architecture{suffix}.json"),
+        "architect_request": persisted_path(
+            "architect_request", directory / f"architect-request{suffix}.json"
+        ),
         "plan": Path(session.plan_path),
     }
     if "provider_evidence" in session.artifact_hashes:
-        paths["provider_evidence"] = directory / f"provider-evidence{suffix}.json"
+        paths["provider_evidence"] = persisted_path(
+            "provider_evidence", directory / f"provider-evidence{suffix}.json"
+        )
     if "architect_response" in session.artifact_hashes:
-        paths["architect_response"] = directory / f"architect-response{suffix}.json"
+        paths["architect_response"] = persisted_path(
+            "architect_response", directory / f"architect-response{suffix}.json"
+        )
     return paths
 
 
