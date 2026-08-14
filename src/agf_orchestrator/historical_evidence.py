@@ -54,6 +54,9 @@ class HistoricalEvidence:
     count: int
     baseline_id: str
     coverage_before_baseline: str
+    evidence_generation: int
+    predecessor_evidence_hash: str | None
+    renewal_operation_id: str
     coverage_start: str
     coverage_end: str
     definition_version: str
@@ -101,6 +104,72 @@ def load_historical_evidence(
     except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise HistoricalEvidenceError("historical evidence is unreadable") from exc
     evidence = _parse(payload, evidence_type, expected_project_id=project_id)
+    if evidence.evidence_generation > 1:
+        history_dir = directory / "history"
+        predecessor_path = directory / "history" / (
+            f"{evidence_type}-{evidence.predecessor_evidence_hash}.json"
+        )
+        try:
+            if history_dir.is_symlink() or predecessor_path.is_symlink():
+                raise HistoricalEvidenceError("historical predecessor namespace uses symlinks")
+            predecessor_doc = json.loads(predecessor_path.read_text(encoding="utf-8"))
+            verify_envelope(predecessor_doc["payload"], predecessor_doc["envelope"])
+            if (
+                predecessor_doc["payload"].get("evidence_hash")
+                != evidence.predecessor_evidence_hash
+            ):
+                raise HistoricalEvidenceError("historical predecessor hash is invalid")
+            predecessor_payload = predecessor_doc["payload"]
+            if (
+                predecessor_payload.get("project_id") != project_id
+                or predecessor_payload.get("evidence_type") != evidence_type
+                or predecessor_payload.get("baseline_id") != evidence.baseline_id
+                or predecessor_payload.get("policy_hash") != evidence.policy_hash
+                or predecessor_payload.get("constitution_id") != evidence.constitution_id
+                or predecessor_payload.get("authority_generation") != evidence.authority_generation
+                or predecessor_payload.get("coverage_end") != evidence.coverage_start
+            ):
+                raise HistoricalEvidenceError("historical predecessor binding is invalid")
+            if (
+                predecessor_payload.get("evidence_generation", 1)
+                != evidence.evidence_generation - 1
+            ):
+                raise HistoricalEvidenceError("historical evidence generation is not monotonic")
+            journal_document = json.loads(
+                (directory / "renewal-journal.json").read_text(encoding="utf-8")
+            )
+            verify_envelope(journal_document["payload"], journal_document["envelope"])
+            journal = journal_document["payload"]
+            if (
+                journal.get("status") != "COMMITTED"
+                or journal.get("operation_id") != evidence.renewal_operation_id
+                or journal.get("project_id") != project_id
+                or journal.get("baseline_id") != evidence.baseline_id
+                or journal.get("evidence_type") not in {evidence_type, "rollback+incident"}
+                or journal.get("evidence_generation") != evidence.evidence_generation
+                or journal.get("policy_hash") != evidence.policy_hash
+                or journal.get("constitution_id") != evidence.constitution_id
+                or journal.get("authority_generation") != evidence.authority_generation
+                or journal.get("predecessor_evidence_hashes", {}).get(evidence_type)
+                != evidence.predecessor_evidence_hash
+                or journal.get("evidence_hashes", {}).get(evidence_type)
+                != evidence.evidence_hash
+            ):
+                raise HistoricalEvidenceError("historical renewal journal is invalid")
+            if any(
+                json.loads(item.read_text(encoding="utf-8")).get("payload", {}).get(
+                    "renewal_operation_id"
+                )
+                == evidence.renewal_operation_id
+                for item in (directory / "history").glob(f"{evidence_type}-*.json")
+            ):
+                raise HistoricalEvidenceError("historical renewal operation was replayed")
+        except HistoricalEvidenceError:
+            raise
+        except (
+            OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError
+        ) as exc:
+            raise HistoricalEvidenceError("historical predecessor evidence is unavailable") from exc
     try:
         start = _timestamp(evidence.coverage_start)
         end = _timestamp(evidence.coverage_end)
@@ -108,7 +177,9 @@ def load_historical_evidence(
         now = datetime.now(UTC)
         if generated < start or end < start or end > now or generated > now:
             return None
-        if now - generated > timedelta(seconds=max_age_seconds):
+        if now - generated > timedelta(seconds=max_age_seconds) or now - end > timedelta(
+            seconds=max_age_seconds
+        ):
             return None
         if required_start is not None and start > _timestamp(required_start):
             return None
@@ -183,6 +254,7 @@ def _parse(payload: Any, evidence_type: str, *, expected_project_id: str) -> His
     required = {
         "schema_version", "project_id", "evidence_type", "status", "count",
         "baseline_id", "coverage_before_baseline", "coverage_start", "coverage_end",
+        "evidence_generation", "predecessor_evidence_hash", "renewal_operation_id",
         "definition_version", "source_refs",
         "source_hashes", "policy_hash", "constitution_id", "authority_generation",
         "generated_at", "provenance", "coverage_complete", "completeness_basis",
@@ -213,6 +285,20 @@ def _parse(payload: Any, evidence_type: str, *, expected_project_id: str) -> His
         raise HistoricalEvidenceError("historical evidence baseline is invalid")
     if payload["coverage_before_baseline"] != "UNKNOWN":
         raise HistoricalEvidenceError("historical pre-baseline coverage is invalid")
+    if not isinstance(payload["evidence_generation"], int) or payload["evidence_generation"] < 1:
+        raise HistoricalEvidenceError("historical evidence generation is invalid")
+    predecessor = payload["predecessor_evidence_hash"]
+    if predecessor is not None and not _HEX.fullmatch(predecessor):
+        raise HistoricalEvidenceError("historical predecessor binding is invalid")
+    if payload["evidence_generation"] == 1 and predecessor is not None:
+        raise HistoricalEvidenceError("initial historical evidence cannot have predecessor")
+    if payload["evidence_generation"] > 1 and predecessor is None:
+        raise HistoricalEvidenceError("renewed historical evidence requires predecessor")
+    if (
+        not isinstance(payload["renewal_operation_id"], str)
+        or not payload["renewal_operation_id"].startswith("historical-renewal-")
+    ):
+        raise HistoricalEvidenceError("historical renewal operation is invalid")
     if (status is EvidenceStatus.VERIFIED_ZERO) != (count == 0):
         raise HistoricalEvidenceError("historical evidence status/count mismatch")
     if status is EvidenceStatus.VERIFIED_EVENTS and count == 0:
@@ -238,7 +324,8 @@ def _parse(payload: Any, evidence_type: str, *, expected_project_id: str) -> His
         raise HistoricalEvidenceError("historical evidence hash is invalid")
     return HistoricalEvidence(
         payload["project_id"], evidence_type, status, count, payload["baseline_id"],
-        payload["coverage_before_baseline"], payload["coverage_start"],
+        payload["coverage_before_baseline"], payload["evidence_generation"], predecessor,
+        payload["renewal_operation_id"], payload["coverage_start"],
         payload["coverage_end"], payload["definition_version"], refs, hashes,
         payload["policy_hash"], payload["constitution_id"], generation,
         payload["generated_at"], payload["provenance"], payload["coverage_complete"],
