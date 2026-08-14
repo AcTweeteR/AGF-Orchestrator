@@ -219,6 +219,60 @@ def test_changed_provider_authority_requires_fresh_assessment(tmp_path):
     assert "provider evidence is stale" in refreshed.blocking_issues[0]
 
 
+def test_target_advancement_reassesses_historical_assessment(tmp_path):
+    root, state = registered(tmp_path)
+    (root / "README.md").write_text("# Initial\n")
+    subprocess.run(["git", "-C", str(root), "add", "README.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "initial documentation"],
+        check=True, capture_output=True,
+    )
+    project_id = ProjectRegistry(state).get("alpha").project_id
+    provider_profile = replace(profile("provider-a"), project_id=project_id)
+    provider_profile = replace(
+        provider_profile, profile_sha256=capability_profile_hash(provider_profile)
+    )
+    candidates = (CapabilityCandidate(provider_profile, 0),)
+    gates = SelectionGates(
+        policy_eligible=True, privacy_eligible=True, independence_eligible=True,
+        budget_eligible=True, health_eligible=True, empirical_evidence_eligible=True,
+    )
+    architect = ProviderArchitect(
+        candidates, {"provider-a": FakeProvider()}, now="2026-08-10T12:00:00Z",
+        project_id=project_id, gates=gates,
+    )
+    manager = SessionManager(
+        state, architect=architect, architect_candidates=candidates,
+        architect_providers={"provider-a": FakeProvider()}, architect_gates=gates,
+    )
+    session = manager.start("alpha", "Improve file:README.md")
+    assessed = manager.assess(session.session_id)
+    assert assessed.status is SessionStatus.READY
+    old_assessment_hash = assessed.artifact_hashes["assessment"]
+
+    (root / "README.md").write_text("# Delivered\n")
+    subprocess.run(["git", "-C", str(root), "add", "README.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "delivered change"],
+        check=True, capture_output=True,
+    )
+    new_head = subprocess.check_output(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+    ).strip()
+    advanced = replace(manager.store.load(session.session_id), base_sha=new_head)
+    manager.store.save(advanced)
+
+    reassessed = manager.assess(session.session_id)
+    assert reassessed.status is SessionStatus.READY
+    assert reassessed.base_sha == new_head
+    assert reassessed.artifact_hashes["assessment"] != old_assessment_hash
+    assessment_payloads = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (state / "artifacts" / session.session_id).glob("assessment*.json")
+    ]
+    assert any(payload["baseline_sha"] == new_head for payload in assessment_payloads)
+
+
 def test_recovery_requires_fresh_evaluation_and_preserves_versioned_lineage(tmp_path):
     root, state = registered(tmp_path)
     (root / "README.md").write_text("# Test\n")

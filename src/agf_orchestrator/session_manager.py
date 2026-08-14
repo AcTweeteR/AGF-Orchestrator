@@ -404,6 +404,18 @@ class SessionManager:
                         or "request_hash" not in request_payload
                         or "architecture_hash" not in plan_payload.get("scope", {})
                     )
+                    # A verified delivery advances the session base SHA and
+                    # deliberately leaves the pre-delivery assessment
+                    # historical.  That evidence must not be treated as
+                    # malformed, nor may it authorize the new target state.
+                    # Preserve it for lineage and fall through to a fresh
+                    # assessment against the observed target.
+                    if (
+                        assessment_payload.get("baseline_sha") != session.base_sha
+                        or plan_payload.get("repository", {}).get("head_sha")
+                        != session.base_sha
+                    ):
+                        legacy_lineage = True
                     for key, path in artifact_paths.items():
                         if self.store.artifact_hash(str(path)) != session.artifact_hashes[key]:
                             raise SessionManagerError(f"persisted {key} artifact hash differs")
@@ -664,10 +676,15 @@ class SessionManager:
                             project,
                             self.store.ensure_safe_path,
                         )
-                    self._validate_plan_identity(session, project)
+                    if not legacy_lineage:
+                        self._validate_plan_identity(session, project)
                 except (OSError, json.JSONDecodeError, TypeError, KeyError, ValueError) as exc:
                     raise SessionManagerError("persisted assessment evidence is invalid") from exc
-                if not fresh_retry and "provider_evidence" in session.artifact_hashes:
+                if (
+                    not legacy_lineage
+                    and not fresh_retry
+                    and "provider_evidence" in session.artifact_hashes
+                ):
                     return self._mark_retry_required(
                         session,
                         "provider evidence is stale; historical provider observation "
