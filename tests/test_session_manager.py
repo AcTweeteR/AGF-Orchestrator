@@ -14,7 +14,11 @@ from agf_orchestrator.locking import LockError, project_lock
 from agf_orchestrator.policy_authority import PolicyActivationError
 from agf_orchestrator.project_models import ProjectStatus
 from agf_orchestrator.project_registry import ProjectRegistry, ProjectRegistryError
-from agf_orchestrator.session_manager import SessionManager, SessionManagerError
+from agf_orchestrator.session_manager import (
+    SessionManager,
+    SessionManagerError,
+    _canonical_plan_hash,
+)
 from agf_orchestrator.session_models import SessionStatus
 from tests.test_architect_planning import FakeProvider, profile
 
@@ -38,6 +42,14 @@ def registered(tmp_path):
     registry = ProjectRegistry(state)
     registry.add("alpha", root)
     return root, state
+
+
+def test_delivery_intent_plan_hash_ignores_artifact_formatting():
+    payload = {"plan_id": "plan-test", "tasks": [{"task_id": "task-001"}]}
+    formatted = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+    assert hashlib.sha256(formatted.encode()).hexdigest() != _canonical_plan_hash(payload)
+    assert _canonical_plan_hash(json.loads(formatted)) == _canonical_plan_hash(payload)
 
 
 def test_start_is_ready_and_resume_is_idempotent(tmp_path):

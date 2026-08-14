@@ -44,6 +44,17 @@ from .target_assessment import (
 )
 
 
+def _canonical_plan_hash(payload: dict[str, object]) -> str:
+    """Hash the plan representation used by delivery intents.
+
+    Session artifact hashes include file formatting and are intentionally
+    distinct from the canonical model hash bound into a delivery intent.
+    """
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 class SessionManagerError(RuntimeError):
     pass
 
@@ -1199,7 +1210,7 @@ class SessionManager:
             payload = json.loads(old_plan.read_text(encoding="utf-8"))
             if intent.plan_id != payload.get("plan_id"):
                 return None
-            if intent.plan_hash != old_hash:
+            if intent.plan_hash != _canonical_plan_hash(payload):
                 return None
             task_payloads = [
                 item for item in payload.get("tasks", [])
