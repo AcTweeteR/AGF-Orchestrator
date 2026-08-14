@@ -29,6 +29,7 @@ from agf_orchestrator.authority_generation import (
     build_generation,
 )
 from agf_orchestrator.constitution import ConstitutionAuthority, canonical_json
+from agf_orchestrator.locking import project_lock
 from agf_orchestrator.owner_authority import (
     PINNED_OWNER_FINGERPRINT,
     canonical_bytes,
@@ -81,8 +82,23 @@ def sign_envelope(payload: object, root: Path) -> dict[str, str]:
     }
 
 
-def activate_provider_candidate(project_id: str, candidate: Path) -> dict[str, str]:
+def _candidate_path(project_id: str, candidate: Path) -> Path:
+    requested = candidate.expanduser()
+    state_root = (Path.home() / ".agf-orchestrator").resolve()
+    expected_parent = state_root / "capability-intelligence" / project_id
+    if any(part.is_symlink() for part in [requested, *requested.parents]):
+        raise RuntimeError("provider candidate path must not contain symlinks")
+    resolved = requested.resolve(strict=True)
+    if resolved.parent != expected_parent or resolved.is_symlink():
+        raise RuntimeError("provider candidate must remain in its project namespace")
+    return resolved
+
+
+def _activate_provider_candidate(
+    project_id: str, candidate: Path, *, allow_renewal: bool = False
+) -> dict[str, str]:
     """Owner-sign a provider candidate produced by the read-only runtime step."""
+    candidate = _candidate_path(project_id, candidate)
     state = state_from_dict(json.loads(candidate.read_text(encoding="utf-8")))
     if state.project_id != project_id:
         raise RuntimeError("provider candidate project binding is invalid")
@@ -135,8 +151,61 @@ def activate_provider_candidate(project_id: str, candidate: Path) -> dict[str, s
         ).encode()
     ).hexdigest()
     signed = unsigned_signed.__class__(**{**unsigned_signed.__dict__, "state_sha256": state_hash})
-    ProviderIntelligenceStore().for_project(project_id).save(signed)
+    store = ProviderIntelligenceStore().for_project(project_id)
+    store._ensure_safe_path()
+    store._save_locked(signed, allow_renewal=allow_renewal)
     return {"project_id": project_id, "state_sha256": signed.state_sha256}
+
+
+def activate_provider_candidate(project_id: str, candidate: Path) -> dict[str, str]:
+    with project_lock(Path.home() / ".agf-orchestrator", project_id, "provider-activate"):
+        return _activate_provider_candidate(project_id, candidate, allow_renewal=False)
+
+
+def renew_provider_candidate(project_id: str, candidate: Path) -> dict[str, str]:
+    """Owner-activate only a newly observed, higher-version provider candidate."""
+    with project_lock(Path.home() / ".agf-orchestrator", project_id, "provider-renew"):
+        store = ProviderIntelligenceStore().for_project(project_id)
+        previous = store._load_for_owner_recovery()
+        candidate_path = _candidate_path(project_id, candidate)
+        proposed = state_from_dict(json.loads(candidate_path.read_text(encoding="utf-8")))
+        if proposed.project_id != previous.project_id or proposed.target_sha != previous.target_sha:
+            raise RuntimeError("provider renewal binding differs from active evidence")
+        old_versions = {
+            item.profile.profile_id: item.profile.profile_version
+            for item in previous.candidates
+        }
+        new_versions = {
+            item.profile.profile_id: item.profile.profile_version
+            for item in proposed.candidates
+        }
+        if not old_versions or any(
+            new_versions.get(key, 0) <= value for key, value in old_versions.items()
+        ):
+            raise RuntimeError("provider renewal requires higher profile versions")
+        _require_fresh_profile_observations(previous, proposed)
+        if proposed.observed_at <= previous.observed_at:
+            raise RuntimeError("provider renewal requires a fresh observation")
+        result = _activate_provider_candidate(project_id, candidate_path, allow_renewal=True)
+        current = store.load()
+        if current.state_sha256 == previous.state_sha256:
+            raise RuntimeError("provider renewal did not create new evidence")
+        return {**result, "previous_state_sha256": previous.state_sha256, "renewed": "true"}
+
+
+def _require_fresh_profile_observations(previous, proposed) -> None:
+    old_observations = {
+        item.profile.profile_id: item.profile.observed_at for item in previous.candidates
+    }
+    new_observations = {
+        item.profile.profile_id: item.profile.observed_at for item in proposed.candidates
+    }
+    if set(old_observations) != set(new_observations) or any(
+        datetime.fromisoformat(new_observations[key].replace("Z", "+00:00"))
+        <= datetime.fromisoformat(old_observations[key].replace("Z", "+00:00"))
+        for key in old_observations
+    ):
+        raise RuntimeError("provider renewal requires fresh profile observations")
 
 
 def _migration_state_dir() -> Path:
@@ -546,6 +615,7 @@ def main() -> int:
     parser.add_argument("--prepare-generation", action="store_true")
     parser.add_argument("--verify-generation")
     parser.add_argument("--cutover-generation")
+    parser.add_argument("--renew-provider-candidate")
     args = parser.parse_args()
     if args.prepare_generation:
         result = prepare_ed25519_generation(args.project, args.operation_id)
@@ -553,6 +623,8 @@ def main() -> int:
         result = verify_ed25519_generation(args.project, args.verify_generation)
     elif args.cutover_generation:
         result = cutover_ed25519_generation(args.project, args.cutover_generation)
+    elif args.renew_provider_candidate:
+        result = renew_provider_candidate(args.project, Path(args.renew_provider_candidate))
     else:
         result = prepare_root(args.project, args.operation_id, Path.home() / ".agf-owner-root")
     print(json.dumps(result, sort_keys=True))

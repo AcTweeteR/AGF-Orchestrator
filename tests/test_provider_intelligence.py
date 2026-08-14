@@ -118,8 +118,10 @@ def test_state_schema_rejects_unknown_or_malformed_payload():
         state_from_dict(payload)
 
 
-def _persisted_state(*, generation: int, profile_version: int, expired: bool, target=TARGET):
-    observed = "2020-01-01T00:00:00Z" if expired else "2026-08-11T12:00:00Z"
+def _persisted_state(
+    *, generation: int, profile_version: int, expired: bool, target=TARGET, observed=None
+):
+    observed = observed or ("2020-01-01T00:00:00Z" if expired else "2026-08-11T12:00:00Z")
     expires = "2020-01-02T00:00:00Z" if expired else "2030-01-01T00:00:00Z"
     profile = make_profile(
         project_id=PROJECT,
@@ -194,6 +196,45 @@ def test_owner_bootstrap_replaces_same_project_state_after_target_advance(tmp_pa
     )
     store.save(advanced)
     assert store._load_for_owner_recovery().target_sha == "b" * 40
+
+
+def test_explicit_owner_renewal_replaces_fresh_same_target_evidence(tmp_path):
+    store = ProviderIntelligenceStore(tmp_path, signing_key=TEST_KEY, staging=True).for_project(
+        PROJECT
+    )
+    old = sign_state(
+        _persisted_state(generation=2, profile_version=1, expired=False), TEST_KEY, staging=True
+    )
+    store.path.parent.mkdir(parents=True)
+    store.path.write_text(json.dumps(old.to_dict()))
+    renewed = sign_state(
+        _persisted_state(
+            generation=2,
+            profile_version=2,
+            expired=False,
+            observed="2026-08-11T12:01:00Z",
+        ),
+        TEST_KEY,
+        staging=True,
+    )
+    store._save_locked(renewed, allow_renewal=True)
+    assert store._load_for_owner_recovery().state_sha256 == renewed.state_sha256
+
+
+def test_same_target_renewal_requires_explicit_owner_authorization(tmp_path):
+    store = ProviderIntelligenceStore(tmp_path, signing_key=TEST_KEY, staging=True).for_project(
+        PROJECT
+    )
+    old = sign_state(
+        _persisted_state(generation=2, profile_version=1, expired=False), TEST_KEY, staging=True
+    )
+    store.path.parent.mkdir(parents=True)
+    store.path.write_text(json.dumps(old.to_dict()))
+    renewed = sign_state(
+        _persisted_state(generation=2, profile_version=2, expired=False), TEST_KEY, staging=True
+    )
+    with pytest.raises(ProviderIntelligenceError, match="different evidence"):
+        store._save_locked(renewed)
 
 
 def test_duplicate_provider_candidates_are_rejected():

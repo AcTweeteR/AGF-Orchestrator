@@ -548,7 +548,9 @@ class ProviderIntelligenceStore:
         with project_lock(self.root, state.project_id, "provider-intelligence-save", timeout=5.0):
             self._save_locked(state)
 
-    def _save_locked(self, state: ProviderIntelligenceState) -> None:
+    def _save_locked(
+        self, state: ProviderIntelligenceState, *, allow_renewal: bool = False
+    ) -> None:
         self._verify_signature(state)
         current = self.path.parent
         unsafe = self.root.is_symlink()
@@ -592,6 +594,17 @@ class ProviderIntelligenceStore:
                         for key in existing_profiles
                     )
                 )
+                explicit_renewal = (
+                    allow_renewal
+                    and existing.project_id == state.project_id
+                    and existing.target_sha == state.target_sha
+                    and existing.policy_generation == state.policy_generation
+                    and existing.constitution_id == state.constitution_id
+                    and existing.constitution_record_hash == state.constitution_record_hash
+                    and existing.requirements_hash == state.requirements_hash
+                    and state.observed_at > existing.observed_at
+                    and profiles_advanced
+                )
                 if (
                     existing.project_id == state.project_id
                     and existing.policy_generation <= state.policy_generation
@@ -603,7 +616,7 @@ class ProviderIntelligenceStore:
                     and existing.target_sha != state.target_sha
                     and existing.policy_generation <= state.policy_generation
                     and profiles_advanced
-                ):
+                ) or explicit_renewal:
                     _atomic_write(self.path, state.to_dict())
                     return
                 raise ProviderIntelligenceError(

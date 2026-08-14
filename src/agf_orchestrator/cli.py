@@ -196,6 +196,9 @@ def build_parser() -> argparse.ArgumentParser:
     intelligence_bootstrap = intelligence_commands.add_parser("bootstrap-architect")
     intelligence_bootstrap.add_argument("--project", required=True)
     intelligence_bootstrap.add_argument(
+        "--renew", action="store_true", help="force a fresh provider capability evaluation"
+    )
+    intelligence_bootstrap.add_argument(
         "--candidate-output",
         help="write unsigned evidence for the external owner controller to sign",
     )
@@ -507,21 +510,25 @@ def run_provider_intelligence(args: argparse.Namespace) -> int:
                 _validate_provider_intelligence_runtime(
                     existing, project, target_sha, snapshot, now
                 )
-                _output(
-                    {
-                        "project_id": existing.project_id,
-                        "target_sha": existing.target_sha,
-                        "profile_id": existing.candidates[0].profile.profile_id,
-                        "profile_sha256": existing.candidates[0].profile.profile_sha256,
-                        "probe_pass": True,
-                        "idempotent": True,
-                        "gates": existing.to_dict()["gates"],
-                        "requirements_hash": existing.requirements_hash,
-                        "state_sha256": existing.state_sha256,
-                    },
-                    args.json,
+                if not args.renew:
+                    _output(
+                        {
+                            "project_id": existing.project_id,
+                            "target_sha": existing.target_sha,
+                            "profile_id": existing.candidates[0].profile.profile_id,
+                            "profile_sha256": existing.candidates[0].profile.profile_sha256,
+                            "probe_pass": True,
+                            "idempotent": True,
+                            "gates": existing.to_dict()["gates"],
+                            "requirements_hash": existing.requirements_hash,
+                            "state_sha256": existing.state_sha256,
+                        },
+                        args.json,
+                    )
+                    return 0
+                profile_version = (
+                    max(candidate.profile.profile_version for candidate in existing.candidates) + 1
                 )
-                return 0
             except ProviderIntelligenceError:
                 # A verified, project-bound state may be renewed when any
                 # consequential input (policy, Constitution, provider, or
