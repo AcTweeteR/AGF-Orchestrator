@@ -70,7 +70,7 @@ class RiskAssessment:
     level: RiskLevel
     signals: tuple[RiskSignal, ...]
     rollback_difficulty: RollbackDifficulty
-    incident_count: int
+    incident_count: int | None
     protected_paths: tuple[str, ...]
     evidence_refs: tuple[str, ...]
 
@@ -101,9 +101,11 @@ class RiskAssessment:
             raise RiskValidationError("level is invalid")
         if not isinstance(self.rollback_difficulty, RollbackDifficulty):
             raise RiskValidationError("rollback_difficulty is invalid")
-        if not isinstance(self.incident_count, int) or isinstance(self.incident_count, bool):
+        if self.incident_count is not None and (
+            not isinstance(self.incident_count, int) or isinstance(self.incident_count, bool)
+        ):
             raise RiskValidationError("incident_count is invalid")
-        if self.incident_count < 0:
+        if self.incident_count is not None and self.incident_count < 0:
             raise RiskValidationError("incident_count is invalid")
         self._bounded_list("protected_paths", self.protected_paths, allow_empty=True)
         self._bounded_list("evidence_refs", self.evidence_refs, allow_empty=True)

@@ -2,7 +2,14 @@ import subprocess
 from dataclasses import replace
 
 from agf_orchestrator.adapters.codex import CodexAdapter, CodexInvocationProfile
-from agf_orchestrator.delivery import DeliveryPipeline, _patch_policy
+from agf_orchestrator.delivery import (
+    Attempt,
+    DeliveryPipeline,
+    PatchArtifact,
+    _patch_policy,
+    _risk_assessment_for_attempt,
+)
+from agf_orchestrator.execution_models import ExecutionStatus
 from agf_orchestrator.git_delivery import DraftPRCreator, GitDeliveryError
 from agf_orchestrator.models import ExecutionPlan, PlanStatus, RepositoryContext, Task
 from agf_orchestrator.review_models import (
@@ -107,6 +114,53 @@ def test_dry_run_performs_no_model_or_git_mutation(tmp_path):
     assert report.status == "DRY_RUN"
     assert git(root, "status", "--porcelain").stdout == ""
     assert git(root, "branch", "--list", "agf/*").stdout == ""
+
+
+def test_delivery_risk_discovers_protected_boundary_changes(tmp_path):
+    root = setup_repo(tmp_path)
+    plan = plan_for(root)
+    task = plan.tasks[0]
+    review = ReviewReport("reviewer", ReviewStatus.APPROVE, [], [], [])
+    attempt = Attempt(
+        ExecutionStatus.COMPLETED,
+        ["constitution.py"],
+        ["validation: exit_code=0"],
+        [],
+        [],
+        PatchArtifact("/tmp/patch", "a" * 64, ["constitution.py"], "patch"),
+        True,
+    )
+    assessment = _risk_assessment_for_attempt(
+        plan, task, attempt, review,
+        project_id="project-ec392dd7e95cf253",
+        delivery_id="delivery-test-protected",
+    )
+    assert assessment.level.name == "CRITICAL"
+    assert assessment.protected_paths == ("constitution.py",)
+
+
+def test_delivery_risk_fails_closed_when_history_is_unavailable(tmp_path):
+    root = setup_repo(tmp_path)
+    plan = plan_for(root)
+    task = plan.tasks[0]
+    review = ReviewReport("reviewer", ReviewStatus.APPROVE, [], [], [])
+    attempt = Attempt(
+        ExecutionStatus.COMPLETED,
+        ["allowed.txt"],
+        ["validation: exit_code=0"],
+        [],
+        [],
+        PatchArtifact("/tmp/patch", "a" * 64, ["allowed.txt"], "patch"),
+        True,
+    )
+    assessment = _risk_assessment_for_attempt(
+        plan, task, attempt, review,
+        project_id="project-ec392dd7e95cf253",
+        delivery_id="delivery-test-normal",
+    )
+    assert assessment.level.name == "CRITICAL"
+    assert assessment.rollback_difficulty.value == "UNKNOWN"
+    assert assessment.incident_count is None
 
 
 def test_successful_pipeline_reviews_complies_pushes_and_simulates_pr(tmp_path):

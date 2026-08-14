@@ -43,6 +43,11 @@ def test_risk_engine_treats_unknown_rollback_conservatively():
     assert assessment.level is RiskLevel.CRITICAL
 
 
+def test_risk_engine_treats_unknown_incident_history_conservatively():
+    assessment = assess_risk(**{**FACTS, "incident_count": None})
+    assert assessment.level is RiskLevel.CRITICAL
+
+
 def test_failed_validation_and_unbounded_facts_are_rejected():
     assessment = assess_risk(**{**FACTS, "validation_passed": False})
     assert assessment.level is RiskLevel.HIGH

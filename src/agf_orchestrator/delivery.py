@@ -9,10 +9,12 @@ import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .adapters.codex import CodexAdapter, CodexProcessResult, redact_secrets
 from .adapters.openhands import parse_openhands_output
+from .authority_context import resolve_authority
 from .compliance import ComplianceChecker
 from .execution_models import ExecutionStatus
 from .executor import (
@@ -29,10 +31,13 @@ from .git_delivery import (
     DraftPRCreator,
     GitDelivery,
     GitDeliveryError,
+    RemoteBranchClassification,
+    RemoteBranchEvidence,
     persist_remote_uncertainty,
     sanitize_branch_name,
 )
-from .merge_models import MergeDecision
+from .merge_models import GateEvidence, GateStatus, MergeDecision, RiskClass
+from .merge_policy import REQUIRED_GATES, MergePolicyEngine, merge_policy_from_verified_active
 from .models import ExecutionPlan, Task
 from .preflight import PreflightError, collect_repository
 from .review_models import (
@@ -44,8 +49,19 @@ from .review_models import (
     finding_identity,
 )
 from .reviewer import CodexReviewerAdapter, DeterministicReviewer, Reviewer
+from .risk_engine import assess_risk, risk_evidence
+from .risk_models import RiskAssessment, RollbackDifficulty, risk_from_dict
 
 MAX_CORRECTION_ROUNDS = 2
+_PROTECTED_PATH_MARKERS = (
+    ".git",
+    "constitution",
+    "owner.key",
+    "root_of_trust",
+    "policy-state",
+    "activation",
+    "kill-switch",
+)
 
 
 @dataclass(frozen=True)
@@ -333,6 +349,139 @@ def _delivery_id(plan_id: str, task_id: str) -> str:
     return "delivery-" + hashlib.sha256(f"{plan_id}:{task_id}".encode()).hexdigest()[:16]
 
 
+def _integrity_bound_decision(
+    plan: ExecutionPlan,
+    task: Task,
+    attempt: Attempt,
+    review,
+    compliance_evidence: list[str],
+    risk_assessment: RiskAssessment,
+    *,
+    project_id: str,
+    branch: str,
+    delivery_id: str,
+    remote_evidence: RemoteBranchEvidence,
+    base_sha: str,
+    compliance_passed: bool,
+) -> tuple[MergeDecision, list[str]]:
+    """Bind completed delivery evidence to the active policy before Git mutation."""
+    from .authority_context import resolve_authority
+
+    resolved = resolve_authority(project_id)
+    if resolved.constitution is None:
+        raise ExecutionValidationError("verified Constitution is required for delivery")
+    active = resolved.policy
+    if active is None:
+        raise ExecutionValidationError("verified active policy is required for delivery")
+    policy = merge_policy_from_verified_active(project_id)
+    observed_at = datetime.now(UTC).replace(microsecond=0).isoformat()
+    patch_sha = attempt.patch.sha256 if attempt.patch is not None else ""
+    evidence_refs = (f"delivery:{delivery_id}", f"patch:{patch_sha}")
+    evidence = [*compliance_evidence, risk_evidence(risk_assessment)]
+    gate_refs = evidence_refs + (f"observed:{observed_at}",)
+    facts = {
+        "constitution": resolved.constitution is not None,
+        "policy": active is not None,
+        "plan": plan.status.value == "READY" and task.status.value == "READY",
+        "implementation": (
+            attempt.patch is not None
+            and attempt.execution_status is ExecutionStatus.COMPLETED
+        ),
+        "review": review.status is ReviewStatus.APPROVE,
+        "compliance": compliance_passed,
+        "validation": bool(attempt.validation_results)
+        and all("exit_code=0" in item for item in attempt.validation_results),
+        "risk": risk_assessment.level.name not in {"CRITICAL", "UNKNOWN"},
+        "caller_clean": attempt.caller_clean,
+        "base_sha": plan.repository.head_sha == base_sha,
+        "authorized_paths": set(attempt.changed_files).issubset(set(task.allowed_paths)),
+        "remote_state": remote_evidence.classification is RemoteBranchClassification.ABSENT,
+        "delivery_branch": branch not in {"main", "master"}
+        and not branch.startswith(("main/", "master/")),
+        "kill_switch": not policy.stop_signal.active,
+    }
+    gates = []
+    for name in REQUIRED_GATES:
+        refs = gate_refs + (f"fact:{name}={'PASS' if facts[name] else 'FAIL'}",)
+        if name == "remote_state":
+            refs += (remote_evidence.queried_ref,)
+        if name == "kill_switch":
+            refs += (f"kill-switch:{policy.stop_signal.event_id}:{policy.stop_signal.generation}",)
+        gates.append(
+            GateEvidence(
+                name,
+                GateStatus.PASS if facts[name] else GateStatus.FAIL,
+                refs,
+                observed_at,
+                "delivery-boundary",
+                detail=f"authoritative delivery fact: {name}={facts[name]}",
+            )
+        )
+    freshness_seconds = int(active.freshness_limits["policy_seconds"])
+    expiry = (datetime.now(UTC) + timedelta(seconds=freshness_seconds)).isoformat()
+    decision = MergePolicyEngine(policy).evaluate(
+        project_id=project_id,
+        task_id=task.task_id,
+        base_sha=plan.repository.head_sha,
+        delivery_sha=patch_sha,
+        constitution_id=resolved.constitution.constitution_id,
+        risk_class=RiskClass(risk_assessment.level.name),
+        risk_assessment=risk_assessment,
+        gates=gates,
+        expiry=expiry,
+    )
+    if decision.decision_status.value != "ELIGIBLE":
+        raise ExecutionValidationError(
+            "active policy blocked delivery: " + "; ".join(decision.blocking_reasons)
+        )
+    return decision, evidence
+
+
+def _risk_assessment_for_attempt(
+    plan: ExecutionPlan,
+    task: Task,
+    attempt: Attempt,
+    review,
+    *,
+    project_id: str,
+    delivery_id: str,
+) -> RiskAssessment:
+    declared_protected = tuple(
+        path
+        for path in plan.scope.get("protected_paths", ())
+        if isinstance(path, str) and path
+    )
+    discovered_protected = tuple(
+        path
+        for path in attempt.changed_files
+        if any(marker in path.lower() for marker in _PROTECTED_PATH_MARKERS)
+    )
+    protected_paths = tuple(sorted(set(declared_protected + discovered_protected)))
+    patch_sha = attempt.patch.sha256 if attempt.patch is not None else ""
+    return assess_risk(
+        assessment_id="risk-" + hashlib.sha256(
+            f"{project_id}:{delivery_id}:{patch_sha}".encode()
+        ).hexdigest()[:24],
+        project_id=project_id,
+        task_id=task.task_id,
+        changed_paths=tuple(attempt.changed_files),
+        protected_paths=protected_paths,
+        rollback_difficulty=RollbackDifficulty.UNKNOWN,
+        incident_count=None,
+        reviewer_blockers=sum(
+            finding.severity in {"blocker", "major"} for finding in review.findings
+        ),
+        validation_passed=bool(attempt.validation_results)
+        and all("exit_code=0" in item for item in attempt.validation_results),
+        evidence_refs=(
+            f"delivery:{delivery_id}",
+            f"patch:{patch_sha}",
+            "risk-fact:rollback-assessment-unknown",
+            "risk-fact:incident-history-unknown",
+        ),
+    )
+
+
 def write_delivery_report(report: DeliveryReport, output: str | Path) -> None:
     _atomic_write_text(Path(output), json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n")
 
@@ -427,7 +576,7 @@ class DeliveryPipeline:
                     evidence, project_id=project_id, task_id=task_id
                 )
             )
-            GitDelivery().validate_target(
+            remote_evidence = GitDelivery().validate_target(
                 repository, base_sha, branch, uncertainty_handler=remote_handler
             )
             previous_findings: list[ReviewFinding] = []
@@ -518,18 +667,89 @@ class DeliveryPipeline:
                     )
                 correction_rounds += 1
             assert attempt is not None and review is not None and attempt.patch is not None
+            decision_evidence = list(attempt.evidence)
+            risk_assessment = None
+            if project_id is not None:
+                active_policy = resolve_authority(project_id).policy
+                if active_policy is not None:
+                    risk_assessment = _risk_assessment_for_attempt(
+                        plan,
+                        task,
+                        attempt,
+                        review,
+                        project_id=project_id,
+                        delivery_id=delivery_id,
+                    )
+                    decision_evidence.append(risk_evidence(risk_assessment))
+            if merge_decision is not None and merge_decision.risk_assessment is not None:
+                risk_assessment = risk_from_dict(merge_decision.risk_assessment)
+                if project_id is not None:
+                    recomputed = _risk_assessment_for_attempt(
+                        plan,
+                        task,
+                        attempt,
+                        review,
+                        project_id=project_id,
+                        delivery_id=delivery_id,
+                    )
+                    if risk_assessment.to_dict() != recomputed.to_dict():
+                        raise ExecutionValidationError(
+                            "supplied merge decision risk evidence does not match current delivery"
+                        )
             compliance = self.compliance.check(
                 plan,
                 task,
                 review,
                 attempt.changed_files,
                 attempt.validation_results,
-                attempt.evidence,
+                decision_evidence,
                 attempt.caller_clean,
                 base_sha,
+                risk_assessment=risk_assessment,
             )
             if compliance.status is not ComplianceStatus.PASS:
                 raise ExecutionValidationError("; ".join(compliance.blocking_issues))
+            if merge_decision is None and project_id is not None and risk_assessment is not None:
+                merge_decision, _ = _integrity_bound_decision(
+                    plan,
+                    task,
+                    attempt,
+                    review,
+                    decision_evidence,
+                    risk_assessment,
+                    project_id=project_id,
+                    branch=branch,
+                    delivery_id=delivery_id,
+                    remote_evidence=remote_evidence,
+                    base_sha=base_sha,
+                    compliance_passed=compliance.status is ComplianceStatus.PASS,
+                )
+            if merge_decision is not None:
+                compliance = self.compliance.check(
+                    plan,
+                    task,
+                    review,
+                    attempt.changed_files,
+                    attempt.validation_results,
+                    decision_evidence,
+                    attempt.caller_clean,
+                    base_sha,
+                    risk_assessment=risk_assessment,
+                    merge_decision=merge_decision,
+                    expected_project_id=project_id,
+                    expected_task_id=task.task_id,
+                    expected_base_sha=base_sha,
+                    expected_delivery_sha=attempt.patch.sha256,
+                    expected_policy=merge_policy_from_verified_active(project_id)
+                    if project_id is not None
+                    else None,
+                    expected_constitution_id=resolve_authority(project_id).constitution.constitution_id
+                    if project_id is not None
+                    and resolve_authority(project_id).constitution is not None
+                    else None,
+                )
+                if compliance.status is not ComplianceStatus.PASS:
+                    raise ExecutionValidationError("; ".join(compliance.blocking_issues))
             if task.task_id == "E6-T2" and merge_decision is None:
                 raise ExecutionValidationError(
                     "E6-T2 delivery requires an externally evidenced LOW decision"
