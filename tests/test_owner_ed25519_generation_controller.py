@@ -438,6 +438,7 @@ def test_cutover_rejects_readiness_bound_to_another_generation(monkeypatch, tmp_
         operation_id="operation-2",
     )
     monkeypatch.setattr(controller, "_migration_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(controller, "_generation_root", lambda: tmp_path)
     monkeypatch.setattr(controller, "_verify_prepared_generation", lambda *_: (generation, None))
     monkeypatch.setattr(
         "agf_orchestrator.owner_authority.verify_envelope", lambda *_: None

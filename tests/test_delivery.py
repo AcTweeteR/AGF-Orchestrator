@@ -239,7 +239,7 @@ def fake_adapter(tmp_path, body=None):
         "#!/bin/sh\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  if [ \"$1\" = \"--output-last-message\" ]; then "
-        "printf 'completed\\n' > \"$2\"; shift 2; else shift; fi\n"
+        "sleep 0.01; printf 'completed\\n' > \"$2\"; shift 2; else shift; fi\n"
         "done\n"
         f"{body}\n"
     )
@@ -675,7 +675,7 @@ def round_adapter(tmp_path):
         f"printf '%s' \"$n\" > '{counter}'\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  if [ \"$1\" = \"--output-last-message\" ]; then "
-        "printf 'completed\\n' > \"$2\"; shift 2; else shift; fi\n"
+        "sleep 0.01; printf 'completed\\n' > \"$2\"; shift 2; else shift; fi\n"
         "done\n"
     )
     fake.chmod(0o755)
