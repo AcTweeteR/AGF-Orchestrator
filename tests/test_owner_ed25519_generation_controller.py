@@ -108,7 +108,7 @@ def test_target_advancement_requires_exact_delivery_evidence(monkeypatch, tmp_pa
     )
 
 
-def test_target_advancement_accepts_matching_owner_baseline_without_receipt(
+def test_target_advancement_rejects_matching_owner_baseline_without_receipt(
     monkeypatch, tmp_path
 ):
     project_id = "project-0123456789abcdef"
@@ -131,13 +131,14 @@ def test_target_advancement_accepts_matching_owner_baseline_without_receipt(
         "run",
         lambda *args, **kwargs: SimpleNamespace(returncode=0),
     )
-    controller._verify_legitimate_target_advancement(
-        project_id,
-        project,
-        SimpleNamespace(target_sha="a" * 40),
-        SimpleNamespace(target_sha=target_sha),
-        target_sha,
-    )
+    with pytest.raises(RuntimeError, match="lacks delivery evidence"):
+        controller._verify_legitimate_target_advancement(
+            project_id,
+            project,
+            SimpleNamespace(target_sha="a" * 40),
+            SimpleNamespace(target_sha=target_sha),
+            target_sha,
+        )
 
 
 def test_target_advancement_without_matching_delivery_fails_closed(monkeypatch, tmp_path):
