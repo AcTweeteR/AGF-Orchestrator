@@ -81,6 +81,8 @@ class ExternalAdvancement:
                 raise ExternalAdvancementError("Owner authorization target mismatch")
             if self.owner_payload.get("operation_id") != self.advancement_id:
                 raise ExternalAdvancementError("Owner authorization operation mismatch")
+            if self.owner_payload.get("decision") != "AUTHORIZE_EXTERNAL_ADVANCE":
+                raise ExternalAdvancementError("Owner authorization decision mismatch")
             if self.owner_payload.get("branch") != self.branch:
                 raise ExternalAdvancementError("Owner authorization branch mismatch")
             if self.owner_payload.get("previous_sha") != self.previous_sha:

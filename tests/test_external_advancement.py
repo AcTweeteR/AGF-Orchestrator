@@ -117,3 +117,13 @@ def test_external_advance_rejects_unsigned_merge_binding_mismatch(monkeypatch):
     unbound.owner_payload["github"]["merge_commit"] = "c" * 40
     with pytest.raises(ExternalAdvancementError, match="merge evidence mismatch"):
         unbound.validate()
+
+
+def test_external_advance_rejects_wrong_owner_decision(monkeypatch):
+    monkeypatch.setattr(
+        "agf_orchestrator.external_advancement.verify_envelope", lambda payload, envelope: None
+    )
+    unbound = item()
+    unbound.owner_payload["decision"] = "AUTHORIZE_OTHER_OPERATION"
+    with pytest.raises(ExternalAdvancementError, match="decision mismatch"):
+        unbound.validate()
