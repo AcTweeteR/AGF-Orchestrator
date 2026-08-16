@@ -7,6 +7,7 @@ from agf_orchestrator.external_advancement import (
     ExternalAdvancement,
     ExternalAdvancementError,
     ExternalAdvancementStore,
+    verify_external_advancement,
 )
 
 
@@ -76,3 +77,24 @@ def test_external_advance_rejects_unbound_owner_operation(monkeypatch):
     unbound.owner_payload["operation_id"] = "different-operation"
     with pytest.raises(ExternalAdvancementError, match="operation mismatch"):
         unbound.validate()
+
+
+def test_external_advance_rejects_branch_binding_mismatch(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "agf_orchestrator.external_advancement.verify_envelope", lambda payload, envelope: None
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.external_advancement._git",
+        lambda *_args: "develop",
+    )
+    project = type(
+        "Project",
+        (),
+        {
+            "project_id": "project-0123456789abcdef",
+            "default_branch": "develop",
+            "origin_url": "https://github.com/example/project.git",
+        },
+    )()
+    with pytest.raises(ExternalAdvancementError, match="branch binding mismatch"):
+        verify_external_advancement(item(), project, tmp_path)

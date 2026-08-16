@@ -123,6 +123,8 @@ def verify_external_advancement(item: ExternalAdvancement, project, repository: 
     root = Path(repository).resolve()
     if item.project_id != project.project_id:
         raise ExternalAdvancementError("external advancement project mismatch")
+    if item.branch != project.default_branch:
+        raise ExternalAdvancementError("external advancement branch binding mismatch")
     project_identity = parse_remote_url(project.origin_url).identity
     evidence_identity = parse_remote_url(item.repository_identity).identity
     if project_identity != evidence_identity:
