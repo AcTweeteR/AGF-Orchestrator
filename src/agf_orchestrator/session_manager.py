@@ -433,14 +433,15 @@ class SessionManager:
             if previous is not None:
                 if previous != item:
                     raise SessionManagerError("external advancement replay conflicts")
-                return session
+                if session.artifact_hashes.get("external_advancement") == previous.evidence_hash:
+                    return session
             if project.current_head_sha != item.target_sha:
                 raise SessionManagerError(
                     "project target is not reconciled to external advancement"
                 )
             historical = dict(session.artifact_hashes)
             historical_hashes = {f"historical:{key}": value for key, value in historical.items()}
-            stored_hash = store.put(item)
+            stored_hash = previous.evidence_hash if previous is not None else store.put(item)
             updated = replace(
                 session,
                 base_sha=item.target_sha,

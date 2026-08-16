@@ -62,7 +62,7 @@ class ExternalAdvancement:
             raise ExternalAdvancementError("external advancement binding is invalid")
         if not _SHA.fullmatch(self.previous_sha) or not _SHA.fullmatch(self.target_sha):
             raise ExternalAdvancementError("external advancement SHA is invalid")
-        if self.previous_sha == self.target_sha or self.branch != "main":
+        if self.previous_sha == self.target_sha:
             raise ExternalAdvancementError("external advancement target or branch is invalid")
         if self.provenance != "EXTERNAL_OWNER_AUTHORIZED_ADVANCE":
             raise ExternalAdvancementError("external advancement provenance is invalid")
