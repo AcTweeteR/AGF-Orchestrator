@@ -81,6 +81,17 @@ class ExternalAdvancement:
                 raise ExternalAdvancementError("Owner authorization target mismatch")
             if self.owner_payload.get("operation_id") != self.advancement_id:
                 raise ExternalAdvancementError("Owner authorization operation mismatch")
+            if self.owner_payload.get("branch") != self.branch:
+                raise ExternalAdvancementError("Owner authorization branch mismatch")
+            if self.owner_payload.get("previous_sha") != self.previous_sha:
+                raise ExternalAdvancementError("Owner authorization baseline mismatch")
+            if self.owner_payload.get("github") != self.github:
+                raise ExternalAdvancementError("Owner authorization merge evidence mismatch")
+            if (
+                parse_remote_url(self.owner_payload.get("repository_identity", "")).identity
+                != parse_remote_url(self.repository_identity).identity
+            ):
+                raise ExternalAdvancementError("Owner authorization repository mismatch")
             verify_envelope(self.owner_payload, self.owner_envelope)
         except (AttributeError, TypeError, OwnerAuthorityError) as exc:
             raise ExternalAdvancementError("Owner authorization is invalid") from exc
