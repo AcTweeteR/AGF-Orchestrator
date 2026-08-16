@@ -399,7 +399,7 @@ class Executor:
                 objective=task.objective,
                 allowed_paths=allowed_paths,
                 acceptance_criteria=task.acceptance_criteria,
-                validation_commands=task.validation_commands,
+                validation_commands=validation_commands,
                 stop_conditions=["scope expansion", "missing context", "architecture uncertainty"],
             )
             current_head = subprocess.run(
