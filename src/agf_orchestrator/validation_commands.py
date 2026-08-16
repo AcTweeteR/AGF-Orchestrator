@@ -8,6 +8,33 @@ import shutil
 from pathlib import Path
 
 SHELL_CONTROL_TOKENS = {";", "&&", "||", "&", "|", ">", "<"}
+EXECUTABLE_ALIASES = {"python": ("python3",)}
+
+
+def _resolve_executable(argv: list[str], repository_root: Path) -> str | None:
+    executable = Path(argv[0])
+    if "/" in argv[0]:
+        candidate = (
+            (repository_root / executable).resolve()
+            if not executable.is_absolute()
+            else executable.resolve()
+        )
+        if (
+            repository_root in candidate.parents
+            and candidate.is_file()
+            and os.access(candidate, os.X_OK)
+        ):
+            return str(candidate)
+        return None
+
+    resolved = shutil.which(argv[0])
+    if resolved is not None:
+        return resolved
+    for alias in EXECUTABLE_ALIASES.get(argv[0], ()):
+        resolved = shutil.which(alias)
+        if resolved is not None:
+            return resolved
+    return None
 
 
 def validate_commands(commands: list[str], repository_root: str) -> list[str]:
@@ -27,21 +54,16 @@ def validate_commands(commands: list[str], repository_root: str) -> list[str]:
             raise ValueError(f"invalid validation command: {exc}") from exc
         if not argv or any(token in SHELL_CONTROL_TOKENS for token in tokens):
             raise ValueError(f"validation command contains shell control syntax: {command}")
-        executable = Path(argv[0])
-        if "/" in argv[0]:
-            candidate = (
-                (root / executable).resolve()
-                if not executable.is_absolute()
-                else executable.resolve()
-            )
-            available = (
-                root in candidate.parents
-                and candidate.is_file()
-                and os.access(candidate, os.X_OK)
-            )
-        else:
-            available = shutil.which(argv[0]) is not None
-        if not available:
+        resolved = _resolve_executable(argv, root)
+        if resolved is None:
             raise ValueError(f"validation executable cannot be resolved: {argv[0]}")
-        parsed.append(command)
+        if "/" in argv[0] or resolved == shutil.which(argv[0]):
+            parsed.append(command)
+        else:
+            alias = next(
+                alias
+                for alias in EXECUTABLE_ALIASES.get(argv[0], ())
+                if shutil.which(alias) == resolved
+            )
+            parsed.append(shlex.join([alias, *argv[1:]]))
     return parsed

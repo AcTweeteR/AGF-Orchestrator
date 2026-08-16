@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import agf_orchestrator.session_manager as session_manager_module
 from agf_orchestrator.architect_planning import ProviderArchitect
 from agf_orchestrator.capability_profiles import capability_profile_hash
 from agf_orchestrator.capability_selection import CapabilityCandidate, SelectionGates
@@ -71,6 +72,28 @@ def test_start_is_ready_and_resume_is_idempotent(tmp_path):
     stale = manager.resume(session.session_id)
     assert stale.status is SessionStatus.STALE
     assert "base SHA" in stale.blocking_issues[0]
+
+
+def test_external_advance_rejects_mismatched_session_baseline(tmp_path, monkeypatch):
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Reconcile an external target")
+    evidence = tmp_path / "external.json"
+    evidence.write_text("{}")
+    item = SimpleNamespace(
+        session_id=session.session_id,
+        previous_sha="f" * 40,
+        target_sha="e" * 40,
+        advancement_id="external-advance-001",
+    )
+    monkeypatch.setattr(
+        session_manager_module,
+        "ExternalAdvancement",
+        lambda **_payload: item,
+    )
+    monkeypatch.setattr(item, "validate", lambda: None, raising=False)
+    with pytest.raises(SessionManagerError, match="session baseline mismatch"):
+        manager.reconcile_external_advance(session.session_id, str(evidence))
 
 
 def test_repair_reconciled_lineage_requires_exact_receipt_binding(tmp_path, monkeypatch):
@@ -346,7 +369,66 @@ def test_recovery_requires_fresh_evaluation_and_preserves_versioned_lineage(tmp_
         state, architect=architect, architect_candidates=candidates,
         architect_providers={"provider-a": FakeProvider()}, architect_gates=gates,
     )
-    assert restarted.resume(session.session_id).status is SessionStatus.RETRY_REQUIRED
+    assert restarted.resume(session.session_id).status is SessionStatus.READY
+
+
+def test_recovery_reassesses_when_persisted_cleanliness_is_historical(tmp_path):
+    root, state = registered(tmp_path)
+    (root / "README.md").write_text("# baseline\n")
+    subprocess.run(["git", "-C", str(root), "add", "README.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "add readme"],
+        check=True, capture_output=True,
+    )
+    project_id = ProjectRegistry(state).get("alpha").project_id
+    provider_profile = replace(profile("provider-a"), project_id=project_id)
+    provider_profile = replace(
+        provider_profile, profile_sha256=capability_profile_hash(provider_profile)
+    )
+    candidates = (CapabilityCandidate(provider_profile, 0),)
+    gates = SelectionGates(
+        policy_eligible=True, privacy_eligible=True, independence_eligible=True,
+        budget_eligible=True, health_eligible=True, empirical_evidence_eligible=True,
+    )
+    architect = ProviderArchitect(
+        candidates, {"provider-a": FakeProvider()}, now="2026-08-10T12:00:00Z",
+        project_id=project_id, gates=gates,
+    )
+    manager = SessionManager(
+        state, architect=architect, architect_candidates=candidates,
+        architect_providers={"provider-a": FakeProvider()}, architect_gates=gates,
+    )
+    session = manager.start("alpha", "Improve file:README.md")
+    dirty_assessment = manager.assess(session.session_id)
+    assert dirty_assessment.status is SessionStatus.READY
+    assessment_path = _assessment_artifact_paths(manager.store, dirty_assessment)["assessment"]
+    payload = json.loads(assessment_path.read_text(encoding="utf-8"))
+    payload["clean"] = False
+    evidence = dict(payload)
+    evidence.pop("evidence_hash")
+    payload["evidence_hash"] = hashlib.sha256(
+        json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assessment_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    updated = replace(
+        manager.store.load(session.session_id),
+        artifact_hashes={
+            **manager.store.load(session.session_id).artifact_hashes,
+            "assessment": manager.store.artifact_hash(str(assessment_path)),
+        },
+    )
+    manager.store.save(updated)
+    recovered = SessionManager(
+        state, architect=architect, architect_candidates=candidates,
+        architect_providers={"provider-a": FakeProvider()}, architect_gates=gates,
+    ).assess(session.session_id)
+    assert recovered.status is SessionStatus.READY
+    recovered_payload = json.loads(
+        _assessment_artifact_paths(manager.store, recovered)["assessment"].read_text(
+            encoding="utf-8"
+        )
+    )
+    assert recovered_payload["clean"] is True
 
 
 def test_interrupted_assessment_preserves_partial_generation_and_uses_next_version(

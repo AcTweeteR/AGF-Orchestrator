@@ -21,6 +21,7 @@ from .architect_planning import (
 )
 from .authority_context import AuthorityContextError
 from .capability_selection import CapabilityCandidate, SelectionGates
+from .causal_findings import CausalFindingStore
 from .constitution import ConstitutionAuthority, ConstitutionVerificationError
 from .delivery_reconciliation import (
     DeliveryIntentStore,
@@ -28,6 +29,12 @@ from .delivery_reconciliation import (
     DeliveryReconciliationError,
 )
 from .director import Director
+from .external_advancement import (
+    ExternalAdvancement,
+    ExternalAdvancementError,
+    ExternalAdvancementStore,
+    verify_external_advancement,
+)
 from .locking import lock_status, project_lock, session_lock
 from .models import PlanStatus, plan_from_dict
 from .policy_authority import PolicyActivationError, PolicyAuthority
@@ -42,6 +49,7 @@ from .session_models import (
 from .session_store import SessionStore, SessionStoreError
 from .target_assessment import (
     ArchitectureDecision,
+    AssessmentError,
     TargetAssessment,
     assess_repository,
     derive_architecture,
@@ -71,7 +79,14 @@ def _assessment_version(store: SessionStore, session: Session) -> int:
     plan_path = session.plan_path
     versions = []
     if not plan_path:
-        return 2
+        directory = store.artifacts_dir / session.session_id
+        store.ensure_safe_path(directory)
+        for path in directory.glob("*-v*.json"):
+            try:
+                versions.append(int(path.stem.rsplit("-v", 1)[1]))
+            except ValueError:
+                continue
+        return max(versions, default=1) + 1
     stem = Path(plan_path).stem
     if stem.startswith("plan-v"):
         try:
@@ -394,6 +409,68 @@ class SessionManager:
             with project_lock(self.store.state_dir, project.project_id, "session-resume"):
                 return self._resume_locked(session, project, execute, confirm_delivery)
 
+    def reconcile_external_advance(self, session_id: str, evidence_path: str) -> Session:
+        """Reconcile a verified owner-authorized merge without inventing delivery provenance."""
+        with session_lock(self.store.state_dir, session_id, "external-advance"):
+            session = self.store.load(session_id)
+            project = self.registry.get(session.project_id)
+            root = Path(project.repository_root)
+            try:
+                payload = json.loads(Path(evidence_path).read_text(encoding="utf-8"))
+                item = ExternalAdvancement(**payload)
+                item.validate()
+                if item.session_id != session_id:
+                    raise ExternalAdvancementError("external advancement session mismatch")
+                if item.previous_sha != session.base_sha:
+                    raise ExternalAdvancementError(
+                        "external advancement session baseline mismatch"
+                    )
+                verify_external_advancement(item, project, root)
+            except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise SessionManagerError(str(exc)) from exc
+            store = ExternalAdvancementStore(self.store.state_dir)
+            previous = store.get(project.project_id, item.advancement_id)
+            if previous is not None:
+                if previous != item:
+                    raise SessionManagerError("external advancement replay conflicts")
+                if session.artifact_hashes.get("external_advancement") == previous.evidence_hash:
+                    return session
+            if project.current_head_sha != item.target_sha:
+                raise SessionManagerError(
+                    "project target is not reconciled to external advancement"
+                )
+            historical = dict(session.artifact_hashes)
+            historical_hashes = {f"historical:{key}": value for key, value in historical.items()}
+            stored_hash = previous.evidence_hash if previous is not None else store.put(item)
+            updated = replace(
+                session,
+                base_sha=item.target_sha,
+                current_stage="REASSESSMENT",
+                status=SessionStatus.READY,
+                plan_path=None,
+                execution_report_path=None,
+                review_report_path=None,
+                compliance_report_path=None,
+                delivery_report_path=None,
+                delivery_branch=None,
+                pr_url=None,
+                blocking_issues=[],
+                required_human_actions=[],
+                artifact_hashes={"external_advancement": stored_hash, **historical_hashes},
+            )
+            updated = self._append_event(
+                updated,
+                session.status,
+                SessionStatus.READY,
+                "external owner-authorized target advancement reconciled; no AGF delivery asserted",
+                [str(Path(evidence_path).resolve())],
+                [],
+                "RELEASE_MANAGER",
+                "external-advance:" + item.advancement_id,
+            )
+            self._save(updated)
+            return updated
+
     def assess(self, session_id: str) -> Session:
         """Advance a placeholder plan through persisted assessment/architecture.
 
@@ -465,6 +542,16 @@ class SessionManager:
                         != session.base_sha
                     ):
                         legacy_lineage = True
+                    recovered_clean = not bool(
+                        _git(Path(project.repository_root), "status", "--porcelain")
+                    )
+                    if assessment_payload.get("clean") != recovered_clean:
+                        # Cleanliness is part of the observation, not a
+                        # durable authorization binding.  A changed tree
+                        # makes this assessment historical and requires a
+                        # fresh one; do not attempt to validate its dependent
+                        # request/architecture lineage as current evidence.
+                        legacy_lineage = True
                     for key, path in artifact_paths.items():
                         if self.store.artifact_hash(str(path)) != session.artifact_hashes[key]:
                             raise SessionManagerError(f"persisted {key} artifact hash differs")
@@ -504,14 +591,21 @@ class SessionManager:
                             raise SessionManagerError(
                                 "architect request repository binding differs"
                             )
-                        recovered_clean = not bool(
-                            _git(Path(project.repository_root), "status", "--porcelain")
-                        )
-                        recovered_assessment.validate(
-                            self._repository_context(
-                                project, clean=recovered_clean
+                        try:
+                            recovered_assessment.validate(
+                                self._repository_context(
+                                    project, clean=recovered_clean
+                                )
                             )
-                        )
+                        except AssessmentError as exc:
+                            if str(exc) != "assessment cleanliness does not match":
+                                raise
+                            # A persisted assessment records the observed tree
+                            # state.  If that state changed, preserve the
+                            # evidence as historical and rebuild the
+                            # assessment against the current tree.  All other
+                            # binding failures remain fail-closed.
+                            legacy_lineage = True
                         recovered_architecture = ArchitectureDecision(**architecture_payload)
                         recovered_architecture.validate(recovered_assessment)
                         provider_state = architecture_payload.get("provider_selection")
@@ -826,6 +920,21 @@ class SessionManager:
                         provider_selection["planning_outcome"] = "NO_JUSTIFIED_WORK"
                 else:
                     provider_selection = getattr(architect, "provider_selection", None)
+                if proposal is None and getattr(architect, "planning_outcome", None) == (
+                    "NO_JUSTIFIED_WORK"
+                ):
+                    causal_findings = CausalFindingStore(self.store.state_dir).active(
+                        project.project_id, baseline_sha=repository.head_sha
+                    )
+                    if causal_findings:
+                        finding = causal_findings[0]
+                        proposal = finding.proposal
+                        provider_selection = {
+                            **(provider_selection or {}),
+                            "causal_finding_id": finding.finding_id,
+                            "causal_reconciliation": "ACTIVE_REPRODUCED_FINDING",
+                            "planning_outcome": "BOUNDED_IMPLEMENTATION",
+                        }
                 if provider_selection is not None:
                     provider_selection = {
                         **provider_selection,
@@ -1248,12 +1357,33 @@ class SessionManager:
                 return session
         if session.status is SessionStatus.READY and "provider_evidence" in session.artifact_hashes:
             evidence_path = _assessment_artifact_paths(self.store, session)["provider_evidence"]
-            return self._mark_retry_required(
-                session,
-                "historical provider observation cannot authorize recovery; "
-                "fresh retry required",
-                str(evidence_path),
-            )
+            fresh_binding = False
+            try:
+                evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+                inputs = evidence.get("inputs", {})
+                request_path = _assessment_artifact_paths(self.store, session)[
+                    "architect_request"
+                ]
+                request = json.loads(request_path.read_text(encoding="utf-8"))
+                fresh_binding = (
+                    evidence.get("schema_version") == "1.0"
+                    and evidence.get("source") == "adapter"
+                    and inputs.get("project_id") == project.project_id
+                    and inputs.get("session_id") == session.session_id
+                    and inputs.get("target_sha") == session.base_sha
+                    and inputs.get("plan_hash")
+                    == session.artifact_hashes.get("predecessor_plan")
+                    and inputs.get("request_hash") == request.get("request_hash")
+                )
+            except (OSError, json.JSONDecodeError, TypeError, AttributeError):
+                fresh_binding = False
+            if not fresh_binding:
+                return self._mark_retry_required(
+                    session,
+                    "historical provider observation cannot authorize recovery; "
+                    "fresh retry required",
+                    str(evidence_path),
+                )
         if session.status is SessionStatus.READY and execute:
             if not project.policy.allow_live_execution:
                 raise SessionManagerError("execution is not authorized by project policy")

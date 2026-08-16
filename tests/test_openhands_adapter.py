@@ -631,7 +631,7 @@ def test_multiline_concatenated_array_and_nested_transports_parse():
 
 def test_truncated_and_malformed_transport_objects_are_rejected():
     truncated = '{"kind":"ConversationStateUpdateEvent","key":"execution_status"'
-    malformed = f'{OBSERVED_FINISHED_EVENT}\n{{"kind":"broken",}}\n'
+    malformed = f'{OBSERVED_FINISHED_EVENT}\n{{"kind":"broken", "value": @@@}}\n'
     assert parse_openhands_output(truncated).status_code == "OPENHANDS_JSON_TRUNCATED"
     assert parse_openhands_output(malformed).status_code == "OPENHANDS_JSON_INVALID"
 

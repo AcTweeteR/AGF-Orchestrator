@@ -108,6 +108,39 @@ def test_target_advancement_requires_exact_delivery_evidence(monkeypatch, tmp_pa
     )
 
 
+def test_target_advancement_rejects_matching_owner_baseline_without_receipt(
+    monkeypatch, tmp_path
+):
+    project_id = "project-0123456789abcdef"
+    target_sha = "b" * 40
+    project = SimpleNamespace(
+        repository_root=tmp_path,
+        default_branch="main",
+        origin_url="https://github.com/AcTweeteR/AGF-Orchestrator.git",
+    )
+    monkeypatch.setattr(
+        controller,
+        "load_historical_baseline",
+        lambda _project_id, state_root: SimpleNamespace(
+            target_sha=target_sha,
+            target_identity="https://github.com/AcTweeteR/AGF-Orchestrator.git",
+        ),
+    )
+    monkeypatch.setattr(
+        controller.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0),
+    )
+    with pytest.raises(RuntimeError, match="lacks delivery evidence"):
+        controller._verify_legitimate_target_advancement(
+            project_id,
+            project,
+            SimpleNamespace(target_sha="a" * 40),
+            SimpleNamespace(target_sha=target_sha),
+            target_sha,
+        )
+
+
 def test_target_advancement_without_matching_delivery_fails_closed(monkeypatch, tmp_path):
     project = SimpleNamespace(
         repository_root=tmp_path,
@@ -406,6 +439,7 @@ def test_cutover_rejects_readiness_bound_to_another_generation(monkeypatch, tmp_
         operation_id="operation-2",
     )
     monkeypatch.setattr(controller, "_migration_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(controller, "_generation_root", lambda: tmp_path)
     monkeypatch.setattr(controller, "_verify_prepared_generation", lambda *_: (generation, None))
     monkeypatch.setattr(
         "agf_orchestrator.owner_authority.verify_envelope", lambda *_: None
@@ -435,6 +469,7 @@ def test_cutover_rejects_readiness_bound_to_another_generation(monkeypatch, tmp_
 def test_verify_generation_persists_signed_readiness_for_all_components(monkeypatch, tmp_path):
     project_id = "project-0123456789abcdef"
     generation_id = "generation-2"
+    monkeypatch.setattr(controller, "_generation_root", lambda: tmp_path)
     components = tuple(
         SimpleNamespace(name=name, artifact_hash=f"{index:064x}")
         for index, name in enumerate(

@@ -1,0 +1,12 @@
+cffi==2.1.1
+cryptography==45.0.7
+iniconfig==2.3.0
+packaging==26.2
+pluggy==1.6.0
+pycparser==3.0
+Pygments==2.20.0
+pytest==9.1.1
+python-dotenv==1.2.2
+ruff==0.16.1
+setuptools==75.8.0
+wheel==0.45.1
