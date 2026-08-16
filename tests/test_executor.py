@@ -75,7 +75,7 @@ def fake_codex(
         "if [ \"$1\" = \"--version\" ]; then printf 'codex-test 1.0\\n'; exit 0; fi\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  if [ \"$1\" = \"--output-last-message\" ]; then "
-        "sleep 0.01; printf 'completed\\n' > \"$2\"; shift 2; else shift; fi\n"
+        "sleep 0.1; printf 'completed\\n' > \"$2\"; shift 2; else shift; fi\n"
         "done\n"
         f"{body}\nexit {exit_code}\n"
     )

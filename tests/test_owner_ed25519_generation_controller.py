@@ -468,6 +468,7 @@ def test_cutover_rejects_readiness_bound_to_another_generation(monkeypatch, tmp_
 def test_verify_generation_persists_signed_readiness_for_all_components(monkeypatch, tmp_path):
     project_id = "project-0123456789abcdef"
     generation_id = "generation-2"
+    monkeypatch.setattr(controller, "_generation_root", lambda: tmp_path)
     components = tuple(
         SimpleNamespace(name=name, artifact_hash=f"{index:064x}")
         for index, name in enumerate(

@@ -237,9 +237,10 @@ def fake_adapter(tmp_path, body=None):
     fake = tmp_path / "fake-codex"
     fake.write_text(
         "#!/bin/sh\n"
+        "if [ \"$1\" = \"--version\" ]; then printf 'codex-test 1.0\\n'; exit 0; fi\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  if [ \"$1\" = \"--output-last-message\" ]; then "
-        "sleep 0.01; printf 'completed\\n' > \"$2\"; shift 2; else shift; fi\n"
+        "sleep 0.1; printf 'completed\\n' > \"$2\"; shift 2; else shift; fi\n"
         "done\n"
         f"{body}\n"
     )
@@ -669,13 +670,14 @@ def round_adapter(tmp_path):
     fake = tmp_path / "fake-round-codex"
     fake.write_text(
         f"#!/bin/sh\n"
+        f"if [ \"$1\" = \"--version\" ]; then printf 'codex-test 1.0\\n'; exit 0; fi\n"
         f"n=$(cat '{counter}' 2>/dev/null || printf 0)\n"
         f"n=$((n + 1))\nprintf 'after\\n' > allowed.txt\n"
         f"i=0\nwhile [ $i -lt $n ]; do printf '\\n' >> allowed.txt; i=$((i + 1)); done\n"
         f"printf '%s' \"$n\" > '{counter}'\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  if [ \"$1\" = \"--output-last-message\" ]; then "
-        "sleep 0.01; printf 'completed\\n' > \"$2\"; shift 2; else shift; fi\n"
+        "sleep 0.1; printf 'completed\\n' > \"$2\"; shift 2; else shift; fi\n"
         "done\n"
     )
     fake.chmod(0o755)

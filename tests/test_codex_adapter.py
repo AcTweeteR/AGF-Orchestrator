@@ -26,7 +26,7 @@ def fake_version_executable(tmp_path, name="fake-codex", *, version_exit=0):
         "fi\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  if [ \"$1\" = \"--output-last-message\" ]; then "
-        "sleep 0.01; printf '{\"status\":\"APPROVE\",\"summary\":\"ok\","
+        "sleep 0.1; printf '{\"status\":\"APPROVE\",\"summary\":\"ok\","
         "\"findings\":[]}\n' > \"$2\"; shift 2; else shift; fi\n"
         "done\n"
     )
@@ -67,7 +67,7 @@ def test_fake_executable_captures_output(tmp_path):
         "if [ \"$1\" = \"--version\" ]; then printf 'codex-test 1.0\\n'; exit 0; fi\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  if [ \"$1\" = \"--output-last-message\" ]; then "
-        "sleep 0.01; printf 'final\\n' > \"$2\"; shift 2; else shift; fi\n"
+        "sleep 0.1; printf 'final\\n' > \"$2\"; shift 2; else shift; fi\n"
         "done\n"
         "printf 'fake stdout\\n'\nprintf 'fake stderr\\n' >&2\n"
     )
@@ -100,7 +100,7 @@ def test_nonzero_exit_with_fresh_final_message_is_process_failure(tmp_path):
         "if [ \"$1\" = \"--version\" ]; then printf 'codex-test 1.0\\n'; exit 0; fi\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  if [ \"$1\" = \"--output-last-message\" ]; then "
-        "sleep 0.01; printf '{}\\n' > \"$2\"; shift 2; else shift; fi\n"
+        "sleep 0.1; printf '{}\\n' > \"$2\"; shift 2; else shift; fi\n"
         "done\nexit 7\n"
     )
     fake.chmod(0o755)
