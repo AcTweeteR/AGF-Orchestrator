@@ -1,4 +1,5 @@
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -112,6 +113,37 @@ def test_execution_evidence_contains_objective_traceability(tmp_path):
 
     assert any("objective_id=objective-file" in item for item in result.evidence)
     assert any("requirement-file" in item for item in result.evidence)
+
+
+def test_resolved_validation_commands_are_sent_to_provider(monkeypatch, tmp_path):
+    init_repo(tmp_path)
+    task = Task(
+        "task-001", "Update allowed file", "Update allowed.txt", ["allowed.txt"], [],
+        ["allowed file contains the new value"], ["python -c \"assert True\""],
+        "low", "Implementer", PlanStatus.READY,
+    )
+    plan = make_plan(tmp_path, task=task)
+    captured = {}
+    original = CodexAdapter.build_instruction
+
+    def capture(self, **kwargs):
+        captured["validation_commands"] = kwargs["validation_commands"]
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(CodexAdapter, "build_instruction", capture)
+    monkeypatch.setattr(
+        "agf_orchestrator.validation_commands.shutil.which",
+        lambda name: sys.executable if name == "python3" else None,
+    )
+    result = Executor(
+        CodexAdapter(
+            executable=str(fake_codex(tmp_path)), profile=CodexInvocationProfile()
+        )
+    ).execute(
+        plan, "task-001", str(tmp_path), dry_run=False
+    )
+    assert result.status is ExecutionStatus.COMPLETED
+    assert captured["validation_commands"] == ["python3 -c 'assert True'"]
 
 
 def test_unverified_invocation_syntax_requires_human(monkeypatch, tmp_path):
