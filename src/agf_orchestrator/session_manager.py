@@ -421,6 +421,10 @@ class SessionManager:
                 item.validate()
                 if item.session_id != session_id:
                     raise ExternalAdvancementError("external advancement session mismatch")
+                if item.previous_sha != session.base_sha:
+                    raise ExternalAdvancementError(
+                        "external advancement session baseline mismatch"
+                    )
                 verify_external_advancement(item, project, root)
             except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
                 raise SessionManagerError(str(exc)) from exc

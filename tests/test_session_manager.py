@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import agf_orchestrator.session_manager as session_manager_module
 from agf_orchestrator.architect_planning import ProviderArchitect
 from agf_orchestrator.capability_profiles import capability_profile_hash
 from agf_orchestrator.capability_selection import CapabilityCandidate, SelectionGates
@@ -71,6 +72,28 @@ def test_start_is_ready_and_resume_is_idempotent(tmp_path):
     stale = manager.resume(session.session_id)
     assert stale.status is SessionStatus.STALE
     assert "base SHA" in stale.blocking_issues[0]
+
+
+def test_external_advance_rejects_mismatched_session_baseline(tmp_path, monkeypatch):
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Reconcile an external target")
+    evidence = tmp_path / "external.json"
+    evidence.write_text("{}")
+    item = SimpleNamespace(
+        session_id=session.session_id,
+        previous_sha="f" * 40,
+        target_sha="e" * 40,
+        advancement_id="external-advance-001",
+    )
+    monkeypatch.setattr(
+        session_manager_module,
+        "ExternalAdvancement",
+        lambda **_payload: item,
+    )
+    monkeypatch.setattr(item, "validate", lambda: None, raising=False)
+    with pytest.raises(SessionManagerError, match="session baseline mismatch"):
+        manager.reconcile_external_advance(session.session_id, str(evidence))
 
 
 def test_repair_reconciled_lineage_requires_exact_receipt_binding(tmp_path, monkeypatch):
