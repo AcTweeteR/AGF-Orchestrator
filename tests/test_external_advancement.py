@@ -66,3 +66,13 @@ def test_external_advance_rejects_tampered_target(monkeypatch):
     tampered = item(target_sha="c" * 40)
     with pytest.raises(ExternalAdvancementError, match="GitHub merge target"):
         tampered.validate()
+
+
+def test_external_advance_rejects_unbound_owner_operation(monkeypatch):
+    monkeypatch.setattr(
+        "agf_orchestrator.external_advancement.verify_envelope", lambda payload, envelope: None
+    )
+    unbound = item()
+    unbound.owner_payload["operation_id"] = "different-operation"
+    with pytest.raises(ExternalAdvancementError, match="operation mismatch"):
+        unbound.validate()

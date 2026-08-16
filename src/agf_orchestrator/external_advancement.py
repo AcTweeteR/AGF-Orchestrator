@@ -79,6 +79,8 @@ class ExternalAdvancement:
                 raise ExternalAdvancementError("Owner authorization project mismatch")
             if self.owner_payload.get("target_sha") != self.target_sha:
                 raise ExternalAdvancementError("Owner authorization target mismatch")
+            if self.owner_payload.get("operation_id") != self.advancement_id:
+                raise ExternalAdvancementError("Owner authorization operation mismatch")
             verify_envelope(self.owner_payload, self.owner_envelope)
         except (AttributeError, TypeError, OwnerAuthorityError) as exc:
             raise ExternalAdvancementError("Owner authorization is invalid") from exc
