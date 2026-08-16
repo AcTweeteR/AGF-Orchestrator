@@ -31,6 +31,10 @@ from agf_orchestrator.authority_generation import (
 )
 from agf_orchestrator.constitution import ConstitutionAuthority, canonical_json
 from agf_orchestrator.delivery_reconciliation import DeliveryIntentStore
+from agf_orchestrator.external_advancement import (
+    ExternalAdvancementStore,
+    verify_external_advancement,
+)
 from agf_orchestrator.historical_evidence import (
     EvidenceStatus,
     HistoricalEvidenceError,
@@ -173,7 +177,7 @@ def _activate_provider_candidate(
 def _verify_legitimate_target_advancement(
     project_id: str, project, previous, proposed, actual_target_sha: str
 ) -> None:
-    """Require repository-derived delivery evidence for a provider target advance."""
+    """Require delivery or explicit Owner baseline evidence for a target advance."""
     if proposed.target_sha == previous.target_sha:
         return
     if proposed.target_sha != actual_target_sha:
@@ -189,6 +193,39 @@ def _verify_legitimate_target_advancement(
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RuntimeError("provider renewal target advancement is not a valid descendant") from exc
+    baseline = load_historical_baseline(
+        project_id, state_root=Path.home() / ".agf-orchestrator"
+    )
+    if (
+        baseline is not None
+        and baseline.target_sha == proposed.target_sha
+        and parse_remote_url(baseline.target_identity).identity
+        == parse_remote_url(project.origin_url).identity
+    ):
+        return
+    external_store = ExternalAdvancementStore(Path.home() / ".agf-orchestrator")
+    external_directory = external_store.root / project_id
+    external_matches = []
+    if external_directory.is_dir() and not external_directory.is_symlink():
+        for path in sorted(external_directory.glob("*.json")):
+            if path.is_symlink():
+                continue
+            try:
+                advancement = external_store.get(project_id, path.stem)
+                if (
+                    advancement is not None
+                    and advancement.previous_sha == previous.target_sha
+                    and advancement.target_sha == proposed.target_sha
+                    and advancement.branch == project.default_branch
+                ):
+                    verify_external_advancement(advancement, project, project.repository_root)
+                    external_matches.append(advancement)
+            except (OSError, ValueError):
+                continue
+    if len(external_matches) == 1:
+        return
+    if len(external_matches) > 1:
+        raise RuntimeError("provider renewal external advancement is ambiguous")
     store = DeliveryIntentStore(Path.home() / ".agf-orchestrator")
     directory = store.root / project_id
     if store.root.is_symlink() or directory.is_symlink() or not directory.is_dir():

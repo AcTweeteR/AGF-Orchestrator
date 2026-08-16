@@ -59,6 +59,7 @@ from .review_models import (
 from .reviewer import CodexReviewerAdapter, DeterministicReviewer, Reviewer
 from .risk_engine import assess_risk, risk_evidence
 from .risk_models import RiskAssessment, RollbackDifficulty, risk_from_dict
+from .validation_commands import validate_commands
 
 MAX_CORRECTION_ROUNDS = 2
 _PROTECTED_PATH_MARKERS = (
@@ -180,6 +181,7 @@ def _run_attempt(
     context, allowed_paths, gate_evidence = _validate_gates(
         plan, task, repository, allow_default_branch=True
     )
+    validation_commands = validate_commands(task.validation_commands, context.root)
     worktree: str | None = None
     process: CodexProcessResult | None = None
     changed: list[str] = []
@@ -197,7 +199,7 @@ def _run_attempt(
             objective=task.objective,
             allowed_paths=allowed_paths,
             acceptance_criteria=task.acceptance_criteria,
-            validation_commands=task.validation_commands,
+            validation_commands=validation_commands,
             stop_conditions=["scope expansion", "missing context", "architecture uncertainty"],
         )
         if correction:
@@ -256,7 +258,7 @@ def _run_attempt(
             blockers.append(f"unauthorized changed paths: {', '.join(unauthorized)}")
         else:
             validation_results, passed, validation_blockers = _run_validations(
-                task.validation_commands, worktree, validation_timeout
+                validation_commands, worktree, validation_timeout
             )
             blockers.extend(validation_blockers)
             if passed:

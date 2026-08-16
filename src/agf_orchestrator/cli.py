@@ -163,7 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
     for command in ("list",):
         item = session_commands.add_parser(command)
         item.add_argument("--json", action="store_true")
-    for command in ("show", "resume", "assess", "repair-lineage", "cancel"):
+    for command in ("show", "resume", "assess", "repair-lineage", "reconcile-external", "cancel"):
         item = session_commands.add_parser(command)
         item.add_argument("--session", required=True)
         item.add_argument("--json", action="store_true")
@@ -171,6 +171,10 @@ def build_parser() -> argparse.ArgumentParser:
             item.add_argument(
                 "--architect-config",
                 help="approved state-root JSON with capability profiles, gates, and providers",
+            )
+        if command == "reconcile-external":
+            item.add_argument(
+                "--evidence", required=True, help="signed external advancement evidence"
             )
     resume = session_commands.choices["resume"]
     resume.add_argument("--project", help="registered project name or ID")
@@ -332,6 +336,11 @@ def run_session(args: argparse.Namespace) -> int:
             _output(manager.assess(args.session).to_dict(), args.json)
         elif args.session_command == "repair-lineage":
             _output(manager.repair_lineage(args.session).to_dict(), args.json)
+        elif args.session_command == "reconcile-external":
+            _output(
+                manager.reconcile_external_advance(args.session, args.evidence).to_dict(),
+                args.json,
+            )
         elif args.session_command == "cancel":
             _output(manager.cancel(args.session).to_dict(), args.json)
         elif args.session_command == "lock-status":
@@ -350,6 +359,8 @@ def run_session(args: argparse.Namespace) -> int:
 
 
 class _AdapterArchitectProvider:
+    MAX_MALFORMED_RESPONSE_RETRIES = 1
+
     def __init__(self, provider_id: str, adapter: object) -> None:
         self.provider_id = provider_id
         self.adapter = adapter
@@ -383,15 +394,30 @@ class _AdapterArchitectProvider:
         kwargs = {"sandbox": "read-only"}
         if isinstance(self.adapter, CodexAdapter):
             kwargs["output_schema"] = architect_response_schema()
-        result = self.adapter.execute(instruction, request.repository.root, **kwargs)
-        if result.transport_error or not result.invocation_verified:
-            raise ProviderInvocationError(
-                f"{self.provider_id} architect invocation failed: "
-                f"{result.transport_error or 'missing verified response'}"
-            )
-        if not result.final_message:
-            raise ProviderInvocationError(f"{self.provider_id} architect response is missing")
-        return result.final_message
+        malformed = None
+        for attempt in range(self.MAX_MALFORMED_RESPONSE_RETRIES + 1):
+            result = self.adapter.execute(instruction, request.repository.root, **kwargs)
+            if result.transport_error or not result.invocation_verified:
+                raise ProviderInvocationError(
+                    f"{self.provider_id} architect invocation failed: "
+                    f"{result.transport_error or 'missing verified response'}"
+                )
+            if not result.final_message:
+                raise ProviderInvocationError(f"{self.provider_id} architect response is missing")
+            try:
+                json.loads(result.final_message)
+            except json.JSONDecodeError as exc:
+                malformed = exc
+                if attempt < self.MAX_MALFORMED_RESPONSE_RETRIES:
+                    continue
+                raise ProviderInvocationError(
+                    f"{self.provider_id} architect response remained malformed after "
+                    f"{self.MAX_MALFORMED_RESPONSE_RETRIES} retry: {exc}"
+                ) from exc
+            return result.final_message
+        raise ProviderInvocationError(
+            f"{self.provider_id} architect response is malformed: {malformed}"
+        )
 
 
 def _architect_from_config(args: argparse.Namespace):

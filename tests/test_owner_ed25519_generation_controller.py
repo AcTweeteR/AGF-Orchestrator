@@ -108,6 +108,38 @@ def test_target_advancement_requires_exact_delivery_evidence(monkeypatch, tmp_pa
     )
 
 
+def test_target_advancement_accepts_matching_owner_baseline_without_receipt(
+    monkeypatch, tmp_path
+):
+    project_id = "project-0123456789abcdef"
+    target_sha = "b" * 40
+    project = SimpleNamespace(
+        repository_root=tmp_path,
+        default_branch="main",
+        origin_url="https://github.com/AcTweeteR/AGF-Orchestrator.git",
+    )
+    monkeypatch.setattr(
+        controller,
+        "load_historical_baseline",
+        lambda _project_id, state_root: SimpleNamespace(
+            target_sha=target_sha,
+            target_identity="https://github.com/AcTweeteR/AGF-Orchestrator.git",
+        ),
+    )
+    monkeypatch.setattr(
+        controller.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0),
+    )
+    controller._verify_legitimate_target_advancement(
+        project_id,
+        project,
+        SimpleNamespace(target_sha="a" * 40),
+        SimpleNamespace(target_sha=target_sha),
+        target_sha,
+    )
+
+
 def test_target_advancement_without_matching_delivery_fails_closed(monkeypatch, tmp_path):
     project = SimpleNamespace(
         repository_root=tmp_path,

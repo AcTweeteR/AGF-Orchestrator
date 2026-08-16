@@ -197,6 +197,10 @@ def _run_validations(
 ) -> tuple[list[str], bool, list[str]]:
     evidence: list[str] = []
     blockers: list[str] = []
+    try:
+        commands = validate_commands(commands, repository)
+    except ValueError as exc:
+        return evidence, False, [str(exc)]
     passed = True
     for command in commands:
         try:
@@ -335,6 +339,12 @@ class Executor:
                 status,
             )
         except ExecutionValidationError as exc:
+            return self._blocked(
+                plan, task.task_id, repository, started, execution_id, str(exc), []
+            )
+        try:
+            validation_commands = validate_commands(task.validation_commands, context.root)
+        except ValueError as exc:
             return self._blocked(
                 plan, task.task_id, repository, started, execution_id, str(exc), []
             )
@@ -486,7 +496,7 @@ class Executor:
                     blockers.append(f"unauthorized changed paths: {', '.join(unauthorized)}")
                 else:
                     validation_evidence, validations_passed, validation_blockers = _run_validations(
-                        task.validation_commands, worktree, self.validation_timeout
+                        validation_commands, worktree, self.validation_timeout
                     )
                     evidence.extend(validation_evidence)
                     blockers.extend(validation_blockers)
@@ -529,7 +539,7 @@ class Executor:
             process,
             status,
             changed,
-            task.validation_commands,
+            validation_commands,
             evidence,
             blockers,
         )

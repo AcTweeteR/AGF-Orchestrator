@@ -530,6 +530,56 @@ def test_architect_provider_prompt_requires_exact_validation_commands(tmp_path):
     assert "Never write prose such as 'Run the tests'" in instruction
 
 
+def test_adapter_architect_provider_retries_malformed_json_without_accepting_it(tmp_path):
+    root = repo(tmp_path)
+    repository = context(root)
+    assessment = assess(repository, PROJECT)
+    request = build_architect_request(
+        "Assess", repository, assessment, registered_project=registration(repository)
+    )
+
+    class RetryingAdapter:
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self, instruction, repository, **kwargs):
+            self.calls += 1
+            return SimpleNamespace(
+                transport_error=None,
+                invocation_verified=True,
+                final_message=("{\"truncated\":" if self.calls == 1 else json.dumps(response())),
+            )
+
+    adapter = RetryingAdapter()
+    result = _AdapterArchitectProvider("provider-test", adapter).propose(request)
+    assert json.loads(result)["proposed_outcome"] == "BOUNDED_IMPLEMENTATION"
+    assert adapter.calls == 2
+
+
+def test_adapter_architect_provider_fails_closed_after_retry_budget(tmp_path):
+    root = repo(tmp_path)
+    repository = context(root)
+    assessment = assess(repository, PROJECT)
+    request = build_architect_request(
+        "Assess", repository, assessment, registered_project=registration(repository)
+    )
+
+    class AlwaysMalformedAdapter:
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self, instruction, repository, **kwargs):
+            self.calls += 1
+            return SimpleNamespace(
+                transport_error=None, invocation_verified=True, final_message="{\"truncated\":"
+            )
+
+    adapter = AlwaysMalformedAdapter()
+    with pytest.raises(ProviderInvocationError, match="after 1 retry"):
+        _AdapterArchitectProvider("provider-test", adapter).propose(request)
+    assert adapter.calls == 2
+
+
 def test_architect_request_requires_exact_registered_repository_binding(tmp_path):
     root = repo(tmp_path)
     repository = context(root)
