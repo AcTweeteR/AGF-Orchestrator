@@ -235,7 +235,12 @@ def _verify_legitimate_target_advancement(
                 advancement = external_store.get(project_id, path.stem)
                 if advancement is None or advancement.branch != project.default_branch:
                     continue
-                verify_external_advancement(advancement, project, project.repository_root)
+                verify_external_advancement(
+                    advancement,
+                    project,
+                    project.repository_root,
+                    require_current_target=False,
+                )
                 all_advancements.append(advancement)
             except (OSError, ValueError):
                 continue

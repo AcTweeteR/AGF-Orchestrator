@@ -329,7 +329,7 @@ def test_provider_renewal_accepts_verified_external_advancement_chain(monkeypatc
             return advancements.get(advancement_id)
 
     monkeypatch.setattr(controller, "ExternalAdvancementStore", FakeExternalStore)
-    monkeypatch.setattr(controller, "verify_external_advancement", lambda *_: None)
+    monkeypatch.setattr(controller, "verify_external_advancement", lambda *_, **__: None)
     monkeypatch.setattr(controller.Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(
         controller.subprocess,
