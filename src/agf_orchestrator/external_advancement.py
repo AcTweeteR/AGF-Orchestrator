@@ -131,7 +131,13 @@ class ExternalAdvancementStore:
         return item.evidence_hash
 
 
-def verify_external_advancement(item: ExternalAdvancement, project, repository: str | Path) -> None:
+def verify_external_advancement(
+    item: ExternalAdvancement,
+    project,
+    repository: str | Path,
+    *,
+    require_current_target: bool = True,
+) -> None:
     item.validate()
     root = Path(repository).resolve()
     if item.project_id != project.project_id:
@@ -142,10 +148,11 @@ def verify_external_advancement(item: ExternalAdvancement, project, repository: 
     evidence_identity = parse_remote_url(item.repository_identity).identity
     if project_identity != evidence_identity:
         raise ExternalAdvancementError("external advancement repository mismatch")
-    if _git(root, "branch", "--show-current") != project.default_branch:
-        raise ExternalAdvancementError("external advancement branch is not canonical")
-    if _git(root, "rev-parse", "HEAD") != item.target_sha:
-        raise ExternalAdvancementError("external advancement target is not checked out")
+    if require_current_target:
+        if _git(root, "branch", "--show-current") != project.default_branch:
+            raise ExternalAdvancementError("external advancement branch is not canonical")
+        if _git(root, "rev-parse", "HEAD") != item.target_sha:
+            raise ExternalAdvancementError("external advancement target is not checked out")
     try:
         subprocess.run(
             [
