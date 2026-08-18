@@ -221,6 +221,38 @@ def _verify_legitimate_target_advancement(
         return
     if len(external_matches) > 1:
         raise RuntimeError("provider renewal external advancement is ambiguous")
+
+    # A legitimate campaign may contain several independently reconciled
+    # owner-authorized external merges between provider observations. Accept
+    # only a complete, unambiguous, verified descendant chain; never infer a
+    # target from Git ancestry alone.
+    all_advancements = []
+    if external_directory.is_dir() and not external_directory.is_symlink():
+        for path in sorted(external_directory.glob("*.json")):
+            if path.is_symlink():
+                continue
+            try:
+                advancement = external_store.get(project_id, path.stem)
+                if advancement is None or advancement.branch != project.default_branch:
+                    continue
+                verify_external_advancement(advancement, project, project.repository_root)
+                all_advancements.append(advancement)
+            except (OSError, ValueError):
+                continue
+    by_previous = {}
+    for advancement in all_advancements:
+        by_previous.setdefault(advancement.previous_sha, []).append(advancement)
+    current = previous.target_sha
+    visited = set()
+    while current != proposed.target_sha:
+        options = [item for item in by_previous.get(current, []) if item.target_sha not in visited]
+        if len(options) != 1:
+            break
+        item = options[0]
+        visited.add(item.target_sha)
+        current = item.target_sha
+    if current == proposed.target_sha:
+        return
     store = DeliveryIntentStore(Path.home() / ".agf-orchestrator")
     directory = store.root / project_id
     if store.root.is_symlink() or directory.is_symlink() or not directory.is_dir():
