@@ -54,6 +54,11 @@ from agf_orchestrator.policy_authority import PolicyAuthority
 from agf_orchestrator.policy_state_store import PolicyStateStore
 from agf_orchestrator.project_registry import ProjectRegistry, parse_remote_url
 from agf_orchestrator.provider_intelligence import ProviderIntelligenceStore, state_from_dict
+from agf_orchestrator.scope_authorization import (
+    ScopeAuthorization,
+    ScopeAuthorizationStore,
+    authorization_id,
+)
 
 _PROJECT_ID = re.compile(r"^project-[0-9a-f]{16}$")
 
@@ -1176,6 +1181,57 @@ def prepare_root(project_id: str, operation_id: str, root: Path) -> dict[str, st
     return {"operation_id": operation_id, "key_id": key_id, "fingerprint": public_fingerprint}
 
 
+def authorize_scope(
+    project_id: str,
+    operation_id: str,
+    *,
+    session_id: str | None,
+    target_sha: str,
+    scope_id: str,
+    boundaries: tuple[str, ...],
+) -> dict[str, object]:
+    """Persist one already-granted Owner scope authorization idempotently."""
+    if not operation_id.startswith("owner-scope-"):
+        raise RuntimeError("scope authorization operation identity is invalid")
+    if not scope_id.startswith("phase-") or not re.fullmatch(r"[0-9a-f]{40}", target_sha):
+        raise RuntimeError("scope authorization identity or target is invalid")
+    state_dir = Path.home() / ".agf-orchestrator"
+    project = ProjectRegistry(state_dir).verify_read_only(project_id)
+    root = Path(project.repository_root)
+    observed = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    if observed != target_sha or project.current_head_sha != target_sha:
+        raise RuntimeError("scope authorization target is not the current canonical target")
+    repo_identity = project.origin_url
+    payload = {
+        "schema_version": "1.0",
+        "authorization_id": authorization_id(project_id, session_id, scope_id, operation_id),
+        "project_id": project_id,
+        "session_id": session_id,
+        "repository_identity": repo_identity,
+        "baseline_sha": target_sha,
+        "scope_id": scope_id,
+        "decision": "AUTHORIZED_AND_REQUIRED",
+        "boundaries": tuple(sorted(set(boundaries))),
+        "operation_id": operation_id,
+        "issued_at": _now(),
+    }
+    envelope = sign_envelope(payload, _generation_root())
+    unsigned_record = {**payload, "owner_payload": payload, "owner_envelope": envelope}
+    item = ScopeAuthorization(
+        **unsigned_record,
+        evidence_hash=hashlib.sha256(canonical_json(unsigned_record)).hexdigest(),
+    )
+    evidence_hash = ScopeAuthorizationStore(state_dir).put(item)
+    return {
+        "status": "COMMITTED", "project_id": project_id,
+        "authorization_id": item.authorization_id, "scope_id": scope_id,
+        "target_sha": target_sha, "evidence_hash": evidence_hash,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="external owner Ed25519 authority controller")
     parser.add_argument("--project", required=True)
@@ -1184,6 +1240,10 @@ def main() -> int:
     parser.add_argument("--verify-generation")
     parser.add_argument("--cutover-generation")
     parser.add_argument("--renew-provider-candidate")
+    parser.add_argument("--authorize-scope", action="store_true")
+    parser.add_argument("--session-id")
+    parser.add_argument("--scope-id")
+    parser.add_argument("--boundary", action="append", default=[])
     parser.add_argument("--create-prospective-baseline", action="store_true")
     parser.add_argument("--renew-prospective-evidence", action="store_true")
     parser.add_argument("--target-sha")
@@ -1196,6 +1256,16 @@ def main() -> int:
         result = cutover_ed25519_generation(args.project, args.cutover_generation)
     elif args.renew_provider_candidate:
         result = renew_provider_candidate(args.project, Path(args.renew_provider_candidate))
+    elif args.authorize_scope:
+        if not args.session_id or not args.scope_id or not args.target_sha or not args.boundary:
+            raise RuntimeError(
+                "scope authorization requires session, scope, target, and boundaries"
+            )
+        result = authorize_scope(
+            args.project, args.operation_id, session_id=args.session_id,
+            target_sha=args.target_sha, scope_id=args.scope_id,
+            boundaries=tuple(args.boundary),
+        )
     elif args.create_prospective_baseline:
         result = create_prospective_baseline(
             args.project, args.operation_id, target_sha=args.target_sha

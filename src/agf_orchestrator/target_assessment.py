@@ -159,6 +159,8 @@ class ArchitectureDecision:
     risk_indicators: tuple[str, ...]
     provider_selection: dict[str, Any]
     planning_outcome: str = "BOUNDED_IMPLEMENTATION"
+    scope_authorization_id: str | None = None
+    scope_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -172,6 +174,12 @@ class ArchitectureDecision:
             raise AssessmentError("architecture assessment hash does not match")
         if self.status not in {"approved", "BLOCKED"}:
             raise AssessmentError("architecture status is invalid")
+        if self.scope_authorization_id is not None and not self.scope_authorization_id.startswith(
+            "scope-"
+        ):
+            raise AssessmentError("architecture scope authorization binding is invalid")
+        if self.scope_id is not None and not self.scope_id.startswith("phase-"):
+            raise AssessmentError("architecture scope identity is invalid")
         if self.planning_outcome not in {"BOUNDED_IMPLEMENTATION", "NO_JUSTIFIED_WORK", "BLOCKED"}:
             raise AssessmentError("architecture planning outcome is invalid")
         if self.status == "approved":
@@ -189,6 +197,23 @@ class ArchitectureDecision:
                     _validate_scoped_path(path)
                     if path not in assessment.repository_structure:
                         raise AssessmentError(f"architecture path lacks evidence: {path}")
+
+    def consume_scope_authorization(
+        self, authorization: Any, project: Any, repository: str, *, session_id: str | None = None
+    ) -> None:
+        """Verify, but never replace, the Owner scope decision used by this architecture."""
+        if not self.scope_authorization_id or not self.scope_id:
+            raise AssessmentError("architecture has no scope authorization binding")
+        if authorization.authorization_id != self.scope_authorization_id:
+            raise AssessmentError("architecture scope authorization identity mismatch")
+        from .scope_authorization import ScopeAuthorizationError, verify_scope_authorization
+        try:
+            verify_scope_authorization(
+                authorization, project, repository, target_sha=self.baseline_sha,
+                scope_id=self.scope_id, session_id=session_id,
+            )
+        except ScopeAuthorizationError as exc:
+            raise AssessmentError("architecture scope authorization is invalid") from exc
 
 
 def _hash_payload(payload: dict[str, Any]) -> str:
@@ -319,6 +344,8 @@ def derive_architecture(
     *,
     proposal: dict[str, Any] | None = None,
     provider_selection: dict[str, Any] | None = None,
+    scope_authorization_id: str | None = None,
+    scope_id: str | None = None,
 ) -> ArchitectureDecision:
     """Accept only an explicit bounded proposal; never invent wildcard scope."""
     assessment.validate(repository)
@@ -333,6 +360,8 @@ def derive_architecture(
             assessment.evidence_hash, branch, (), (), (),
             ("clean target baseline",), ("scope review",),
             ("dirty baseline",), provider,
+            planning_outcome="BLOCKED", scope_authorization_id=scope_authorization_id,
+            scope_id=scope_id,
         )
     if proposal is None:
         outcome = str(provider.get("planning_outcome", "BLOCKED"))
@@ -355,6 +384,8 @@ def derive_architecture(
         tuple(proposal.get("validation_requirements", ("python -m pytest",))),
         tuple(proposal.get("risk_indicators", ())), provider,
         str(provider.get("planning_outcome", "BOUNDED_IMPLEMENTATION")),
+        scope_authorization_id,
+        scope_id,
     )
     decision.validate(assessment)
     return decision
