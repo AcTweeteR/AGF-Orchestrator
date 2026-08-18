@@ -302,6 +302,57 @@ def test_controller_accepts_fresh_profile_and_authorizes_renewal(monkeypatch, tm
     assert calls == [{"allow_renewal": True}]
 
 
+def test_provider_renewal_accepts_verified_external_advancement_chain(monkeypatch, tmp_path):
+    project_id = "project-0123456789abcdef"
+    first = "a" * 40
+    middle = "b" * 40
+    target = "c" * 40
+    previous = SimpleNamespace(target_sha=first)
+    proposed = SimpleNamespace(target_sha=target)
+    advancements = {
+        "first": SimpleNamespace(
+            previous_sha=first, target_sha=middle, branch="main"
+        ),
+        "second": SimpleNamespace(
+            previous_sha=middle, target_sha=target, branch="main"
+        ),
+    }
+    root = tmp_path / ".agf-orchestrator"
+    directory = root / "external-advancements" / project_id
+    directory.mkdir(parents=True)
+
+    class FakeExternalStore:
+        def __init__(self, _root):
+            self.root = root / "external-advancements"
+
+        def get(self, _project_id, advancement_id):
+            return advancements.get(advancement_id)
+
+    monkeypatch.setattr(controller, "ExternalAdvancementStore", FakeExternalStore)
+    monkeypatch.setattr(controller, "verify_external_advancement", lambda *_: None)
+    monkeypatch.setattr(controller.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(
+        controller.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout="", returncode=0),
+    )
+    for name in advancements:
+        (directory / f"{name}.json").write_text("{}")
+
+    controller._verify_legitimate_target_advancement(
+        project_id,
+        SimpleNamespace(
+            project_id=project_id,
+            default_branch="main",
+            repository_root=tmp_path,
+            origin_url="https://github.com/example/project.git",
+        ),
+        previous,
+        proposed,
+        target,
+    )
+
+
 def test_controller_renewal_uses_real_store_and_replaces_atomically(monkeypatch, tmp_path):
     project_id = "project-0123456789abcdef"
     target = "a" * 40
