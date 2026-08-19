@@ -36,3 +36,15 @@ The implementation is in `agf_orchestrator.campaign_runner` and reuses the
 existing project lock and atomic state-storage boundaries. It does not grant
 providers authority over scope, policy, secrets, delivery, or external
 financial effects.
+
+## Independent macOS process
+
+`agf-orchestrator campaign-runner run --state-dir <state-root>` is the
+independent process boundary. It persists driver specifications, holds a
+single-instance lock, writes a heartbeat/status record, directly probes
+external conditions, and invokes a provider/work adapter only after a wake.
+It survives provider and terminal-session exit because it is not a child of
+the provider invocation. A user `launchd` agent can be rendered with
+`campaign-runner install-launchd`; loading that agent is an explicit OS
+operation. `campaign-runner status` reports `RUNNER_ACTIVE`, PID/instance,
+active and waiting campaigns, next wake, last wake and last action.

@@ -25,6 +25,12 @@ from .architect_planning import (
     architect_response_schema,
 )
 from .authority_context import resolve_authority
+from .campaign_daemon import (
+    CampaignDaemon,
+    CampaignDaemonError,
+    CampaignDriverSpec,
+    render_launchd_plist,
+)
 from .capability_profiles import CapabilityProfileError, CapabilityStatus
 from .capability_selection import CapabilityCandidate, SelectionGates
 from .compliance import ComplianceChecker
@@ -208,6 +214,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="write unsigned evidence for the external owner controller to sign",
     )
     intelligence_bootstrap.add_argument("--json", action="store_true")
+    campaign = commands.add_parser(
+        "campaign-runner", help="run or inspect the independent persistent campaign daemon"
+    )
+    campaign_commands = campaign.add_subparsers(dest="campaign_command", required=True)
+    campaign_register = campaign_commands.add_parser("register")
+    campaign_register.add_argument("--state-dir", required=True)
+    campaign_register.add_argument("--project-id", required=True)
+    campaign_register.add_argument("--campaign-id", required=True)
+    campaign_register.add_argument("--probe-command", nargs="+", required=True)
+    campaign_register.add_argument("--work-command", nargs="+", required=True)
+    campaign_register.add_argument("--poll-seconds", type=int, default=30)
+    campaign_register.add_argument("--json", action="store_true")
+    campaign_run = campaign_commands.add_parser("run")
+    campaign_run.add_argument("--state-dir", required=True)
+    campaign_run.add_argument("--max-loops", type=int)
+    campaign_status = campaign_commands.add_parser("status")
+    campaign_status.add_argument("--state-dir", required=True)
+    campaign_status.add_argument("--json", action="store_true")
+    campaign_install = campaign_commands.add_parser("install-launchd")
+    campaign_install.add_argument("--state-dir", required=True)
+    campaign_install.add_argument("--label", default="com.actweeter.agf-campaign-runner")
+    campaign_install.add_argument("--program", default="agf-orchestrator")
+    campaign_install.add_argument("--log-dir", required=True)
+    campaign_install.add_argument("--output", required=True)
+    campaign_install.add_argument("--json", action="store_true")
     return parser
 
 
@@ -1060,6 +1091,41 @@ def run_deliver(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_campaign_runner(args: argparse.Namespace) -> int:
+    """Control the independent process that keeps campaign waits alive."""
+    daemon = CampaignDaemon(args.state_dir)
+    try:
+        if args.campaign_command == "register":
+            spec = CampaignDriverSpec(
+                project_id=args.project_id, campaign_id=args.campaign_id,
+                state_dir=args.state_dir, probe_command=tuple(args.probe_command),
+                work_command=tuple(args.work_command), poll_seconds=args.poll_seconds,
+            )
+            daemon.register(spec)
+            _output({"registered": True, "campaign_id": spec.campaign_id}, args.json)
+            return 0
+        if args.campaign_command == "status":
+            _output(daemon.status().to_dict(), args.json)
+            return 0
+        if args.campaign_command == "install-launchd":
+            output = Path(args.output).expanduser().resolve()
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(render_launchd_plist(
+                label=args.label, program=args.program,
+                state_dir=str(Path(args.state_dir).expanduser().resolve()),
+                log_dir=str(Path(args.log_dir).expanduser().resolve()),
+            ), encoding="utf-8")
+            _output({"plist": str(output), "loaded": False}, args.json)
+            return 0
+        if args.campaign_command == "run":
+            daemon.run_forever(max_loops=args.max_loops)
+            return 0
+    except CampaignDaemonError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     load_cli_environment()
     args = build_parser().parse_args(argv)
@@ -1079,6 +1145,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_provider_intelligence(args)
     if args.command == "policy":
         return run_policy(args)
+    if args.command == "campaign-runner":
+        return run_campaign_runner(args)
     return 2
 
 

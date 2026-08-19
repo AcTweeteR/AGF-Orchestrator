@@ -1,0 +1,84 @@
+import sys
+import time
+from datetime import UTC, datetime, timedelta
+
+from agf_orchestrator.campaign_daemon import (
+    CampaignDaemon,
+    CampaignDaemonError,
+    CampaignDriverSpec,
+    render_launchd_plist,
+)
+from agf_orchestrator.campaign_runner import CampaignStore, make_initial_state, timestamp
+
+TARGET = "a" * 40
+
+
+def test_daemon_survives_driver_exit_and_wakes_same_campaign(tmp_path, monkeypatch):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    probe = scripts / "probe.py"
+    probe.write_text("import json; json.load(__import__('sys').stdin); print('{\"ready\":true}')\n")
+    work = scripts / "work.py"
+    work.write_text(
+        "import json,sys; state=json.load(sys.stdin); "
+        "print('{\"outcome\":\"WAIT\",\"wait\":{\"status\":\"WAITING_CI\","
+        "\"reason\":\"ci\",\"resource\":\"run\","
+        "\"expected_condition\":\"pass\",\"next_check_at\":\""
+        f"{timestamp(datetime.now(UTC) - timedelta(seconds=1))}"
+        "\"}}' if state['wake_generation']==0 else '{\"outcome\":\"COMPLETE\"}')\n"
+    )
+    state_dir = tmp_path / "state"
+    store = CampaignStore(state_dir, "project-ai-fund", "campaign-ai-fund")
+    store.create(make_initial_state(
+        project_id="project-ai-fund", campaign_id="campaign-ai-fund",
+        session_id="session-a610d1e887d0c9ac8d7e", phase="R7",
+        operation_id="operation-r7", target_sha=TARGET, lineage_binding="main", retry_budget=3,
+    ))
+    daemon = CampaignDaemon(state_dir)
+    daemon.register(CampaignDriverSpec(
+        "project-ai-fund", "campaign-ai-fund", str(state_dir),
+        (sys.executable, str(probe)), (sys.executable, str(work)), poll_seconds=1,
+    ))
+    observed = []
+
+    def sleep(seconds):
+        observed.append(daemon.status())
+        time.sleep(min(seconds, 1.1))
+
+    daemon.sleep = sleep
+    daemon.run_forever(max_loops=3)
+    assert any(item.runner_active and item.campaigns_waiting == 1 for item in observed)
+    final = store.load()
+    assert final.status.value == "COMPLETE"
+    assert [event.event_type for event in final.events].count("WAKE") == 1
+
+
+def test_daemon_status_and_single_instance_lock(tmp_path):
+    daemon = CampaignDaemon(tmp_path)
+    daemon._acquire_lock()
+    try:
+        assert daemon.status().runner_active is False
+        other = CampaignDaemon(tmp_path)
+        try:
+            other._acquire_lock()
+        except Exception as exc:
+            assert "another campaign daemon" in str(exc)
+        else:
+            raise AssertionError("second daemon acquired the lock")
+    finally:
+        daemon._release_lock()
+
+
+def test_launchd_plist_is_user_scoped_and_keepalive(tmp_path):
+    plist = render_launchd_plist(
+        label="com.example.runner", program="agf-orchestrator",
+        state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
+    )
+    assert "KeepAlive" in plist
+    assert "campaign-runner" in plist
+    try:
+        render_launchd_plist(label="bad&label", program="runner", state_dir="s", log_dir="l")
+    except CampaignDaemonError:
+        pass
+    else:
+        raise AssertionError("unsafe launchd value accepted")
