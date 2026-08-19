@@ -2,6 +2,8 @@ import sys
 import time
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from agf_orchestrator.campaign_daemon import (
     CampaignDaemon,
     CampaignDaemonError,
@@ -98,3 +100,21 @@ def test_rebind_interpreters_updates_all_python_driver_commands(tmp_path):
     spec = daemon._load_specs()[0]
     assert spec.probe_command[0] == str(runtime)
     assert spec.work_command[0] == str(runtime)
+
+
+def test_driver_rejects_direct_gh_merge_adapter(tmp_path):
+    with pytest.raises(CampaignDaemonError, match="ExternalActionExecutor"):
+        CampaignDriverSpec(
+            "project-ai-fund", "campaign-ai-fund", str(tmp_path),
+            (sys.executable, "probe.py"),
+            ("gh", "pr", "merge", "1"), 30,
+        ).validate()
+
+
+def test_driver_rejects_direct_git_push_adapter(tmp_path):
+    with pytest.raises(CampaignDaemonError, match="ExternalActionExecutor"):
+        CampaignDriverSpec(
+            "project-ai-fund", "campaign-ai-fund", str(tmp_path),
+            (sys.executable, "probe.py"),
+            ("git", "push", "origin", "main"), 30,
+        ).validate()
