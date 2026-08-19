@@ -181,3 +181,20 @@ def test_continue_keeps_campaign_running_for_next_tick(tmp_path):
     result = runner.tick(lambda _state: True, lambda _state: StepResult("CONTINUE"))
     assert result.status is CampaignStatus.RUNNING
     assert result.lease_owner is None
+
+
+def test_retry_reset_is_bounded_auditable_and_requires_repair_state(tmp_path):
+    store, clock = build(tmp_path, budget=1)
+    runner = PersistentCampaignRunner(
+        store, now=clock, base_backoff_seconds=1, max_backoff_seconds=1
+    )
+    runner.tick(lambda _state: True, lambda _state: wait_for(clock, delay=0))
+    clock.advance(1)
+    state = runner.tick(lambda _state: False, lambda _state: StepResult("COMPLETE"))
+    assert state.status is CampaignStatus.RETRY_BACKOFF
+    reset = runner.reset_retry("driver repaired")
+    assert reset.status is CampaignStatus.WAITING_EXTERNAL
+    assert reset.retry_count == 0
+    assert reset.events[-1].event_type == "RETRY_RESET"
+    with pytest.raises(CampaignRunnerError):
+        runner.reset_retry("second reset is not idempotent")
