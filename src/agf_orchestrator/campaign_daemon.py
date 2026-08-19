@@ -113,13 +113,29 @@ class CommandCampaignDriver:
         self.spec = spec
 
     def _run(self, command: tuple[str, ...], state: CampaignState) -> dict[str, object]:
+        environment = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": os.environ.get("HOME", str(Path.home())),
+            "GH_CONFIG_DIR": os.environ.get(
+                "GH_CONFIG_DIR", str(Path.home() / ".config" / "gh")
+            ),
+            "GH_PAGER": "cat",
+            "GH_PROMPT_DISABLED": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "AGF_CAMPAIGN_ID": state.campaign_id,
+            "AGF_SESSION_ID": state.session_id,
+        }
+        for name in (
+            "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+            "http_proxy", "https_proxy", "no_proxy",
+        ):
+            if os.environ.get(name):
+                environment[name] = os.environ[name]
         try:
             process = subprocess.Popen(
                 list(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, text=True, shell=False, start_new_session=True,
-                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                     "AGF_CAMPAIGN_ID": state.campaign_id,
-                     "AGF_SESSION_ID": state.session_id},
+                env=environment,
             )
             stdout, _stderr = process.communicate(
                 input=json.dumps(state.to_dict()) + "\n", timeout=120
