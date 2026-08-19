@@ -131,6 +131,93 @@ class ExternalAdvancementStore:
         return item.evidence_hash
 
 
+@dataclass(frozen=True)
+class ExternalResultAcceptance:
+    """Owner acceptance of an already-observed external result.
+
+    This record never authorizes the historical external action and is kept
+    separate from ExternalAdvancement to prevent provenance laundering.
+    """
+
+    schema_version: str
+    acceptance_id: str
+    project_id: str
+    session_id: str
+    repository_identity: str
+    branch: str
+    previous_sha: str
+    target_sha: str
+    github: dict[str, Any]
+    owner_payload: dict[str, Any]
+    owner_envelope: dict[str, Any]
+    observed_at: str
+    provenance: str
+    evidence_hash: str
+
+    def unsigned(self) -> dict[str, Any]:
+        value = self.__dict__.copy()
+        value.pop("evidence_hash")
+        return value
+
+    def validate(self) -> None:
+        if self.schema_version != "1.0" or not _ID.fullmatch(self.acceptance_id):
+            raise ExternalAdvancementError("external result acceptance identity is invalid")
+        if not self.project_id.startswith("project-") or not self.session_id.startswith("session-"):
+            raise ExternalAdvancementError("external result acceptance binding is invalid")
+        if not _SHA.fullmatch(self.previous_sha) or not _SHA.fullmatch(self.target_sha):
+            raise ExternalAdvancementError("external result acceptance SHA is invalid")
+        if self.provenance != "EXTERNAL_RESULT_ACCEPTANCE":
+            raise ExternalAdvancementError("external result acceptance provenance is invalid")
+        if not isinstance(self.github, dict) or self.github.get("state") != "MERGED":
+            raise ExternalAdvancementError("external result merge evidence is missing")
+        if self.github.get("merge_commit") != self.target_sha:
+            raise ExternalAdvancementError("external result target does not match")
+        if not isinstance(self.owner_payload, dict) or not isinstance(self.owner_envelope, dict):
+            raise ExternalAdvancementError("external result Owner acceptance is missing")
+        if self.owner_payload.get("decision") != "ACCEPT_EXTERNAL_RESULT":
+            raise ExternalAdvancementError("external result acceptance decision is invalid")
+        if self.owner_payload.get("acceptance_id") != self.acceptance_id:
+            raise ExternalAdvancementError("external result acceptance identity mismatch")
+        if self.owner_payload.get("project_id") != self.project_id:
+            raise ExternalAdvancementError("external result acceptance project mismatch")
+        if self.owner_payload.get("target_sha") != self.target_sha:
+            raise ExternalAdvancementError("external result acceptance target mismatch")
+        if self.owner_payload.get("previous_sha") != self.previous_sha:
+            raise ExternalAdvancementError("external result acceptance baseline mismatch")
+        if self.owner_payload.get("github") != self.github:
+            raise ExternalAdvancementError("external result acceptance merge mismatch")
+        try:
+            verify_envelope(self.owner_payload, self.owner_envelope)
+        except (AttributeError, TypeError, OwnerAuthorityError) as exc:
+            raise ExternalAdvancementError("external result Owner signature is invalid") from exc
+        if self.evidence_hash != _hash(self.unsigned()):
+            raise ExternalAdvancementError("external result acceptance hash is invalid")
+
+
+class ExternalResultAcceptanceStore:
+    def __init__(self, state_root: str | Path):
+        self.root = Path(state_root).expanduser().resolve() / "external-result-acceptances"
+
+    def _path(self, project_id: str, acceptance_id: str) -> Path:
+        if not project_id.startswith("project-") or not _ID.fullmatch(acceptance_id):
+            raise ExternalAdvancementError("external result acceptance path identity is invalid")
+        return self.root / project_id / f"{acceptance_id}.json"
+
+    def put(self, item: ExternalResultAcceptance) -> str:
+        item.validate()
+        path = self._path(item.project_id, item.acceptance_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            existing = ExternalResultAcceptance(**json.loads(path.read_text(encoding="utf-8")))
+            existing.validate()
+            if existing != item:
+                raise ExternalAdvancementError("external result acceptance replay conflicts")
+        else:
+            path.write_text(json.dumps(item.__dict__, sort_keys=True) + "\n", encoding="utf-8")
+        return item.evidence_hash
+
+
+
 def verify_external_advancement(
     item: ExternalAdvancement,
     project,

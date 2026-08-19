@@ -170,7 +170,10 @@ def build_parser() -> argparse.ArgumentParser:
     for command in ("list",):
         item = session_commands.add_parser(command)
         item.add_argument("--json", action="store_true")
-    for command in ("show", "resume", "assess", "repair-lineage", "reconcile-external", "cancel"):
+    for command in (
+        "show", "resume", "assess", "repair-lineage", "reconcile-external",
+        "reconcile-external-result", "cancel",
+    ):
         item = session_commands.add_parser(command)
         item.add_argument("--session", required=True)
         item.add_argument("--json", action="store_true")
@@ -179,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
                 "--architect-config",
                 help="approved state-root JSON with capability profiles, gates, and providers",
             )
-        if command == "reconcile-external":
+        if command in {"reconcile-external", "reconcile-external-result"}:
             item.add_argument(
                 "--evidence", required=True, help="signed external advancement evidence"
             )
@@ -381,6 +384,11 @@ def run_session(args: argparse.Namespace) -> int:
         elif args.session_command == "reconcile-external":
             _output(
                 manager.reconcile_external_advance(args.session, args.evidence).to_dict(),
+                args.json,
+            )
+        elif args.session_command == "reconcile-external-result":
+            _output(
+                manager.reconcile_external_result(args.session, args.evidence).to_dict(),
                 args.json,
             )
         elif args.session_command == "cancel":

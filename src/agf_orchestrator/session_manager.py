@@ -33,6 +33,8 @@ from .external_advancement import (
     ExternalAdvancement,
     ExternalAdvancementError,
     ExternalAdvancementStore,
+    ExternalResultAcceptance,
+    ExternalResultAcceptanceStore,
     verify_external_advancement,
 )
 from .locking import lock_status, project_lock, session_lock
@@ -467,6 +469,44 @@ class SessionManager:
                 [],
                 "RELEASE_MANAGER",
                 "external-advance:" + item.advancement_id,
+            )
+            self._save(updated)
+            return updated
+
+    def reconcile_external_result(self, session_id: str, evidence_path: str) -> Session:
+        """Accept an already-observed external result without authorizing its act."""
+        with session_lock(self.store.state_dir, session_id, "external-result-acceptance"):
+            session = self.store.load(session_id)
+            project = self.registry.get(session.project_id)
+            try:
+                item = ExternalResultAcceptance(**json.loads(Path(evidence_path).read_text()))
+                item.validate()
+                if item.session_id != session_id or item.previous_sha != session.base_sha:
+                    raise ExternalAdvancementError("external result acceptance binding mismatch")
+                root = Path(project.repository_root)
+                if _git(root, "branch", "--show-current") != item.branch:
+                    raise ExternalAdvancementError("external result branch is not canonical")
+                if _git(root, "rev-parse", "HEAD") != item.target_sha:
+                    raise ExternalAdvancementError("external result target is not checked out")
+                _git(root, "merge-base", "--is-ancestor", item.previous_sha, item.target_sha)
+            except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise SessionManagerError(str(exc)) from exc
+            if project.current_head_sha != item.target_sha:
+                raise SessionManagerError("project target is not reconciled to external result")
+            stored = ExternalResultAcceptanceStore(self.store.state_dir).put(item)
+            historical = {
+                f"historical:{key}": value for key, value in session.artifact_hashes.items()
+            }
+            updated = replace(
+                session, base_sha=item.target_sha, current_stage="REASSESSMENT",
+                status=SessionStatus.READY, blocking_issues=[], required_human_actions=[],
+                artifact_hashes={"external_result_acceptance": stored, **historical},
+            )
+            updated = self._append_event(
+                updated, session.status, SessionStatus.READY,
+                "external result accepted; original action was not AGF-authorized",
+                [str(Path(evidence_path).resolve())], [], "RELEASE_MANAGER",
+                "external-result-acceptance:" + item.acceptance_id,
             )
             self._save(updated)
             return updated
