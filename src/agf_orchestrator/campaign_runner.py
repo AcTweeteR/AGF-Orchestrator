@@ -260,10 +260,18 @@ def campaign_from_dict(payload: dict[str, object]) -> CampaignState:
 class CampaignStore:
     """Atomic, project-isolated persistence for one campaign."""
 
-    def __init__(self, state_dir: str | Path, project_id: str, campaign_id: str):
+    def __init__(
+        self,
+        state_dir: str | Path,
+        project_id: str,
+        campaign_id: str,
+        *,
+        now: Callable[[], datetime] = utc_now,
+    ):
         self.state_dir = Path(state_dir).expanduser().resolve()
         self.project_id = project_id
         self.campaign_id = campaign_id
+        self.now = now
         self.path = self.state_dir / "campaigns" / project_id / f"{campaign_id}.json"
 
     def create(self, state: CampaignState) -> CampaignState:
@@ -310,12 +318,12 @@ class CampaignStore:
                 return None
             if (
                 current.lease_owner is not None
-                and parse_timestamp(current.lease_expires_at or "") > utc_now()
+                and parse_timestamp(current.lease_expires_at or "") > self.now()
             ):
                 return None
             event = CampaignEvent(
                 current.event_sequence + 1, "WORK_CLAIM", current.status.value,
-                timestamp(utc_now()), "provider/work lease claimed",
+                timestamp(self.now()), "provider/work lease claimed",
             )
             claimed = replace(
                 current, lease_owner=worker_id, lease_expires_at=timestamp(expiry),

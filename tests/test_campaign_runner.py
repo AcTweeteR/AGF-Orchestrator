@@ -30,7 +30,7 @@ class Clock:
 
 def build(tmp_path, *, budget=3):
     clock = Clock()
-    store = CampaignStore(tmp_path, "project-ai-fund", "campaign-ai-fund")
+    store = CampaignStore(tmp_path, "project-ai-fund", "campaign-ai-fund", now=clock)
     state = make_initial_state(
         project_id="project-ai-fund", campaign_id="campaign-ai-fund",
         session_id="session-a610d1e887d0c9ac8d7e", phase="R7",
