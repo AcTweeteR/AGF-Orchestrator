@@ -114,19 +114,34 @@ class CommandCampaignDriver:
 
     def _run(self, command: tuple[str, ...], state: CampaignState) -> dict[str, object]:
         try:
-            result = subprocess.run(
-                list(command), input=json.dumps(state.to_dict()) + "\n", text=True,
-                capture_output=True, timeout=120, check=True, shell=False,
+            process = subprocess.Popen(
+                list(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, shell=False, start_new_session=True,
                 env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                      "AGF_CAMPAIGN_ID": state.campaign_id,
                      "AGF_SESSION_ID": state.session_id},
             )
+            stdout, _stderr = process.communicate(
+                input=json.dumps(state.to_dict()) + "\n", timeout=120
+            )
+        except subprocess.TimeoutExpired as exc:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.communicate(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            raise CampaignDaemonError("campaign driver command timed out") from exc
         except (OSError, subprocess.SubprocessError) as exc:
             raise CampaignDaemonError("campaign driver command failed") from exc
-        if len(result.stdout) > _MAX_COMMAND_OUTPUT:
+        if process.returncode != 0:
+            raise CampaignDaemonError("campaign driver command returned failure")
+        if len(stdout) > _MAX_COMMAND_OUTPUT:
             raise CampaignDaemonError("campaign driver output is too large")
         try:
-            payload = json.loads(result.stdout)
+            payload = json.loads(stdout)
         except json.JSONDecodeError as exc:
             raise CampaignDaemonError("campaign driver returned invalid JSON") from exc
         if not isinstance(payload, dict):
@@ -309,6 +324,11 @@ def render_launchd_plist(*, label: str, program: str, state_dir: str, log_dir: s
     for value in (label, program, state_dir, log_dir):
         if not value or any(char in value for char in "&<>"):
             raise CampaignDaemonError("launchd value is invalid")
+    program_path = Path(program).expanduser().resolve()
+    venv_root = program_path.parents[1] if program_path.parent.name == "bin" else None
+    venv_bin = venv_root / "bin" if venv_root else program_path.parent
+    source_root = venv_root.parent if venv_root else program_path.parent
+    python_path = source_root / "src"
     return f'''<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -316,6 +336,13 @@ def render_launchd_plist(*, label: str, program: str, state_dir: str, log_dir: s
 <key>ProgramArguments</key><array><string>{program}</string><string>campaign-runner</string><string>run</string><string>--state-dir</string><string>{state_dir}</string></array>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 <key>ProcessType</key><string>Background</string>
+<key>EnvironmentVariables</key><dict>
+<key>PATH</key><string>{venv_bin}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/sbin</string>
+<key>HOME</key><string>{os.path.expanduser('~')}</string>
+<key>VIRTUAL_ENV</key><string>{venv_root or ''}</string>
+<key>PYTHONNOUSERSITE</key><string>1</string>
+<key>PYTHONPATH</key><string>{python_path}</string>
+</dict>
 <key>StandardOutPath</key><string>{log_dir}/campaign-runner.out.log</string>
 <key>StandardErrorPath</key><string>{log_dir}/campaign-runner.err.log</string>
 </dict></plist>
