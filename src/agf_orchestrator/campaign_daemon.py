@@ -29,6 +29,7 @@ from .campaign_runner import (
     timestamp,
     utc_now,
 )
+from .external_actions import ExternalActionError, ExternalActionExecutor, ExternalActionRequest
 
 
 class CampaignDaemonError(RuntimeError):
@@ -37,6 +38,23 @@ class CampaignDaemonError(RuntimeError):
 
 _MAX_COMMAND_OUTPUT = 64 * 1024
 _MAX_COMMAND_ARGS = 64
+
+
+def _reject_unguarded_external_command(command: tuple[str, ...]) -> None:
+    """Reject known mutating adapters; mutations use ExternalActionExecutor."""
+    lowered = tuple(item.lower() for item in command)
+    patterns = (("gh", "pr", "merge"), ("gh", "pr", "close"),
+                ("git", "push"), ("git", "tag"))
+    if any(
+        any(
+            lowered[index:index + len(pattern)] == pattern
+            for index in range(len(lowered) - len(pattern) + 1)
+        )
+        for pattern in patterns
+    ):
+        raise CampaignDaemonError(
+            "unguarded external action command is forbidden; use ExternalActionExecutor"
+        )
 
 
 @dataclass(frozen=True)
@@ -58,6 +76,7 @@ class CampaignDriverSpec:
                 not isinstance(item, str) or not item or len(item) > 4096 for item in command
             ):
                 raise CampaignDaemonError(f"{name} command is invalid")
+            _reject_unguarded_external_command(command)
         if not 1 <= self.poll_seconds <= 3600:
             raise CampaignDaemonError("poll_seconds is outside bounded limits")
 
@@ -109,8 +128,14 @@ class RunnerStatus:
 class CommandCampaignDriver:
     """Invoke persisted, explicit command adapters without a shell."""
 
-    def __init__(self, spec: CampaignDriverSpec):
+    def __init__(
+        self,
+        spec: CampaignDriverSpec,
+        *,
+        external_executor: ExternalActionExecutor | None = None,
+    ):
         self.spec = spec
+        self.external_executor = external_executor
 
     def _run(self, command: tuple[str, ...], state: CampaignState) -> dict[str, object]:
         environment = {
@@ -183,6 +208,17 @@ class CommandCampaignDriver:
                     wait["expected_condition"], wait["next_check_at"],
                 ), payload.get("reason"),
             )
+        if outcome == "EXTERNAL_ACTION":
+            request = ExternalActionRequest.from_payload(
+                payload.get("action"), project_id=state.project_id, session_id=state.session_id
+            )
+            if self.external_executor is None:
+                raise CampaignDaemonError("external action executor is not configured")
+            try:
+                reason = self.external_executor.execute_authorized(request)
+            except ExternalActionError as exc:
+                raise CampaignDaemonError(str(exc)) from exc
+            return StepResult("COMPLETE", reason=reason)
         if outcome not in {"CONTINUE", "COMPLETE", "HUMAN_REQUIRED",
                            "BLOCKED_NON_RETRYABLE", "CANCELLED"}:
             raise CampaignDaemonError("work result outcome is invalid")
