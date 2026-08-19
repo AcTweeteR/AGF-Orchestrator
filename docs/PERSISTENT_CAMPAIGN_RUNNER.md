@@ -48,3 +48,19 @@ the provider invocation. A user `launchd` agent can be rendered with
 `campaign-runner install-launchd`; loading that agent is an explicit OS
 operation. `campaign-runner status` reports `RUNNER_ACTIVE`, PID/instance,
 active and waiting campaigns, next wake, last wake and last action.
+
+Driver commands are persisted as absolute, explicit commands. When a campaign
+was registered from a virtual environment in a macOS-protected location, use
+`campaign-runner rebind-interpreters --state-dir <state-root> --interpreter
+<launchd-safe-python>` to atomically rebind all persisted Python driver
+commands. Each persisted spec is rewritten atomically after validating the
+replacement executable; the operation does not broaden permissions or alter
+campaign scope and is idempotent.
+
+Independent review is separate from GitHub's UI review state. AGF may consume
+a head-bound independent review record when the active policy does not require
+formal GitHub approval. The record must bind project, repository, exact head,
+implementer, independent reviewer, decision, findings, provenance, timestamp
+and anti-replay identity. A COMMENTED review without such evidence never
+becomes approval, and a policy requiring formal GitHub approval remains
+fail-closed.

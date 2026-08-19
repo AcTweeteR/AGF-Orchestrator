@@ -82,3 +82,19 @@ def test_launchd_plist_is_user_scoped_and_keepalive(tmp_path):
         pass
     else:
         raise AssertionError("unsafe launchd value accepted")
+
+
+def test_rebind_interpreters_updates_all_python_driver_commands(tmp_path):
+    runtime = tmp_path / "python"
+    runtime.write_text("#!/bin/sh\n")
+    runtime.chmod(0o700)
+    daemon = CampaignDaemon(tmp_path)
+    daemon.register(CampaignDriverSpec(
+        "project-ai-fund", "campaign-ai-fund", str(tmp_path),
+        ("/protected/.venv/bin/python", "probe.py"),
+        ("/protected/.venv/bin/python", "work.py"), 30,
+    ))
+    assert daemon.rebind_interpreters(str(runtime)) == 1
+    spec = daemon._load_specs()[0]
+    assert spec.probe_command[0] == str(runtime)
+    assert spec.work_command[0] == str(runtime)

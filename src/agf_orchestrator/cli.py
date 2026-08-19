@@ -239,6 +239,10 @@ def build_parser() -> argparse.ArgumentParser:
     campaign_install.add_argument("--log-dir", required=True)
     campaign_install.add_argument("--output", required=True)
     campaign_install.add_argument("--json", action="store_true")
+    campaign_rebind = campaign_commands.add_parser("rebind-interpreters")
+    campaign_rebind.add_argument("--state-dir", required=True)
+    campaign_rebind.add_argument("--interpreter", required=True)
+    campaign_rebind.add_argument("--json", action="store_true")
     return parser
 
 
@@ -1106,6 +1110,10 @@ def run_campaign_runner(args: argparse.Namespace) -> int:
             return 0
         if args.campaign_command == "status":
             _output(daemon.status().to_dict(), args.json)
+            return 0
+        if args.campaign_command == "rebind-interpreters":
+            changed = daemon.rebind_interpreters(args.interpreter)
+            _output({"rebound": changed}, args.json)
             return 0
         if args.campaign_command == "install-launchd":
             output = Path(args.output).expanduser().resolve()

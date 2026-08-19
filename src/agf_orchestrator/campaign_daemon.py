@@ -209,6 +209,26 @@ class CampaignDaemon:
         path = self.spec_dir / f"{spec.campaign_id}.json"
         self._atomic_json(path, spec.to_dict())
 
+    def rebind_interpreters(self, interpreter: str) -> int:
+        """Rebind persisted Python driver commands to a launchd-safe runtime."""
+        runtime = Path(interpreter).expanduser().resolve()
+        if not runtime.is_file() or not os.access(runtime, os.X_OK):
+            raise CampaignDaemonError("interpreter is not an executable file")
+        changed = 0
+        for spec in self._load_specs():
+            def rebind(command: tuple[str, ...]) -> tuple[str, ...]:
+                if command and Path(command[0]).name.startswith("python"):
+                    return (str(runtime), *command[1:])
+                return command
+            updated = CampaignDriverSpec(
+                spec.project_id, spec.campaign_id, spec.state_dir,
+                rebind(spec.probe_command), rebind(spec.work_command), spec.poll_seconds,
+            )
+            if updated.to_dict() != spec.to_dict():
+                self.register(updated)
+                changed += 1
+        return changed
+
     def status(self) -> RunnerStatus:
         if not self.status_path.exists():
             return RunnerStatus(0, "none", False, 0, 0, None, None, None, timestamp(utc_now()))
