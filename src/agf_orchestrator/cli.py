@@ -31,6 +31,7 @@ from .campaign_daemon import (
     CampaignDriverSpec,
     render_launchd_plist,
 )
+from .campaign_runner import CampaignStore, PersistentCampaignRunner
 from .capability_profiles import CapabilityProfileError, CapabilityStatus
 from .capability_selection import CapabilityCandidate, SelectionGates
 from .compliance import ComplianceChecker
@@ -243,6 +244,12 @@ def build_parser() -> argparse.ArgumentParser:
     campaign_rebind.add_argument("--state-dir", required=True)
     campaign_rebind.add_argument("--interpreter", required=True)
     campaign_rebind.add_argument("--json", action="store_true")
+    campaign_reset = campaign_commands.add_parser("reset-retry")
+    campaign_reset.add_argument("--state-dir", required=True)
+    campaign_reset.add_argument("--project-id", required=True)
+    campaign_reset.add_argument("--campaign-id", required=True)
+    campaign_reset.add_argument("--reason", required=True)
+    campaign_reset.add_argument("--json", action="store_true")
     return parser
 
 
@@ -1114,6 +1121,12 @@ def run_campaign_runner(args: argparse.Namespace) -> int:
         if args.campaign_command == "rebind-interpreters":
             changed = daemon.rebind_interpreters(args.interpreter)
             _output({"rebound": changed}, args.json)
+            return 0
+        if args.campaign_command == "reset-retry":
+            store = CampaignStore(args.state_dir, args.project_id, args.campaign_id)
+            state = PersistentCampaignRunner(store).reset_retry(args.reason)
+            _output({"reset": True, "status": state.status.value,
+                     "retry_count": state.retry_count}, args.json)
             return 0
         if args.campaign_command == "install-launchd":
             output = Path(args.output).expanduser().resolve()

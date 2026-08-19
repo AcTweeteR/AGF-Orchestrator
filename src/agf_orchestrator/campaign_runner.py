@@ -494,6 +494,25 @@ class PersistentCampaignRunner:
                 raise CampaignRunnerError("persistent runner requires a sleep function")
             self.sleep(wait_seconds)
 
+    def reset_retry(self, reason: str) -> CampaignState:
+        """Reset an external retry only after its technical cause is repaired."""
+        state = self.store.load()
+        if state.status not in {
+            CampaignStatus.RETRY_BACKOFF, CampaignStatus.BLOCKED_NON_RETRYABLE,
+        }:
+            raise CampaignRunnerError("campaign is not in a retryable terminal state")
+        if not isinstance(reason, str) or not reason.strip():
+            raise CampaignRunnerError("retry reset reason is required")
+        updated = self._append(state, "RETRY_RESET", CampaignStatus.WAITING_EXTERNAL.value, reason)
+        updated = replace(
+            updated, status=CampaignStatus.WAITING_EXTERNAL, reason=reason.strip(),
+            expected_condition="external probe after repaired driver", resource=state.resource,
+            waiting_since=timestamp(self.now()), next_check_at=timestamp(self.now()),
+            retry_count=0, lease_owner=None, lease_expires_at=None,
+        )
+        self.store.save(updated)
+        return updated
+
     def _apply_result(self, state: CampaignState, result: StepResult) -> CampaignState:
         now = timestamp(self.now())
         if result.outcome == "WAIT":
