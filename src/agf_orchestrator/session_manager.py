@@ -411,6 +411,83 @@ class SessionManager:
             with project_lock(self.store.state_dir, project.project_id, "session-resume"):
                 return self._resume_locked(session, project, execute, confirm_delivery)
 
+    def reconcile_canonical_target(self, session_id: str) -> Session:
+        """Retire a stale checkpoint and rebase planning on the verified target.
+
+        This records observation of the current registered repository only. It
+        never asserts delivery, authorization, review, Compliance, or provider
+        provenance for the discarded historical checkpoint.
+        """
+        with session_lock(self.store.state_dir, session_id, "canonical-target-reconcile"):
+            session = self.store.load(session_id)
+            if session.status in TERMINAL_STATUSES:
+                raise SessionManagerError("terminal session cannot reconcile a target")
+            project = self.registry.get(session.project_id)
+            with project_lock(
+                self.store.state_dir, project.project_id, "canonical-target-reconcile"
+            ):
+                project = self.registry.verify(session.project_id)
+                return self._reconcile_canonical_target_locked(session, project)
+
+    def _reconcile_canonical_target_locked(self, session: Session, project) -> Session:
+        """Reconcile a verified target while the session and project locks are held."""
+        root = Path(project.repository_root)
+        if project.status.value != "ACTIVE":
+            raise SessionManagerError("project registration is not ACTIVE")
+        if _git(root, "branch", "--show-current") != project.default_branch:
+            raise SessionManagerError("project is not on its canonical branch")
+        if _git(root, "status", "--porcelain"):
+            raise SessionManagerError("canonical target repository is dirty")
+        actual_head = _git(root, "rev-parse", "HEAD")
+        if actual_head != project.current_head_sha:
+            raise SessionManagerError("canonical target verification is inconsistent")
+        if session.base_sha == actual_head:
+            return session
+        if session.status not in {
+            SessionStatus.BLOCKED, SessionStatus.STALE, SessionStatus.RETRY_REQUIRED,
+        }:
+            raise SessionManagerError(
+                "session state is not recoverable by target reconciliation"
+            )
+        if session.required_human_actions:
+            raise SessionManagerError("session has unresolved human-required actions")
+        if session.blocking_issues:
+            raise SessionManagerError("session has unresolved blocking issues")
+        historical = {
+            f"historical:{key}": value for key, value in session.artifact_hashes.items()
+        }
+        updated = replace(
+            session,
+            base_sha=actual_head,
+            current_stage="REASSESSMENT",
+            status=SessionStatus.READY,
+            plan_path=None,
+            execution_report_path=None,
+            review_report_path=None,
+            compliance_report_path=None,
+            delivery_report_path=None,
+            delivery_branch=None,
+            pr_url=None,
+            blocking_issues=[],
+            required_human_actions=[],
+            artifact_hashes={"canonical_target": actual_head, **historical},
+        )
+        updated = self._append_event(
+            updated,
+            session.status,
+            SessionStatus.READY,
+            (
+                "canonical target reconciled; historical checkpoint retired; "
+                "no delivery provenance asserted"
+            ),
+            [],
+            [],
+            "SYSTEM",
+            "canonical-target-reconcile:" + actual_head,
+        )
+        self._save(updated)
+        return updated
+
     def reconcile_external_advance(self, session_id: str, evidence_path: str) -> Session:
         """Reconcile a verified owner-authorized merge without inventing delivery provenance."""
         with session_lock(self.store.state_dir, session_id, "external-advance"):

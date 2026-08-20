@@ -128,6 +128,43 @@ def test_terminal_states_are_not_resumed(tmp_path, terminal):
     assert calls == []
 
 
+def test_stale_binding_is_terminal_and_cannot_wake_after_restart(tmp_path):
+    store, clock = build(tmp_path)
+    runner = PersistentCampaignRunner(store, now=clock)
+    runner.tick(lambda _state: True, lambda _state: wait_for(clock, delay=0))
+    stale = runner.invalidate_binding("canonical target advanced")
+    assert stale.status is CampaignStatus.BLOCKED_NON_RETRYABLE
+    assert stale.events[-1].event_type == "STALE_BINDING"
+    calls = []
+    restarted = PersistentCampaignRunner(
+        CampaignStore(tmp_path, "project-ai-fund", "campaign-ai-fund"), now=clock
+    )
+    assert restarted.tick(
+        lambda _state: calls.append("probe"), lambda _state: calls.append("work")
+    ) == stale
+    assert calls == []
+    with pytest.raises(CampaignRunnerError):
+        restarted.reset_retry("do not revive stale binding")
+
+
+def test_wake_guard_rejects_target_change_before_wake_is_persisted(tmp_path):
+    store, clock = build(tmp_path)
+    runner = PersistentCampaignRunner(store, now=clock)
+    runner.tick(lambda _state: True, lambda _state: wait_for(clock, delay=0))
+    before = store.load()
+    with pytest.raises(CampaignRunnerError, match="canonical target"):
+        runner.tick(
+            lambda _state: True,
+            lambda _state: StepResult("COMPLETE"),
+            wake_guard=lambda _state: (_ for _ in ()).throw(
+                CampaignRunnerError("canonical target advanced")
+            ),
+        )
+    after = store.load()
+    assert after.event_sequence == before.event_sequence
+    assert all(event.event_type != "WAKE" for event in after.events[before.event_sequence:])
+
+
 def test_retry_budget_exhaustion_is_non_retryable_and_never_loops(tmp_path):
     store, clock = build(tmp_path, budget=1)
     runner = PersistentCampaignRunner(

@@ -122,6 +122,8 @@ class CampaignState:
     wake_generation: int
     event_sequence: int
     events: tuple[CampaignEvent, ...] = ()
+    policy_binding: str | None = None
+    authority_generation: int | None = None
 
     def validate(self) -> None:
         if self.schema_version != "1.0":
@@ -180,6 +182,12 @@ class CampaignState:
             raise CampaignRunnerError("target_sha is invalid")
         if not isinstance(self.lineage_binding, str) or not self.lineage_binding.strip():
             raise CampaignRunnerError("lineage_binding is invalid")
+        if self.policy_binding is not None and not self.policy_binding.strip():
+            raise CampaignRunnerError("policy_binding is invalid")
+        if self.authority_generation is not None and (
+            not isinstance(self.authority_generation, int) or self.authority_generation < 1
+        ):
+            raise CampaignRunnerError("authority_generation is invalid")
         if not isinstance(self.wake_generation, int) or self.wake_generation < 0:
             raise CampaignRunnerError("wake_generation is invalid")
         if not isinstance(self.event_sequence, int) or self.event_sequence < 0:
@@ -220,6 +228,8 @@ class CampaignState:
             "wake_generation": self.wake_generation,
             "event_sequence": self.event_sequence,
             "events": [event.to_dict() for event in self.events],
+            "policy_binding": self.policy_binding,
+            "authority_generation": self.authority_generation,
         }
 
 
@@ -233,7 +243,7 @@ def campaign_from_dict(payload: dict[str, object]) -> CampaignState:
         "retry_budget", "operation_id",
         "target_sha", "lineage_binding", "wake_generation", "event_sequence", "events",
     }
-    if set(payload) != required:
+    if set(payload) - required - {"policy_binding", "authority_generation"}:
         raise CampaignRunnerError("campaign schema is missing or contains unknown fields")
     try:
         events = tuple(CampaignEvent(**item) for item in payload["events"])
@@ -250,6 +260,8 @@ def campaign_from_dict(payload: dict[str, object]) -> CampaignState:
             target_sha=payload["target_sha"], lineage_binding=payload["lineage_binding"],
             wake_generation=payload["wake_generation"], event_sequence=payload["event_sequence"],
             events=events,
+            policy_binding=payload.get("policy_binding"),
+            authority_generation=payload.get("authority_generation"),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise CampaignRunnerError("campaign state structure is invalid") from exc
@@ -411,6 +423,7 @@ def make_initial_state(
     *, project_id: str, campaign_id: str, session_id: str, phase: str,
     operation_id: str, target_sha: str, lineage_binding: str, retry_budget: int,
     now: datetime | None = None,
+    policy_binding: str | None = None, authority_generation: int | None = None,
 ) -> CampaignState:
     current = timestamp(now or utc_now())
     state = CampaignState(
@@ -421,6 +434,7 @@ def make_initial_state(
         lease_owner=None, lease_expires_at=None,
         retry_budget=retry_budget, operation_id=operation_id, target_sha=target_sha,
         lineage_binding=lineage_binding, wake_generation=0, event_sequence=0, events=(),
+        policy_binding=policy_binding, authority_generation=authority_generation,
     )
     state.validate()
     return state
@@ -449,7 +463,13 @@ class PersistentCampaignRunner:
         self.worker_id = f"runner-{uuid.uuid4().hex}"
         self.lease_seconds = 300
 
-    def tick(self, probe: CampaignProbe, work: CampaignWork) -> CampaignState:
+    def tick(
+        self,
+        probe: CampaignProbe,
+        work: CampaignWork,
+        *,
+        wake_guard: Callable[[CampaignState], None] | None = None,
+    ) -> CampaignState:
         state = self.store.load()
         if state.status in TERMINAL_STATUSES:
             return state
@@ -464,6 +484,8 @@ class PersistentCampaignRunner:
                 return self._schedule_retry(state, f"external probe failed: {type(exc).__name__}")
             if not ready:
                 return self._schedule_retry(state, "external condition not satisfied")
+            if wake_guard is not None:
+                wake_guard(state)
             state = self._append(state, "WAKE", "RUNNING", "external condition satisfied")
             state = replace(
                 state, status=CampaignStatus.RUNNING, reason=None, resource=None,
@@ -505,9 +527,7 @@ class PersistentCampaignRunner:
     def reset_retry(self, reason: str) -> CampaignState:
         """Reset an external retry only after its technical cause is repaired."""
         state = self.store.load()
-        if state.status not in {
-            CampaignStatus.RETRY_BACKOFF, CampaignStatus.BLOCKED_NON_RETRYABLE,
-        }:
+        if state.status is not CampaignStatus.RETRY_BACKOFF:
             raise CampaignRunnerError("campaign is not in a retryable terminal state")
         if not isinstance(reason, str) or not reason.strip():
             raise CampaignRunnerError("retry reset reason is required")
@@ -517,6 +537,32 @@ class PersistentCampaignRunner:
             expected_condition="external probe after repaired driver", resource=state.resource,
             waiting_since=timestamp(self.now()), next_check_at=timestamp(self.now()),
             retry_count=0, lease_owner=None, lease_expires_at=None,
+        )
+        self.store.save(updated)
+        return updated
+
+    def invalidate_binding(self, reason: str) -> CampaignState:
+        """Retire a campaign whose canonical target binding is no longer valid.
+
+        This is deliberately terminal and auditable: a stale wait must never
+        become a wake merely because a daemon restarted or its target moved.
+        """
+        state = self.store.load()
+        if state.status in TERMINAL_STATUSES:
+            return state
+        if not isinstance(reason, str) or not reason.strip():
+            raise CampaignRunnerError("stale binding reason is required")
+        updated = self._append(
+            state, "STALE_BINDING", CampaignStatus.BLOCKED_NON_RETRYABLE.value, reason
+        )
+        updated = replace(
+            updated,
+            status=CampaignStatus.BLOCKED_NON_RETRYABLE,
+            reason=reason.strip(),
+            waiting_since=None,
+            next_check_at=None,
+            lease_owner=None,
+            lease_expires_at=None,
         )
         self.store.save(updated)
         return updated

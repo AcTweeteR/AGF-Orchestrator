@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
         item.add_argument("--json", action="store_true")
     for command in (
         "show", "resume", "assess", "repair-lineage", "reconcile-external",
-        "reconcile-external-result", "cancel",
+        "reconcile-external-result", "reconcile-canonical", "cancel",
     ):
         item = session_commands.add_parser(command)
         item.add_argument("--session", required=True)
@@ -391,6 +391,8 @@ def run_session(args: argparse.Namespace) -> int:
                 manager.reconcile_external_result(args.session, args.evidence).to_dict(),
                 args.json,
             )
+        elif args.session_command == "reconcile-canonical":
+            _output(manager.reconcile_canonical_target(args.session).to_dict(), args.json)
         elif args.session_command == "cancel":
             _output(manager.cancel(args.session).to_dict(), args.json)
         elif args.session_command == "lock-status":

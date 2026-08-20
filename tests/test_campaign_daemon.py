@@ -1,6 +1,7 @@
 import sys
 import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,9 +9,17 @@ from agf_orchestrator.campaign_daemon import (
     CampaignDaemon,
     CampaignDaemonError,
     CampaignDriverSpec,
+    CanonicalBindingError,
     render_launchd_plist,
 )
-from agf_orchestrator.campaign_runner import CampaignStore, make_initial_state, timestamp
+from agf_orchestrator.campaign_runner import (
+    CampaignStatus,
+    CampaignStore,
+    StepResult,
+    WaitRequest,
+    make_initial_state,
+    timestamp,
+)
 
 TARGET = "a" * 40
 
@@ -37,6 +46,7 @@ def test_daemon_survives_driver_exit_and_wakes_same_campaign(tmp_path, monkeypat
         operation_id="operation-r7", target_sha=TARGET, lineage_binding="main", retry_budget=3,
     ))
     daemon = CampaignDaemon(state_dir)
+    monkeypatch.setattr(daemon, "_validate_canonical_binding", lambda _state, _state_dir: None)
     daemon.register(CampaignDriverSpec(
         "project-ai-fund", "campaign-ai-fund", str(state_dir),
         (sys.executable, str(probe)), (sys.executable, str(work)), poll_seconds=1,
@@ -69,6 +79,148 @@ def test_daemon_status_and_single_instance_lock(tmp_path):
             raise AssertionError("second daemon acquired the lock")
     finally:
         daemon._release_lock()
+
+
+def test_daemon_retires_wait_with_wrong_canonical_target(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    store = CampaignStore(state_dir, "project-ai-fund", "campaign-ai-fund")
+    store.create(make_initial_state(
+        project_id="project-ai-fund", campaign_id="campaign-ai-fund",
+        session_id="session-a610d1e887d0c9ac8d7e", phase="R7",
+        operation_id="operation-r7", target_sha=TARGET, lineage_binding="main:" + TARGET,
+        retry_budget=3,
+    ))
+    from agf_orchestrator.campaign_runner import PersistentCampaignRunner
+
+    clock = datetime.now(UTC)
+    PersistentCampaignRunner(store).tick(
+        lambda _state: True,
+        lambda _state: StepResult(
+            "WAIT",
+            WaitRequest(
+                CampaignStatus.WAITING_CI,
+                "ci",
+                "run",
+                "pass",
+                timestamp(clock - timedelta(seconds=1)),
+            ),
+        ),
+    )
+    daemon = CampaignDaemon(state_dir)
+    monkeypatch.setattr(
+        daemon,
+        "_validate_canonical_binding",
+        lambda _state, _state_dir: (_ for _ in ()).throw(
+            CanonicalBindingError("wrong target SHA")
+        ),
+    )
+    daemon.register(CampaignDriverSpec(
+        "project-ai-fund", "campaign-ai-fund", str(state_dir),
+        (sys.executable, "probe.py"), (sys.executable, "work.py"), 1,
+    ))
+    daemon.run_forever(max_loops=1)
+    assert store.load().status.value == "BLOCKED_NON_RETRYABLE"
+
+
+def test_daemon_rejects_lineage_binding_for_another_target(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    store = CampaignStore(state_dir, "project-ai-fund", "campaign-ai-fund")
+    state = make_initial_state(
+        project_id="project-ai-fund", campaign_id="campaign-ai-fund",
+        session_id="session-a610d1e887d0c9ac8d7e", phase="R7",
+        operation_id="operation-r7", target_sha=TARGET,
+        lineage_binding="ai-fund:main:" + "b" * 40,
+        retry_budget=3,
+    )
+    store.create(state)
+    daemon = CampaignDaemon(state_dir)
+    (state_dir / "projects.json").write_text("{}")
+    monkeypatch.setattr(
+        "agf_orchestrator.campaign_daemon.ProjectRegistry.verify_read_only",
+        lambda _registry, _project: SimpleNamespace(
+            status=SimpleNamespace(value="ACTIVE"),
+            name="ai-fund",
+            repository_root=str(tmp_path),
+            default_branch="main",
+            current_head_sha=TARGET,
+        ),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.campaign_daemon._git",
+        lambda _root, *args: "main" if args[0] == "branch" else TARGET,
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.campaign_daemon.SessionStore.load",
+        lambda _store, _session: SimpleNamespace(
+            project_id="project-ai-fund",
+            base_sha=TARGET,
+            status=SimpleNamespace(value="READY"),
+            artifact_hashes={"canonical_target": TARGET},
+        ),
+    )
+    with pytest.raises(CanonicalBindingError, match="lineage binding"):
+        daemon._validate_canonical_binding(state, state_dir)
+
+
+@pytest.mark.parametrize("status", ["BLOCKED", "HUMAN_REQUIRED", "FAILED", "STALE"])
+def test_daemon_rejects_non_executable_session_binding(tmp_path, monkeypatch, status):
+    state_dir = tmp_path / "state"
+    daemon = CampaignDaemon(state_dir)
+    state_dir.mkdir()
+    (state_dir / "projects.json").write_text("{}")
+    state = make_initial_state(
+        project_id="project-ai-fund", campaign_id="campaign-ai-fund",
+        session_id="session-a610d1e887d0c9ac8d7e", phase="R7",
+        operation_id="operation-r7", target_sha=TARGET,
+        lineage_binding="ai-fund:main:" + TARGET,
+        retry_budget=3,
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.campaign_daemon.ProjectRegistry.verify_read_only",
+        lambda _registry, _project: SimpleNamespace(
+            status=SimpleNamespace(value="ACTIVE"),
+            name="ai-fund",
+            repository_root=str(tmp_path),
+            default_branch="main",
+            current_head_sha=TARGET,
+        ),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.campaign_daemon._git",
+        lambda _root, *args: "main" if args[0] == "branch" else TARGET,
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.campaign_daemon.SessionStore.load",
+        lambda _store, _session: SimpleNamespace(
+            project_id="project-ai-fund",
+            base_sha=TARGET,
+            status=SimpleNamespace(value=status),
+            artifact_hashes={"canonical_target": TARGET},
+        ),
+    )
+    with pytest.raises(CanonicalBindingError, match="session binding"):
+        daemon._validate_canonical_binding(state, state_dir)
+
+
+def test_stale_terminal_campaign_is_preserved_and_never_reactivated(tmp_path):
+    state_dir = tmp_path / "state"
+    store = CampaignStore(state_dir, "project-ai-fund", "campaign-ai-fund")
+    store.create(make_initial_state(
+        project_id="project-ai-fund", campaign_id="campaign-ai-fund",
+        session_id="session-a610d1e887d0c9ac8d7e", phase="R7",
+        operation_id="operation-r7", target_sha=TARGET, lineage_binding="main", retry_budget=3,
+    ))
+    from agf_orchestrator.campaign_runner import PersistentCampaignRunner, StepResult
+    PersistentCampaignRunner(store).tick(lambda _state: True, lambda _state: StepResult("COMPLETE"))
+    daemon = CampaignDaemon(state_dir)
+    daemon.register(CampaignDriverSpec(
+        "project-ai-fund", "campaign-ai-fund", str(state_dir),
+        (sys.executable, "probe.py"), (sys.executable, "work.py"), 1,
+    ))
+    daemon.run_forever(max_loops=1)
+    final = store.load()
+    assert final.status is CampaignStatus.COMPLETE
+    assert final.event_sequence == 2
 
 
 def test_launchd_plist_is_user_scoped_and_keepalive(tmp_path):

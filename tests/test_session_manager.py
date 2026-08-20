@@ -74,6 +74,50 @@ def test_start_is_ready_and_resume_is_idempotent(tmp_path):
     assert "base SHA" in stale.blocking_issues[0]
 
 
+def test_canonical_target_reconcile_retires_historical_checkpoint(tmp_path):
+    root, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Reconcile current R7 target")
+    session.artifact_hashes["plan"] = "p" * 64
+    manager.store.save(session)
+    (root / "y").write_text("y")
+    subprocess.run(["git", "-C", str(root), "add", "y"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "canonical target"],
+        check=True, capture_output=True,
+    )
+    ProjectRegistry(state).verify("alpha")
+    blocked = manager.transition(session.session_id, SessionStatus.BLOCKED)
+    recovered = manager.reconcile_canonical_target(blocked.session_id)
+    assert recovered.status is SessionStatus.READY
+    assert recovered.base_sha == ProjectRegistry(state).get("alpha").current_head_sha
+    assert recovered.plan_path is None
+    assert recovered.artifact_hashes["historical:plan"] == "p" * 64
+    assert recovered.artifact_hashes["canonical_target"] == recovered.base_sha
+    assert "no delivery provenance asserted" in recovered.events[-1].summary
+    assert (
+        manager.reconcile_canonical_target(recovered.session_id).events[-1]
+        == recovered.events[-1]
+    )
+
+
+@pytest.mark.parametrize("status", [SessionStatus.HUMAN_REQUIRED, SessionStatus.FAILED])
+def test_canonical_target_reconcile_does_not_clear_gates(tmp_path, status):
+    root, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Do not bypass a gate")
+    blocked = manager.transition(session.session_id, status)
+    (root / "z").write_text("z")
+    subprocess.run(["git", "-C", str(root), "add", "z"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "advance target"],
+        check=True, capture_output=True,
+    )
+    ProjectRegistry(state).verify("alpha")
+    with pytest.raises(SessionManagerError, match="not recoverable"):
+        manager.reconcile_canonical_target(blocked.session_id)
+
+
 def test_external_advance_rejects_mismatched_session_baseline(tmp_path, monkeypatch):
     _, state = registered(tmp_path)
     manager = SessionManager(state)
