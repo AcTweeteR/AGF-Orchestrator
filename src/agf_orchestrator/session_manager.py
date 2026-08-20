@@ -449,11 +449,15 @@ class SessionManager:
             raise SessionManagerError(
                 "session state is not recoverable by target reconciliation"
             )
-        target_drift = any(
+        target_drift = bool(session.blocking_issues) and all(
             isinstance(issue, str) and issue.startswith("base SHA drifted:")
             for issue in session.blocking_issues
         )
-        if session.required_human_actions and not target_drift:
+        drift_actions = bool(session.required_human_actions) and all(
+            isinstance(action, str) and "drift" in action.lower()
+            for action in session.required_human_actions
+        )
+        if session.required_human_actions and not (target_drift and drift_actions):
             raise SessionManagerError("session has unresolved human-required actions")
         if session.blocking_issues and not target_drift:
             raise SessionManagerError("session has unresolved blocking issues")

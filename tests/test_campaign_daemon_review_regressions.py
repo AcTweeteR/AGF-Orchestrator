@@ -67,6 +67,36 @@ def test_legacy_authority_path_without_generation_is_valid(tmp_path, monkeypatch
     CampaignDaemon(state_dir)._validate_canonical_binding(_state(), state_dir)
 
 
+def test_installed_authority_requires_campaign_bindings(tmp_path, monkeypatch):
+    session = SimpleNamespace(
+        project_id="project-ai-fund", base_sha=TARGET,
+        status=SimpleNamespace(value="READY"), artifact_hashes={},
+    )
+    state_dir = _patch_binding(monkeypatch, tmp_path, session)
+    monkeypatch.setattr(
+        "agf_orchestrator.campaign_daemon.AuthorityContext.resolve_runtime",
+        lambda _project_id, _root: SimpleNamespace(policy_hash="p" * 64, generation_number=2),
+    )
+    with pytest.raises(CanonicalBindingError, match="policy or authority"):
+        CampaignDaemon(state_dir)._validate_canonical_binding(_state(), state_dir)
+
+
+def test_bound_campaign_rejects_removed_authority_selector(tmp_path, monkeypatch):
+    session = SimpleNamespace(
+        project_id="project-ai-fund", base_sha=TARGET,
+        status=SimpleNamespace(value="READY"), artifact_hashes={},
+    )
+    state_dir = _patch_binding(monkeypatch, tmp_path, session)
+    monkeypatch.setattr(
+        "agf_orchestrator.campaign_daemon.AuthorityContext.resolve_runtime",
+        lambda _project_id, _root: None,
+    )
+    with pytest.raises(CanonicalBindingError, match="authority binding"):
+        CampaignDaemon(state_dir)._validate_canonical_binding(
+            _state(policy_binding="p" * 64, authority_generation=2), state_dir
+        )
+
+
 def test_stale_reconciliation_target_is_rejected(tmp_path, monkeypatch):
     session = SimpleNamespace(
         project_id="project-ai-fund", base_sha=TARGET,

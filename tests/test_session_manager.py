@@ -118,6 +118,23 @@ def test_canonical_target_reconcile_recovers_target_drift_stale_state(tmp_path):
     assert recovered.required_human_actions == []
 
 
+def test_canonical_target_reconcile_preserves_unrelated_gate(tmp_path):
+    root, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Preserve unrelated gate")
+    (root / "drift").write_text("drift")
+    subprocess.run(["git", "-C", str(root), "add", "drift"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "advance target"],
+        check=True, capture_output=True,
+    )
+    stale = manager.resume(session.session_id)
+    stale.blocking_issues.append("unrelated compliance gate")
+    manager.store.save(stale)
+    with pytest.raises(SessionManagerError, match="human-required actions"):
+        manager.reconcile_canonical_target(session.session_id)
+
+
 @pytest.mark.parametrize("status", [SessionStatus.HUMAN_REQUIRED, SessionStatus.FAILED])
 def test_canonical_target_reconcile_does_not_clear_gates(tmp_path, status):
     root, state = registered(tmp_path)

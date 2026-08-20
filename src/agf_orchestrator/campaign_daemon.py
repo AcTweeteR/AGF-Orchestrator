@@ -32,7 +32,7 @@ from .campaign_runner import (
     utc_now,
 )
 from .external_actions import ExternalActionError, ExternalActionExecutor, ExternalActionRequest
-from .locking import project_lock
+from .locking import LockError, project_lock
 from .project_registry import ProjectRegistry, ProjectRegistryError, _git
 from .session_store import SessionStore, SessionStoreError
 
@@ -328,6 +328,8 @@ class CampaignDaemon:
                             with project_lock(spec.state_dir, claimed.project_id, "campaign-work"):
                                 try:
                                     self._validate_canonical_binding(claimed, spec.state_dir)
+                                except RetryableCanonicalBindingError:
+                                    raise
                                 except CanonicalBindingError as exc:
                                     return StepResult("BLOCKED_NON_RETRYABLE", reason=str(exc))
                                 return driver.work(claimed)
@@ -341,7 +343,7 @@ class CampaignDaemon:
                         after = PersistentCampaignRunner(store).tick(
                             driver.probe, guarded_work, wake_guard=guarded_probe
                         )
-                    except RetryableCanonicalBindingError as exc:
+                    except (RetryableCanonicalBindingError, LockError) as exc:
                         after = PersistentCampaignRunner(store).schedule_retry(str(exc))
                         last_action = after.events[-1].event_type
                         continue
@@ -435,12 +437,12 @@ class CampaignDaemon:
                 raise RetryableCanonicalBindingError(
                     "campaign authority evidence is temporarily unavailable"
                 ) from exc
-            if authority is not None and (
-                (state.policy_binding is not None and state.policy_binding != authority.policy_hash)
-                or (
-                    state.authority_generation is not None
-                    and state.authority_generation != authority.generation_number
-                )
+            if authority is None:
+                if state.policy_binding is not None or state.authority_generation is not None:
+                    raise CanonicalBindingError("campaign authority binding is unavailable")
+            elif (
+                state.policy_binding != authority.policy_hash
+                or state.authority_generation != authority.generation_number
             ):
                 raise CanonicalBindingError("campaign policy or authority binding is stale")
         except (ProjectRegistryError, OSError, ValueError) as exc:
