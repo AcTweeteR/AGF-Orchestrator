@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -18,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from .authority_context import AuthorityContext, AuthorityContextError
 from .campaign_runner import (
     CampaignState,
     CampaignStatus,
@@ -30,10 +32,21 @@ from .campaign_runner import (
     utc_now,
 )
 from .external_actions import ExternalActionError, ExternalActionExecutor, ExternalActionRequest
+from .locking import LockError, project_lock
+from .project_registry import ProjectRegistry, ProjectRegistryError, _git
+from .session_store import SessionStore, SessionStoreError
 
 
 class CampaignDaemonError(RuntimeError):
     """Raised when the independent campaign supervisor cannot continue safely."""
+
+
+class CanonicalBindingError(CampaignDaemonError):
+    """Raised only when persisted campaign identity no longer matches reality."""
+
+
+class RetryableCanonicalBindingError(CanonicalBindingError):
+    """Raised when binding evidence is temporarily unavailable to verify."""
 
 
 _MAX_COMMAND_OUTPUT = 64 * 1024
@@ -292,22 +305,69 @@ class CampaignDaemon:
                                          CampaignStatus.BLOCKED_NON_RETRYABLE,
                                          CampaignStatus.CANCELLED}:
                         continue
-                    active += 1
-                    waiting_statuses = {
-                        CampaignStatus.WAITING_CI, CampaignStatus.WAITING_REVIEW,
-                        CampaignStatus.WAITING_GITHUB, CampaignStatus.WAITING_ARTIFACT,
-                        CampaignStatus.WAITING_DEPLOYMENT, CampaignStatus.WAITING_PROVIDER,
-                        CampaignStatus.WAITING_EXTERNAL, CampaignStatus.RETRY_BACKOFF,
-                    }
-                    if state.status in waiting_statuses:
+                    if (
+                        state.status is CampaignStatus.RETRY_BACKOFF
+                        and state.next_check_at
+                        and parse_timestamp(state.next_check_at) > utc_now()
+                    ):
+                        active += 1
                         waiting += 1
-                        if state.next_check_at and (
-                            next_wake is None or state.next_check_at < next_wake
-                        ):
+                        if next_wake is None or state.next_check_at < next_wake:
                             next_wake = state.next_check_at
-                    driver = CommandCampaignDriver(spec)
-                    before = state.event_sequence
-                    after = PersistentCampaignRunner(store).tick(driver.probe, driver.work)
+                        continue
+                    try:
+                        with project_lock(spec.state_dir, state.project_id, "campaign-binding"):
+                            self._validate_canonical_binding(state, spec.state_dir)
+                        active += 1
+                        waiting_statuses = {
+                            CampaignStatus.WAITING_CI, CampaignStatus.WAITING_REVIEW,
+                            CampaignStatus.WAITING_GITHUB, CampaignStatus.WAITING_ARTIFACT,
+                            CampaignStatus.WAITING_DEPLOYMENT, CampaignStatus.WAITING_PROVIDER,
+                            CampaignStatus.WAITING_EXTERNAL, CampaignStatus.RETRY_BACKOFF,
+                        }
+                        if state.status in waiting_statuses:
+                            waiting += 1
+                            if state.next_check_at and (
+                                next_wake is None or state.next_check_at < next_wake
+                            ):
+                                next_wake = state.next_check_at
+                        driver = CommandCampaignDriver(spec)
+                        before = state.event_sequence
+
+                        def guarded_work(claimed: CampaignState) -> StepResult:
+                            with project_lock(spec.state_dir, claimed.project_id, "campaign-work"):
+                                try:
+                                    self._validate_canonical_binding(claimed, spec.state_dir)
+                                except RetryableCanonicalBindingError:
+                                    raise
+                                except CanonicalBindingError as exc:
+                                    return StepResult("BLOCKED_NON_RETRYABLE", reason=str(exc))
+                                return driver.work(claimed)
+
+                        def guarded_probe(current: CampaignState) -> None:
+                            with project_lock(
+                                spec.state_dir, current.project_id, "campaign-wake-binding"
+                            ):
+                                self._validate_canonical_binding(current, spec.state_dir)
+
+                        after = PersistentCampaignRunner(store).tick(
+                            driver.probe, guarded_work, wake_guard=guarded_probe
+                        )
+                    except LockError:
+                        last_action = "LOCK_CONTENTION_RETRY"
+                        continue
+                    except RetryableCanonicalBindingError as exc:
+                        try:
+                            after = PersistentCampaignRunner(store).schedule_retry(str(exc))
+                        except LockError:
+                            last_action = "LOCK_CONTENTION_RETRY"
+                            continue
+                        last_action = after.events[-1].event_type
+                        continue
+                    except CanonicalBindingError as exc:
+                        after = PersistentCampaignRunner(store).invalidate_binding(str(exc))
+                        last_action = after.events[-1].event_type
+                        continue
                     if after.event_sequence != before:
                         last_action = after.events[-1].event_type
                 self._write_status(RunnerStatus(
@@ -330,6 +390,80 @@ class CampaignDaemon:
             self._write_status(RunnerStatus(os.getpid(), self.instance_id, False, 0, 0,
                                             None, previous, "STOPPED", timestamp(utc_now())))
             self._release_lock()
+
+    def _validate_canonical_binding(self, state: CampaignState, state_dir: str | Path) -> None:
+        """Reject waits whose target or explicit lineage no longer matches reality."""
+        registry_root = Path(state_dir).expanduser().resolve()
+        registry_path = registry_root / "projects.json"
+        if not registry_path.exists():
+            raise CanonicalBindingError("campaign project registry is unavailable")
+        try:
+            project = ProjectRegistry(registry_root).verify_read_only(state.project_id)
+            if project.status.value != "ACTIVE":
+                raise CanonicalBindingError("campaign project registration is not ACTIVE")
+            root = Path(project.repository_root)
+            if _git(root, "branch", "--show-current") != project.default_branch:
+                raise CanonicalBindingError("campaign target is not on the canonical branch")
+            actual = _git(root, "rev-parse", "HEAD")
+            if actual != project.current_head_sha:
+                raise CanonicalBindingError("campaign project registration target is stale")
+            if actual != state.target_sha:
+                raise CanonicalBindingError("campaign target SHA is stale or incompatible")
+            expected_lineage = f"{project.name}:{project.default_branch}:{actual}"
+            lineage_parts = state.lineage_binding.split(":")
+            if (
+                len(lineage_parts) == 3
+                and lineage_parts[0] == project.name
+                and lineage_parts[1] == project.default_branch
+                and re.fullmatch(r"[0-9a-f]{40}", lineage_parts[2])
+                and state.lineage_binding != expected_lineage
+            ):
+                raise CanonicalBindingError("campaign lineage binding is stale or incompatible")
+            try:
+                session = SessionStore(registry_root).load(state.session_id)
+            except SessionStoreError as exc:
+                raise CanonicalBindingError("campaign session binding cannot be verified") from exc
+            if (
+                session.project_id != state.project_id
+                or session.base_sha != actual
+                or session.status.value in {
+                    "BLOCKED", "HUMAN_REQUIRED", "FAILED", "STALE", "COMPLETED", "CANCELLED",
+                }
+            ):
+                raise CanonicalBindingError("campaign session binding is stale or incompatible")
+            # Reconciliation evidence is optional for ordinary sessions. The
+            # session base binding and project registry establish their target;
+            # requiring this artifact would retire every pre-reconciliation
+            # campaign on its first daemon wake.
+            canonical_target = session.artifact_hashes.get("canonical_target")
+            if canonical_target is not None and canonical_target != actual:
+                raise CanonicalBindingError("campaign session target evidence is stale")
+            try:
+                authority = AuthorityContext.resolve_runtime(state.project_id, registry_root)
+            except AuthorityContextError as exc:
+                message = str(exc).lower()
+                if any(
+                    marker in message
+                    for marker in ("unavailable", "cannot be read", "not found", "no such file")
+                ):
+                    raise RetryableCanonicalBindingError(
+                        "campaign authority evidence is temporarily unavailable"
+                    ) from exc
+                raise CanonicalBindingError("campaign authority binding is invalid") from exc
+            except (OSError, ValueError) as exc:
+                raise RetryableCanonicalBindingError(
+                    "campaign authority evidence is temporarily unavailable"
+                ) from exc
+            if authority is None:
+                if state.policy_binding is not None or state.authority_generation is not None:
+                    raise CanonicalBindingError("campaign authority binding is unavailable")
+            elif (
+                state.policy_binding != authority.policy_hash
+                or state.authority_generation != authority.generation_number
+            ):
+                raise CanonicalBindingError("campaign policy or authority binding is stale")
+        except (ProjectRegistryError, OSError, ValueError) as exc:
+            raise CanonicalBindingError("campaign canonical binding cannot be verified") from exc
 
     def stop(self) -> None:
         self._stop = True
