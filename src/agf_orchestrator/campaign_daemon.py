@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -42,6 +43,10 @@ class CampaignDaemonError(RuntimeError):
 
 class CanonicalBindingError(CampaignDaemonError):
     """Raised only when persisted campaign identity no longer matches reality."""
+
+
+class RetryableCanonicalBindingError(CanonicalBindingError):
+    """Raised when binding evidence is temporarily unavailable to verify."""
 
 
 _MAX_COMMAND_OUTPUT = 64 * 1024
@@ -336,6 +341,10 @@ class CampaignDaemon:
                         after = PersistentCampaignRunner(store).tick(
                             driver.probe, guarded_work, wake_guard=guarded_probe
                         )
+                    except RetryableCanonicalBindingError as exc:
+                        after = PersistentCampaignRunner(store).schedule_retry(str(exc))
+                        last_action = after.events[-1].event_type
+                        continue
                     except CanonicalBindingError as exc:
                         after = PersistentCampaignRunner(store).invalidate_binding(str(exc))
                         last_action = after.events[-1].event_type
@@ -382,7 +391,14 @@ class CampaignDaemon:
             if actual != state.target_sha:
                 raise CanonicalBindingError("campaign target SHA is stale or incompatible")
             expected_lineage = f"{project.name}:{project.default_branch}:{actual}"
-            if state.lineage_binding != expected_lineage:
+            lineage_parts = state.lineage_binding.split(":")
+            if (
+                len(lineage_parts) == 3
+                and lineage_parts[0] == project.name
+                and lineage_parts[1] == project.default_branch
+                and re.fullmatch(r"[0-9a-f]{40}", lineage_parts[2])
+                and state.lineage_binding != expected_lineage
+            ):
                 raise CanonicalBindingError("campaign lineage binding is stale or incompatible")
             try:
                 session = SessionStore(registry_root).load(state.session_id)
@@ -405,9 +421,19 @@ class CampaignDaemon:
                 raise CanonicalBindingError("campaign session target evidence is stale")
             try:
                 authority = AuthorityContext.resolve_runtime(state.project_id, registry_root)
-            except (AuthorityContextError, OSError, ValueError) as exc:
-                raise CanonicalBindingError(
-                    "campaign authority binding cannot be verified"
+            except AuthorityContextError as exc:
+                message = str(exc).lower()
+                if any(
+                    marker in message
+                    for marker in ("unavailable", "cannot be read", "not found", "no such file")
+                ):
+                    raise RetryableCanonicalBindingError(
+                        "campaign authority evidence is temporarily unavailable"
+                    ) from exc
+                raise CanonicalBindingError("campaign authority binding is invalid") from exc
+            except (OSError, ValueError) as exc:
+                raise RetryableCanonicalBindingError(
+                    "campaign authority evidence is temporarily unavailable"
                 ) from exc
             if authority is not None and (
                 (state.policy_binding is not None and state.policy_binding != authority.policy_hash)

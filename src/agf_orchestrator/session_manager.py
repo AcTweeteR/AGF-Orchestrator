@@ -449,9 +449,13 @@ class SessionManager:
             raise SessionManagerError(
                 "session state is not recoverable by target reconciliation"
             )
-        if session.required_human_actions:
+        target_drift = any(
+            isinstance(issue, str) and issue.startswith("base SHA drifted:")
+            for issue in session.blocking_issues
+        )
+        if session.required_human_actions and not target_drift:
             raise SessionManagerError("session has unresolved human-required actions")
-        if session.blocking_issues:
+        if session.blocking_issues and not target_drift:
             raise SessionManagerError("session has unresolved blocking issues")
         historical = {
             f"historical:{key}": value for key, value in session.artifact_hashes.items()

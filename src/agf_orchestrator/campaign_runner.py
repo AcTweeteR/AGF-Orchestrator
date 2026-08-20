@@ -543,6 +543,15 @@ class PersistentCampaignRunner:
         self.store.save(updated)
         return updated
 
+    def schedule_retry(self, reason: str) -> CampaignState:
+        """Persist bounded backoff for a transient orchestration dependency."""
+        state = self.store.load()
+        if state.status in TERMINAL_STATUSES:
+            return state
+        if not isinstance(reason, str) or not reason.strip():
+            raise CampaignRunnerError("retry reason is required")
+        return self._schedule_retry(state, reason.strip())
+
     def invalidate_binding(self, reason: str) -> CampaignState:
         """Retire a campaign whose canonical target binding is no longer valid.
 

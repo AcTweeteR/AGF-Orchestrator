@@ -4,19 +4,21 @@ import pytest
 
 from agf_orchestrator.campaign_daemon import (
     CampaignDaemon,
+    CampaignDriverSpec,
     CanonicalBindingError,
+    RetryableCanonicalBindingError,
 )
-from agf_orchestrator.campaign_runner import make_initial_state
+from agf_orchestrator.campaign_runner import CampaignStore, make_initial_state
 
 TARGET = "a" * 40
 
 
-def _state(*, policy_binding=None, authority_generation=None):
+def _state(*, lineage_binding="lineage-main", policy_binding=None, authority_generation=None):
     return make_initial_state(
         project_id="project-ai-fund", campaign_id="campaign-ai-fund",
         session_id="session-a610d1e887d0c9ac8d7e", phase="R7",
         operation_id="operation-r7", target_sha=TARGET,
-        lineage_binding="ai-fund:main:" + TARGET, retry_budget=3,
+        lineage_binding=lineage_binding, retry_budget=3,
         policy_binding=policy_binding, authority_generation=authority_generation,
     )
 
@@ -74,3 +76,36 @@ def test_stale_reconciliation_target_is_rejected(tmp_path, monkeypatch):
     state_dir = _patch_binding(monkeypatch, tmp_path, session)
     with pytest.raises(CanonicalBindingError, match="target evidence"):
         CampaignDaemon(state_dir)._validate_canonical_binding(_state(), state_dir)
+
+
+def test_canonical_lineage_binding_mismatch_is_rejected(tmp_path, monkeypatch):
+    session = SimpleNamespace(
+        project_id="project-ai-fund", base_sha=TARGET,
+        status=SimpleNamespace(value="READY"), artifact_hashes={},
+    )
+    state_dir = _patch_binding(monkeypatch, tmp_path, session)
+    with pytest.raises(CanonicalBindingError, match="lineage binding"):
+        CampaignDaemon(state_dir)._validate_canonical_binding(
+            _state(lineage_binding="ai-fund:main:" + "b" * 40), state_dir
+        )
+
+
+def test_transient_authority_evidence_uses_retry_not_terminal_block(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    store = CampaignStore(state_dir, "project-ai-fund", "campaign-ai-fund")
+    store.create(_state())
+    daemon = CampaignDaemon(state_dir)
+    daemon.register(
+        CampaignDriverSpec(
+            "project-ai-fund", "campaign-ai-fund", str(state_dir),
+            ("/bin/true",), ("/bin/true",), 1,
+        )
+    )
+    monkeypatch.setattr(
+        daemon, "_validate_canonical_binding",
+        lambda _state, _state_dir: (_ for _ in ()).throw(
+            RetryableCanonicalBindingError("authority evidence is temporarily unavailable")
+        ),
+    )
+    daemon.run_forever(max_loops=1)
+    assert store.load().status.value == "RETRY_BACKOFF"
