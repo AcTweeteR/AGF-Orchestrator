@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .locking import FileLock
 from .owner_authority import OwnerAuthorityError, verify_envelope
 from .project_registry import _git, parse_remote_url
 
@@ -203,17 +206,53 @@ class ExternalResultAcceptanceStore:
             raise ExternalAdvancementError("external result acceptance path identity is invalid")
         return self.root / project_id / f"{acceptance_id}.json"
 
+    @staticmethod
+    def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent,
+                prefix=f".{path.name}.", delete=False,
+            ) as handle:
+                temporary = Path(handle.name)
+                handle.write(json.dumps(payload, sort_keys=True) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+            raise
+
+    def get(self, project_id: str, acceptance_id: str) -> ExternalResultAcceptance | None:
+        path = self._path(project_id, acceptance_id)
+        if not path.exists():
+            return None
+        if path.is_symlink():
+            raise ExternalAdvancementError("external result acceptance must not be a symlink")
+        try:
+            item = ExternalResultAcceptance(**json.loads(path.read_text(encoding="utf-8")))
+            item.validate()
+            return item
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise ExternalAdvancementError("external result acceptance is unreadable") from exc
+
     def put(self, item: ExternalResultAcceptance) -> str:
         item.validate()
         path = self._path(item.project_id, item.acceptance_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            existing = ExternalResultAcceptance(**json.loads(path.read_text(encoding="utf-8")))
-            existing.validate()
-            if existing != item:
+        lock = path.with_name(f".{path.name}.lock")
+        with FileLock(lock, "external-result-acceptance"):
+            existing = self.get(item.project_id, item.acceptance_id)
+            if existing is not None and existing != item:
                 raise ExternalAdvancementError("external result acceptance replay conflicts")
-        else:
-            path.write_text(json.dumps(item.__dict__, sort_keys=True) + "\n", encoding="utf-8")
+            if existing is None:
+                self._atomic_json(path, item.__dict__)
         return item.evidence_hash
 
 
