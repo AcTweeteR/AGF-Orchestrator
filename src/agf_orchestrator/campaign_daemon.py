@@ -396,17 +396,25 @@ class CampaignDaemon:
                 }
             ):
                 raise CanonicalBindingError("campaign session binding is stale or incompatible")
-            if session.artifact_hashes.get("canonical_target") != actual:
-                raise CanonicalBindingError("campaign session target evidence is stale or missing")
+            # Reconciliation evidence is optional for ordinary sessions. The
+            # session base binding and project registry establish their target;
+            # requiring this artifact would retire every pre-reconciliation
+            # campaign on its first daemon wake.
+            canonical_target = session.artifact_hashes.get("canonical_target")
+            if canonical_target is not None and canonical_target != actual:
+                raise CanonicalBindingError("campaign session target evidence is stale")
             try:
                 authority = AuthorityContext.resolve_runtime(state.project_id, registry_root)
             except (AuthorityContextError, OSError, ValueError) as exc:
                 raise CanonicalBindingError(
                     "campaign authority binding cannot be verified"
                 ) from exc
-            if authority is None or (
-                state.policy_binding != authority.policy_hash
-                or state.authority_generation != authority.generation_number
+            if authority is not None and (
+                (state.policy_binding is not None and state.policy_binding != authority.policy_hash)
+                or (
+                    state.authority_generation is not None
+                    and state.authority_generation != authority.generation_number
+                )
             ):
                 raise CanonicalBindingError("campaign policy or authority binding is stale")
         except (ProjectRegistryError, OSError, ValueError) as exc:

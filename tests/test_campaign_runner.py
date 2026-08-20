@@ -112,6 +112,17 @@ def test_waiting_external_does_not_invoke_provider_before_wake(tmp_path):
     assert calls == []
 
 
+def test_boolean_authority_generation_is_rejected():
+    with pytest.raises(CampaignRunnerError, match="authority_generation"):
+        make_initial_state(
+            project_id="project-ai-fund", campaign_id="campaign-ai-fund",
+            session_id="session-a610d1e887d0c9ac8d7e", phase="R7",
+            operation_id="operation-r7-audit", target_sha=TARGET,
+            lineage_binding="lineage-main", retry_budget=3,
+            authority_generation=True,
+        )
+
+
 @pytest.mark.parametrize("terminal", [
     CampaignStatus.COMPLETE,
     CampaignStatus.HUMAN_REQUIRED,

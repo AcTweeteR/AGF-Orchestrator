@@ -185,7 +185,9 @@ class CampaignState:
         if self.policy_binding is not None and not self.policy_binding.strip():
             raise CampaignRunnerError("policy_binding is invalid")
         if self.authority_generation is not None and (
-            not isinstance(self.authority_generation, int) or self.authority_generation < 1
+            isinstance(self.authority_generation, bool)
+            or not isinstance(self.authority_generation, int)
+            or self.authority_generation < 1
         ):
             raise CampaignRunnerError("authority_generation is invalid")
         if not isinstance(self.wake_generation, int) or self.wake_generation < 0:
