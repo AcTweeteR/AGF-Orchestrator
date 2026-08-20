@@ -182,7 +182,9 @@ class CampaignState:
             raise CampaignRunnerError("target_sha is invalid")
         if not isinstance(self.lineage_binding, str) or not self.lineage_binding.strip():
             raise CampaignRunnerError("lineage_binding is invalid")
-        if self.policy_binding is not None and not self.policy_binding.strip():
+        if self.policy_binding is not None and (
+            not isinstance(self.policy_binding, str) or not self.policy_binding.strip()
+        ):
             raise CampaignRunnerError("policy_binding is invalid")
         if self.authority_generation is not None and (
             isinstance(self.authority_generation, bool)

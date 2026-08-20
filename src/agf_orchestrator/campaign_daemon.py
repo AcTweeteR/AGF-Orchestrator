@@ -305,6 +305,16 @@ class CampaignDaemon:
                                          CampaignStatus.BLOCKED_NON_RETRYABLE,
                                          CampaignStatus.CANCELLED}:
                         continue
+                    if (
+                        state.status is CampaignStatus.RETRY_BACKOFF
+                        and state.next_check_at
+                        and parse_timestamp(state.next_check_at) > utc_now()
+                    ):
+                        active += 1
+                        waiting += 1
+                        if next_wake is None or state.next_check_at < next_wake:
+                            next_wake = state.next_check_at
+                        continue
                     try:
                         with project_lock(spec.state_dir, state.project_id, "campaign-binding"):
                             self._validate_canonical_binding(state, spec.state_dir)
@@ -343,8 +353,15 @@ class CampaignDaemon:
                         after = PersistentCampaignRunner(store).tick(
                             driver.probe, guarded_work, wake_guard=guarded_probe
                         )
-                    except (RetryableCanonicalBindingError, LockError) as exc:
-                        after = PersistentCampaignRunner(store).schedule_retry(str(exc))
+                    except LockError:
+                        last_action = "LOCK_CONTENTION_RETRY"
+                        continue
+                    except RetryableCanonicalBindingError as exc:
+                        try:
+                            after = PersistentCampaignRunner(store).schedule_retry(str(exc))
+                        except LockError:
+                            last_action = "LOCK_CONTENTION_RETRY"
+                            continue
                         last_action = after.events[-1].event_type
                         continue
                     except CanonicalBindingError as exc:

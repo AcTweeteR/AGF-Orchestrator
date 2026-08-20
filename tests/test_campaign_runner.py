@@ -123,6 +123,17 @@ def test_boolean_authority_generation_is_rejected():
         )
 
 
+def test_non_string_policy_binding_is_rejected():
+    with pytest.raises(CampaignRunnerError, match="policy_binding"):
+        make_initial_state(
+            project_id="project-ai-fund", campaign_id="campaign-ai-fund",
+            session_id="session-a610d1e887d0c9ac8d7e", phase="R7",
+            operation_id="operation-r7-audit", target_sha=TARGET,
+            lineage_binding="lineage-main", retry_budget=3,
+            policy_binding=1,
+        )
+
+
 @pytest.mark.parametrize("terminal", [
     CampaignStatus.COMPLETE,
     CampaignStatus.HUMAN_REQUIRED,
