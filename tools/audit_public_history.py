@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+from collections import Counter
 import math
 import re
 import subprocess
 import sys
-from collections import Counter
 
 
 SECRET_PATTERNS: list[tuple[str, re.Pattern[bytes]]] = [
     ("private-key", re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")),
-    ("github-token", re.compile(rb"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")),
+    (
+        "github-token",
+        re.compile(rb"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
+    ),
     ("openai-key", re.compile(rb"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b")),
     ("anthropic-key", re.compile(rb"\bsk-ant-[A-Za-z0-9_-]{20,}\b")),
     ("google-api-key", re.compile(rb"\bAIza[0-9A-Za-z_-]{30,}\b")),
