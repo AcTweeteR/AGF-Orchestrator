@@ -67,6 +67,8 @@ pytest
 ruff check .
 ```
 
+For a complete no-credentials walkthrough using only local Git repositories, see [Getting Started: Reproducible Local Demo](docs/GETTING_STARTED.md).
+
 Generate a deterministic read-only plan for a clean Git repository:
 
 ```bash
@@ -123,6 +125,7 @@ Sessions preserve transition history and evidence bindings, detect target or art
 
 Start with these documents:
 
+- [Getting Started](docs/GETTING_STARTED.md)
 - [Vision](docs/VISION.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Execution model](docs/EXECUTION_MODEL.md)
