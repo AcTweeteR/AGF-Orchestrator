@@ -1,65 +1,84 @@
 # AGF-Orchestrator
 
-AGF-Orchestrator is the reference operational model for coordinating autonomous software-development agents under the Agent Governance Framework (AGF).
+**Governance for autonomous software-development agents.**
 
-AGF defines the governing rules. AGF-Orchestrator defines how work, decisions, evidence, reviews, compliance checks, and releases move through an accountable system. The model is vendor neutral: an agent provider is an interchangeable adapter, not a governing authority.
+AGF-Orchestrator is a provider-neutral runtime and reference architecture for coordinating autonomous software-development agents under explicit authority, policy, evidence, review, compliance, recovery, and human-control boundaries.
 
-This repository contains the AGF-Orchestrator v0.1 documentation baseline and its first controlled runtime layers. It specifies the system boundary, roles, lifecycle, workflow, decision rights, failure handling, and delivery safeguards.
+Coding agents can plan and change software. AGF-Orchestrator focuses on the harder operational question: **how should those agents be governed when they are allowed to work autonomously on real repositories?**
 
-## Read the model
+The project treats model/provider integrations as interchangeable execution adapters rather than governing authorities. Authority remains explicit, bounded, auditable, and fail-closed.
 
-- [Vision](docs/VISION.md) — purpose, scope, and principles.
-- [Architecture](docs/ARCHITECTURE.md) — layers, boundaries, and control flow.
-- [Execution model](docs/EXECUTION_MODEL.md) — controlled work execution and evidence.
-- [Workflow engine](docs/WORKFLOW_ENGINE.md) — the end-to-end orchestration pipeline.
-- [Task model](docs/TASK_MODEL.md) — task states, transitions, and invariants.
-- [Decision model](docs/DECISION_MODEL.md) — decision ownership and escalation.
-- [Review pipeline](docs/REVIEW_PIPELINE.md) — independent quality gates.
-- [Failure model](docs/FAILURE_MODEL.md) — detection, escalation, and recovery.
-- [Human intervention](docs/HUMAN_INTERVENTION.md) — mandatory human decision points.
-- [Agent roles](docs/AGENT_ROLES.md) — defined responsibilities and authority.
-- [Adapter model](docs/ADAPTER_MODEL.md) — provider-neutral agent integration boundary.
-- [Roadmap](docs/ROADMAP.md) — capability maturity levels.
-- [Autonomous Director foundation](docs/AUTONOMOUS_DIRECTOR.md) — target operating model and safety architecture.
-- [Persistent Campaign Runner](docs/PERSISTENT_CAMPAIGN_RUNNER.md) — durable waits, wakes, retries, and campaign recovery.
-- [Autonomous Director roadmap](docs/AUTONOMOUS_ROADMAP.md) — ordered capability program and gates.
-- [AGF Constitution](docs/CONSTITUTION.md) — immutable governance baseline and amendment protocol.
-- [Architecture decision records](docs/adr/README.md) — durable architectural decisions.
+> **Project status:** active, experimental, pre-1.0 software. The runtime is real and tested, but interfaces and persistence formats may still evolve. Do not grant it production authority that you have not explicitly reviewed and bounded.
 
-## Status
+## Why AGF-Orchestrator exists
 
-Version 0.1 is a formal documentation baseline. It is intended to establish a shared vocabulary and reference architecture for future implementations.
+Long-running agent workflows introduce risks that ordinary coding assistants do not have to solve: stale state, replay, provider drift, incomplete evidence, unauthorized external actions, ambiguous ownership, unsafe retries, and results that exist externally without having been authorized by the orchestrator.
 
-## Director Runtime MVP
+AGF-Orchestrator is designed around those failure modes. Its core principles are:
 
-The first executable layer provides a read-only Director planning command. Install the package with Python 3.12+ and the development tools:
+- **Authority is separate from execution.** A provider can perform work but cannot grant itself permission.
+- **Evidence is first-class.** Plans, reviews, compliance results, delivery intents, receipts, lineage, and state transitions are recorded and verified.
+- **Fail closed.** Missing, stale, ambiguous, replayed, or mismatched authority/evidence blocks advancement.
+- **Independent gates.** Review and Compliance are separate from implementation.
+- **External mutations are governed.** Pushes, PR creation, merges, and other privileged actions cross explicit policy boundaries.
+- **Results are not retroactive authorization.** AGF can reconcile an observed external result without pretending the action was previously authorized.
+- **Recovery preserves provenance.** Restart, retry, reconciliation, and target advancement must not fabricate history.
+- **Provider neutrality.** Codex, local models, or future providers are adapters; AGF remains the governor.
 
-```text
+## What is implemented today
+
+The current runtime includes executable layers for:
+
+- deterministic planning and repository preflight;
+- bounded task execution with allowed-path and validation controls;
+- provider adapter execution without shell interpretation;
+- independent review and Compliance gates;
+- controlled delivery through isolated worktrees, commits, pushes, and draft PRs;
+- persistent project/session state and immutable transition evidence;
+- signed owner-authorized scope and external-advance records;
+- delivery intent/receipt verification and lineage reconciliation;
+- stale-target, replay, tamper, ambiguity, and drift detection;
+- durable campaign waits, retries, wake conditions, and terminal states;
+- an independent persistent campaign daemon with single-instance/heartbeat behavior;
+- policy enforcement before external campaign actions;
+- reconciliation of already-observed external results without false provenance.
+
+The project has an extensive automated regression suite covering governance, recovery, delivery, policy, and adversarial edge cases.
+
+## Quick start
+
+### Requirements
+
+- Python 3.12+
+- Git
+- Optional provider tooling such as the Codex CLI when using that adapter
+
+Install from a checkout:
+
+```bash
 python -m pip install -e .
 python -m pip install pytest ruff
 ```
 
-The CLI automatically loads `.env` only from the AGF repository root. Set `AGF_ENV_FILE` to select an explicit
-dotenv file; the path must be a regular, non-symlink file outside registered managed projects. Existing environment
-variables take precedence over dotenv values, missing files are ignored, and `.env` is ignored by Git. Never store
-real credentials in committed files.
+Run the test suite:
 
-Generate a deterministic plan for a clean Git repository:
+```bash
+pytest
+ruff check .
+```
 
-```text
+Generate a deterministic read-only plan for a clean Git repository:
+
+```bash
 agf-orchestrator plan \
   --repository /path/to/project \
   --goal "High-level objective" \
   --output /path/to/plan.json
 ```
 
-The command performs repository preflight, never modifies the target repository, and returns `HUMAN_REQUIRED` for ambiguous goals. Use `--allow-dirty` only when the caller explicitly accepts planning against a dirty working tree. The runtime currently uses a deterministic local adapter; no remote model or provider API is called.
+Execute one approved task in dry-run mode:
 
-Preflight requires a resolvable named branch, an `origin` remote, and a resolvable `HEAD`. Missing repository context is an explicit non-zero error. When `--allow-dirty` is used, the plan preserves `clean: false` and records the dirty-state risk and required evidence.
-
-Execute one approved task with a dry-run by default:
-
-```text
+```bash
 agf-orchestrator execute \
   --plan /path/to/plan.json \
   --task task-001 \
@@ -68,13 +87,13 @@ agf-orchestrator execute \
   --dry-run
 ```
 
-Live execution requires both `--execute` and `--confirm-execution`, plus a clean named non-default branch, approved architecture, allowed paths, acceptance criteria, validations, and no unresolved intervention. The Codex adapter invokes the locally discovered `codex exec` command without shell interpretation, enforces a timeout, verifies changed-file scope, runs only task-declared validations, and never commits or pushes.
+Dry-run is the default posture. Live execution requires explicit execution confirmation plus the applicable project policy and evidence gates.
 
-## Autonomous delivery pipeline
+## Controlled delivery
 
-The delivery workflow defaults to dry-run and requires all three flags for live delivery: `--execute`, `--confirm-execution`, and `--confirm-delivery`. It executes one task in isolation, creates a patch outside the target repository, runs independent review and compliance gates, applies only the approved patch in a fresh delivery worktree, commits and pushes an `agf/<plan-id>/<task-id>` branch, and opens a draft PR. The current bootstrap runtime never merges PRs; any future autonomous merge capability is governed only by the separately activated Merge Policy in the constitutional foundation.
+The delivery workflow executes one bounded task, creates a patch outside the target repository, runs independent review and Compliance, applies only the approved patch in a fresh delivery worktree, and can create a governed branch and draft PR.
 
-```text
+```bash
 agf-orchestrator deliver \
   --plan /path/to/plan.json \
   --task task-001 \
@@ -83,32 +102,67 @@ agf-orchestrator deliver \
   --output /path/to/delivery-report.json
 ```
 
-Dry-run performs no model, Git, branch, commit, push, or PR mutation. For a controlled local test, `--simulate-pr` returns a local draft-PR reference instead of contacting GitHub. Live delivery requires `--execute --confirm-execution --confirm-delivery` together; it never bypasses sandboxing or approvals.
+Live delivery requires explicit execution and delivery confirmation. Merge authority is a separate governed concern and is never implied by successful implementation or review.
 
-## Project and session control
+## Persistent projects and sessions
 
-Projects must be registered explicitly before persistent workflows are created. State is stored outside managed repositories in `~/.agf-orchestrator` (override with `AGF_STATE_DIR`) using `projects.json`, `sessions/`, `artifacts/`, and `locks/`.
+Persistent workflows use explicit project registration and state stored outside managed repositories (by default under `~/.agf-orchestrator`, configurable with `AGF_STATE_DIR`).
 
-```text
+```bash
 agf-orchestrator project add --name my-project --repository /path/to/project
 agf-orchestrator project list --json
 agf-orchestrator project verify --project my-project --json
 agf-orchestrator session start --project my-project --goal "Bounded objective"
 agf-orchestrator session resume --project my-project --session SESSION_ID
-agf-orchestrator session lock-status --session SESSION_ID --json
 agf-orchestrator inbox --json
 ```
 
-Registration is read-only and does not enable live execution or delivery. Those actions require both explicit CLI confirmations and project policy authorization. `session resume --execute --confirm-execution` records an execution authorization checkpoint only; it does not run the existing execution/review/compliance/delivery pipeline or fabricate reports, commits, pushes, or PRs. Sessions preserve immutable transition events and evidence references, detect repository/base-SHA or artifact drift as `STALE`, and acquire locks in session-then-project order. The inbox reports only human attention items, including stale, blocked, human-required, failed, and `PR_READY` sessions; it never performs merges.
+Sessions preserve transition history and evidence bindings, detect target or artifact drift, and surface human-attention states instead of silently advancing through ambiguity.
+
+## Architecture and governance
+
+Start with these documents:
+
+- [Vision](docs/VISION.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Execution model](docs/EXECUTION_MODEL.md)
+- [Workflow engine](docs/WORKFLOW_ENGINE.md)
+- [Task model](docs/TASK_MODEL.md)
+- [Decision model](docs/DECISION_MODEL.md)
+- [Review pipeline](docs/REVIEW_PIPELINE.md)
+- [Failure model](docs/FAILURE_MODEL.md)
+- [Human intervention](docs/HUMAN_INTERVENTION.md)
+- [Agent roles](docs/AGENT_ROLES.md)
+- [Adapter model](docs/ADAPTER_MODEL.md)
+- [AGF Constitution](docs/CONSTITUTION.md)
+- [Autonomous Director foundation](docs/AUTONOMOUS_DIRECTOR.md)
+- [Persistent Campaign Runner](docs/PERSISTENT_CAMPAIGN_RUNNER.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Autonomous roadmap](docs/AUTONOMOUS_ROADMAP.md)
+- [Threat model](docs/THREAT_MODEL.md)
+- [Architecture decision records](docs/adr/README.md)
+
+## Maturity model
+
+The canonical roadmap uses levels 0 through 5:
+
+- **Level 0 — Documentation:** shared model, roles, lifecycle, and decisions are defined.
+- **Level 1 — Manual orchestration:** humans coordinate documented stages and record evidence.
+- **Level 2 — Semi-autonomous orchestration:** bounded roles perform repeatable work with human gate control.
+- **Level 3 — Fully orchestrated workflows:** transitions and evidence are coordinated end to end.
+- **Level 4 — Policy-driven execution:** applicable policy determines routing, controls, and gates consistently.
+- **Level 5 — Self-improving orchestration:** measured outcomes improve planning and controls without weakening governance.
+
+Higher autonomy never grants an agent authority to redefine AGF or expand its own privileges.
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing changes. Governance concerns are recorded as architecture decision records where appropriate.
+External contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), [GOVERNANCE.md](GOVERNANCE.md), and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before opening a pull request. Changes that alter authority, policy interpretation, trust boundaries, or lifecycle invariants require explicit architectural treatment and may require an ADR.
 
 ## Security
 
-See [SECURITY.md](SECURITY.md) for reporting and design expectations.
+Read [SECURITY.md](SECURITY.md) before reporting a vulnerability. Please do not publish exploit details for governance-boundary, signature, provenance, or external-action bypasses before maintainers have had an opportunity to assess them.
 
 ## License
 
-No license is asserted by this documentation baseline. A project license must be established before redistribution.
+Licensed under the [Apache License 2.0](LICENSE).

@@ -5,9 +5,26 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agf-orchestrator"
 version = "0.1.0"
-description = "Vendor-neutral orchestration contracts and Director runtime for AGF-Orchestrator"
+description = "Provider-neutral governance and orchestration runtime for autonomous software-development agents"
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.12"
 dependencies = ["python-dotenv>=1.0,<2.0", "cryptography>=42,<46"]
+keywords = ["agents", "ai", "governance", "orchestration", "autonomous-agents", "software-development"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development",
+]
+
+[project.urls]
+Homepage = "https://github.com/AcTweeteR/AGF-Orchestrator"
+Repository = "https://github.com/AcTweeteR/AGF-Orchestrator"
+Issues = "https://github.com/AcTweeteR/AGF-Orchestrator/issues"
+Documentation = "https://github.com/AcTweeteR/AGF-Orchestrator/tree/main/docs"
 
 [project.scripts]
 agf-orchestrator = "agf_orchestrator.cli:main"
