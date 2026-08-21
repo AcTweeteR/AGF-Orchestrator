@@ -144,14 +144,14 @@ Start with these documents:
 
 ## Maturity model
 
-AGF-Orchestrator distinguishes operational maturity from product branding:
+The canonical roadmap uses levels 0 through 5:
 
-1. documented governance;
-2. manual orchestration;
-3. semi-autonomous orchestration;
-4. fully orchestrated workflows;
-5. policy-driven execution;
-6. measured, self-improving orchestration that cannot weaken governance.
+- **Level 0 — Documentation:** shared model, roles, lifecycle, and decisions are defined.
+- **Level 1 — Manual orchestration:** humans coordinate documented stages and record evidence.
+- **Level 2 — Semi-autonomous orchestration:** bounded roles perform repeatable work with human gate control.
+- **Level 3 — Fully orchestrated workflows:** transitions and evidence are coordinated end to end.
+- **Level 4 — Policy-driven execution:** applicable policy determines routing, controls, and gates consistently.
+- **Level 5 — Self-improving orchestration:** measured outcomes improve planning and controls without weakening governance.
 
 Higher autonomy never grants an agent authority to redefine AGF or expand its own privileges.
 
