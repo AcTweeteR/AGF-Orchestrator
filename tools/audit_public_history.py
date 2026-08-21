@@ -1,3 +1,4 @@
+# ruff: noqa: I001
 from __future__ import annotations
 
 import math
@@ -9,7 +10,10 @@ from collections import Counter
 
 SECRET_PATTERNS: list[tuple[str, re.Pattern[bytes]]] = [
     ("private-key", re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")),
-    ("github-token", re.compile(rb"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")),
+    (
+        "github-token",
+        re.compile(rb"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
+    ),
     ("openai-key", re.compile(rb"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b")),
     ("anthropic-key", re.compile(rb"\bsk-ant-[A-Za-z0-9_-]{20,}\b")),
     ("google-api-key", re.compile(rb"\bAIza[0-9A-Za-z_-]{30,}\b")),
@@ -55,6 +59,18 @@ def entropy(value: bytes) -> float:
     return -sum((count / size) * math.log2(count / size) for count in counts.values())
 
 
+def looks_obviously_synthetic_credential(value: bytes) -> bool:
+    lowered = value.lower()
+    if any(marker in lowered for marker in SAFE_MARKERS):
+        return True
+    payload = re.sub(rb"^[A-Za-z_-]+", b"", value)
+    if payload and all(chr(byte).isdigit() for byte in payload):
+        return True
+    if b"1234567890" in value or b"0123456789" in value:
+        return True
+    return entropy(value) < 3.5
+
+
 def looks_like_real_secret(value: bytes) -> bool:
     lowered = value.lower()
     if any(marker in lowered for marker in SAFE_MARKERS):
@@ -95,8 +111,11 @@ def scan_blob(sha: str, path: str) -> list[str]:
         return findings
 
     for name, pattern in SECRET_PATTERNS:
-        if pattern.search(data):
+        for match in pattern.finditer(data):
+            if name != "private-key" and looks_obviously_synthetic_credential(match.group(0)):
+                continue
             findings.append(f"{name} {sha} {path or '<no-path>'}")
+            break
 
     for match in ASSIGNMENT_RE.finditer(data):
         value = match.group(1).strip()
