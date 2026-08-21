@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from collections import Counter
 import math
 import re
 import subprocess
 import sys
+from collections import Counter
 
 
 SECRET_PATTERNS: list[tuple[str, re.Pattern[bytes]]] = [
