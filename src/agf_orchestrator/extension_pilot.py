@@ -4,10 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .capability_extensions import CapabilityExtensionError, KnowledgeProviderProfile, ToolCandidate
+from .capability_extensions import (
+    CapabilityExtensionError,
+    KnowledgeProviderProfile,
+    ToolCandidate,
+)
 from .fleet_observability import BudgetObservation
 from .mcp_profiles import knowledge_provider_eligibility
-from .procedure_registry import ProcedureRegistry, ProcedureRegistryError, ProcedureRequirements
+from .procedure_registry import (
+    ProcedureRegistry,
+    ProcedureRegistryError,
+    ProcedureRequirements,
+)
 from .readiness import evaluate_readiness
 
 
@@ -36,7 +44,7 @@ def run_disposable_extension_pilot(
     knowledge_policy_authorized: bool | None = None,
     knowledge_privacy_eligible: bool | None = None,
 ) -> ExtensionPilotResult:
-    """Exercise extension gates without invoking a provider or mutating an external system."""
+    """Exercise extension gates without invoking a provider or external mutation."""
     readiness = evaluate_readiness(readiness_evidence)
     if not readiness.ready:
         return ExtensionPilotResult("BLOCKED", None, "mission-readiness")
@@ -51,6 +59,12 @@ def run_disposable_extension_pilot(
     if tool_required:
         if tool_candidate is None:
             return ExtensionPilotResult("BLOCKED", procedure.procedure_id, "tool-unavailable")
+        if tool_candidate.project_id != project_id:
+            return ExtensionPilotResult(
+                "BLOCKED",
+                procedure.procedure_id,
+                "tool:project-binding-mismatch",
+            )
         try:
             tool_candidate.require_verified()
         except CapabilityExtensionError as exc:
@@ -65,6 +79,12 @@ def run_disposable_extension_pilot(
                 "BLOCKED",
                 procedure.procedure_id,
                 "knowledge-provider-unavailable",
+            )
+        if knowledge_profile.project_id != project_id:
+            return ExtensionPilotResult(
+                "BLOCKED",
+                procedure.procedure_id,
+                "knowledge:project-binding-mismatch",
             )
         eligibility = knowledge_provider_eligibility(
             knowledge_profile,
