@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from agf_orchestrator import capability_extensions as ext
 from agf_orchestrator.risk_models import RiskLevel
-import pytest
 
 
 NOW = "2026-08-24T09:00:00Z"
