@@ -60,6 +60,8 @@ def observe_budget(
         used_value = Decimal(str(used))
     except (InvalidOperation, ValueError) as exc:
         raise FleetObservabilityError("budget evidence is invalid") from exc
+    if not budget_value.is_finite() or not used_value.is_finite():
+        raise FleetObservabilityError("budget evidence must be finite")
     if budget_value < 0 or used_value < 0:
         raise FleetObservabilityError("budget evidence must be non-negative")
     for label, value in (
@@ -85,5 +87,10 @@ def rank_eligible_by_cost(
     candidates: tuple[tuple[str, Decimal, bool], ...],
 ) -> tuple[str, ...]:
     """Rank only candidates already declared eligible by upstream governance."""
-    eligible = [(provider_id, cost) for provider_id, cost, is_eligible in candidates if is_eligible]
-    return tuple(provider_id for provider_id, _ in sorted(eligible, key=lambda item: (item[1], item[0])))
+    eligible = [
+        (provider_id, cost)
+        for provider_id, cost, is_eligible in candidates
+        if is_eligible
+    ]
+    ranked = sorted(eligible, key=lambda item: (item[1], item[0]))
+    return tuple(provider_id for provider_id, _ in ranked)
