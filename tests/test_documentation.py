@@ -447,10 +447,13 @@ def test_compound_secret_patterns_are_bounded():
             DocumentationCitation("source", "topic", value).validate()
     for value in (
         "https://bucket.example/object?X-Amz-Signature=abc123",
-        "https://bucket.example/object?X-Amz-Credential=access%2Fscope",
-        "https://bucket.example/object?sig=opaque-token",
-        "https://bucket.example/object?signature=opaque-token",
-        "https://db.example/object?access_token=opaque-token",
+        "https://bucket.example/object?region=us&X-Amz-Signature=abc123",
+        "https://bucket.example/object?foo=1&sig=opaque-token",
+        "https://bucket.example/object?x=1&X-Amz-Credential=access%2Fscope",
+        "https://bucket.example/object?access_token=opaque-token&format=json",
+        "https://bucket.example/object?foo=1&X-AMZ-SIGNATURE=",
+        "https://bucket.example/object?sig=one&sig=two",
+        "https://bucket.example/object?%58-Amz-Signature=encoded-name",
     ):
         with pytest.raises(DocumentationError):
             DocumentationCitation("source", "topic", value).validate()

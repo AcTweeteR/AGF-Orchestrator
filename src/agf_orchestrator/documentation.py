@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol
+from urllib.parse import parse_qsl, urlsplit
 
 from .capability_extensions import (
     CapabilityExtensionError,
@@ -69,12 +70,12 @@ _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _URI_USERINFO = re.compile(
     r"(?i)\b[a-z][a-z0-9+.-]{1,31}://[^/\s:@]+:[^/\s@]+@"
 )
-_URI_CREDENTIAL_QUERY = re.compile(
-    r"(?i)\b[a-z][a-z0-9+.-]{1,31}://[^\s?#]+[?&](?:"
-    r"x-amz-signature|x-amz-credential|x-amz-security-token|"
-    r"x-goog-signature|googleaccessid|signature|sig|access_token|"
-    r"oauth_token|bearer_token|api_key|client_secret)=[^&#\s]+"
-)
+_URI_CANDIDATE = re.compile(r"(?i)\b[a-z][a-z0-9+.-]{1,31}://[^\s<>]+")
+_CREDENTIAL_QUERY_NAMES = frozenset({
+    "x-amz-signature", "x-amz-credential", "x-amz-security-token",
+    "x-goog-signature", "googleaccessid", "signature", "sig", "access_token",
+    "oauth_token", "bearer_token", "api_key", "client_secret",
+})
 _SECRET = re.compile(
     r"(?i)(aws[_-]?secret[_-]?access[_-]?key|aws[_-]?access[_-]?key[_-]?id|"
     r"secret\s+access\s+key|client\s+secret|private\s+key|"
@@ -93,13 +94,24 @@ _MAX_CITATION_REFS = 8
 _PROVIDER_BINDING_TTL_SECONDS = 3600
 
 
+def _contains_credential_query(value: str) -> bool:
+    for candidate in _URI_CANDIDATE.findall(value):
+        try:
+            query = parse_qsl(urlsplit(candidate).query, keep_blank_values=True)
+        except ValueError:
+            continue
+        if any(name.casefold() in _CREDENTIAL_QUERY_NAMES for name, _ in query):
+            return True
+    return False
+
+
 def _text(label: str, value: Any, *, limit: int = _MAX_TEXT) -> None:
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
         raise DocumentationError(f"{label} is invalid")
     if (
         _SECRET.search(value)
         or _URI_USERINFO.search(value)
-        or _URI_CREDENTIAL_QUERY.search(value)
+        or _contains_credential_query(value)
     ):
         raise DocumentationError(f"{label} contains secret-shaped data")
 
