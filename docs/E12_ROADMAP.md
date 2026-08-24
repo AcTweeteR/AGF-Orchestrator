@@ -140,13 +140,31 @@ Acceptance:
 - evidence archives are bounded, attributable, deterministic and secret-safe;
 - no `oh-my-cli` runtime dependency.
 
-### E12-T11 — Serena code-intelligence provider — PLANNED
+Delivered evidence so far:
+- workspace identity mismatch and unverifiable identity fail closed or remain `UNKNOWN`;
+- archives are deterministic, size-bounded and reject secret-shaped evidence;
+- scorecards contain only persisted session/evidence-derived facts;
+- focused resilience and CLI tests pass;
+- `session doctor` and `session archive` are read-only, project/session-bound
+  and machine-readable with `--json`.
+
+Undo/redo evaluation: `NO_JUSTIFIED_IMPLEMENTATION` is the current bounded
+decision. AGF already has Git/worktree isolation, immutable artifacts and
+external-result reconciliation. A second undo/redo store would duplicate Git,
+could obscure remote provenance, and could not reverse pushes, PRs, merges or
+other external reality. Local reversible mutation remains governed by the
+existing worktree and delivery controls; this decision does not authorize any
+rollback or external action.
+
+### E12-T11 — Serena code-intelligence provider — Executing
 
 Source: `oraios/serena`.
 
 Objective: let eligible providers obtain symbol/reference-aware repository intelligence and precise edit targets without making Serena an authority source.
 
 Scope:
+- provider-neutral advisory evidence boundary implemented in `agf_orchestrator.code_intelligence`;
+- persistence reuses `SessionStore` artifacts; provider eligibility reuses `CapabilityProfile` and `CapabilitySelector`;
 - define a provider-neutral `CodeIntelligenceProvider` capability boundary;
 - optional Serena adapter/profile;
 - operations such as symbol lookup, reference discovery and bounded code-navigation evidence;
@@ -161,7 +179,14 @@ Acceptance:
 - missing/ambiguous symbol evidence fails closed where required;
 - disposable comparison shows reduced unnecessary file/context loading without weakening correctness gates.
 
-### E12-T12 — Governed agent/skill catalog adapter for `wshobson/agents` — PLANNED
+Current implementation evidence:
+- symbol, definition, references, navigation and bounded edit-target operations are represented as evidence, without direct editing;
+- project, canonical repository, revision/index revision and provenance bindings are hash-validated;
+- stale, ambiguous, unavailable, malformed, mismatched and path-blocked outcomes remain distinct;
+- deterministic fixture comparison measures repository paths versus evidence-selected paths;
+- no mandatory concrete-provider dependency is introduced; a concrete provider remains an optional adapter/profile under existing capability selection.
+
+### E12-T12 — Governed agent/skill catalog adapter for `wshobson/agents` — Planned
 
 Objective: treat large third-party agent/skill collections as candidate procedure sources, never as trusted autonomous roles.
 
@@ -301,6 +326,3 @@ E12 is complete only when:
 - CRITICAL boundaries remain `HUMAN_REQUIRED` where policy requires;
 - no new authority source, parallel policy engine, scheduler, credential store, merge path or audit-truth store has been introduced;
 - disposable end-to-end canaries prove fail-closed behavior across procedures, providers, code intelligence, documentation and browser validation.
-
-
-
