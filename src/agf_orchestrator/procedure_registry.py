@@ -50,7 +50,13 @@ class ProcedureRegistry:
         target.write_text(payload, encoding="utf-8")
         return target
 
-    def get(self, project_id: str, procedure_id: str, *, now: str | None = None) -> ProcedureProfile:
+    def get(
+        self,
+        project_id: str,
+        procedure_id: str,
+        *,
+        now: str | None = None,
+    ) -> ProcedureProfile:
         if not procedure_id.startswith("procedure-") or "/" in procedure_id or ".." in procedure_id:
             raise ProcedureRegistryError("procedure_id is invalid")
         path = self._project_dir(project_id) / f"{procedure_id}.json"
@@ -59,7 +65,9 @@ class ProcedureRegistry:
             profile = procedure_profile_from_dict(payload)
             profile.validate(now=now)
         except (OSError, json.JSONDecodeError, CapabilityExtensionError) as exc:
-            raise ProcedureRegistryError(f"procedure evidence is unavailable or invalid: {exc}") from exc
+            raise ProcedureRegistryError(
+                f"procedure evidence is unavailable or invalid: {exc}"
+            ) from exc
         if profile.project_id != project_id or profile.procedure_id != procedure_id:
             raise ProcedureRegistryError("procedure evidence binding mismatch")
         return profile
@@ -75,7 +83,9 @@ class ProcedureRegistry:
                 profile = procedure_profile_from_dict(payload)
                 profile.validate(now=now)
             except (OSError, json.JSONDecodeError, CapabilityExtensionError) as exc:
-                raise ProcedureRegistryError(f"invalid procedure evidence at {path.name}: {exc}") from exc
+                raise ProcedureRegistryError(
+                    f"invalid procedure evidence at {path.name}: {exc}"
+                ) from exc
             if profile.project_id != project_id:
                 raise ProcedureRegistryError("cross-project procedure evidence detected")
             profiles.append(profile)
