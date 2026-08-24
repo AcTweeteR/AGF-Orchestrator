@@ -7,7 +7,6 @@ import pytest
 import agf_orchestrator.capability_extensions as ext
 from agf_orchestrator.risk_models import RiskLevel
 
-
 NOW = "2026-08-24T09:00:00Z"
 LATER = "2026-08-25T09:00:00Z"
 
