@@ -251,9 +251,9 @@ Acceptance:
 - Context7 has no authority over dependency upgrades or code changes.
 
 Current implementation evidence:
-- provider-neutral `DocumentationProvider` evidence binds package identity, declared/locked/resolved/runtime dependency sources, requested/returned topic, documentation version, source, citations, project/repository/revision and hash;
+- provider-neutral `DocumentationProvider` evidence binds package identity, declared/locked/resolved/runtime dependency sources, requested/returned topic, documentation version, normalized claims, source, citations, project/repository/revision and hash;
 - version compatibility is assessed separately from freshness, with latest-versus-project-version mismatch failing closed;
-- bounded citations, excerpt secret-safety, deterministic hashes, persistence, tamper/replay checks and contradictory-source reconciliation are covered by deterministic fixtures;
+- bounded citations, excerpt secret-safety, deterministic hashes, persistence, tamper/replay checks and claim-level contradictory-source reconciliation are covered by deterministic fixtures;
 - existing `KnowledgeProviderProfile`, network/privacy classification and knowledge-provider eligibility are reused; no Context7 runtime dependency is introduced.
 
 ### E12-T15 — Superpowers workflow-pattern review and procedure extraction — PLANNED

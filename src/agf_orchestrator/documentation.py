@@ -29,6 +29,7 @@ class DocumentationStatus(StrEnum):
     AMBIGUOUS_VERSION = "AMBIGUOUS_VERSION"
     UNAVAILABLE = "UNAVAILABLE"
     STALE = "STALE"
+    FUTURE_DATED = "FUTURE_DATED"
     FRESHNESS_UNKNOWN = "FRESHNESS_UNKNOWN"
     NOT_FOUND = "NOT_FOUND"
     MALFORMED = "MALFORMED"
@@ -68,6 +69,9 @@ _SECRET = re.compile(
 _MAX_TEXT = 4000
 _MAX_CITATIONS = 32
 _MAX_EXCERPT = 2400
+_MAX_CLAIMS = 32
+_MAX_CLAIM_TEXT = 512
+_CLOCK_SKEW_SECONDS = 0
 
 
 def _text(label: str, value: Any, *, limit: int = _MAX_TEXT) -> None:
@@ -97,11 +101,22 @@ def _version(label: str, value: Any) -> None:
 
 
 def _version_key(value: str) -> tuple[Any, ...]:
-    match = re.fullmatch(r"(\d+(?:\.\d+){0,3})(?:[-+]([0-9A-Za-z.-]+))?", value)
+    match = re.fullmatch(
+        r"(\d+(?:\.\d+){0,3})(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?",
+        value,
+    )
     if not match:
         raise DocumentationError("version is invalid")
     numbers = tuple(int(item) for item in match.group(1).split("."))
-    return numbers + (0,) * (4 - len(numbers)) + (match.group(2) or "",)
+    prerelease = match.group(2)
+    if not prerelease:
+        return numbers + (0,) * (4 - len(numbers)) + (1, ())
+    identifiers = []
+    for identifier in prerelease.split("."):
+        if not identifier:
+            raise DocumentationError("version prerelease is invalid")
+        identifiers.append((0, int(identifier)) if identifier.isdigit() else (1, identifier))
+    return numbers + (0,) * (4 - len(numbers)) + (0, tuple(identifiers))
 
 
 def _canonical_package(value: Any) -> None:
@@ -153,23 +168,24 @@ def _constraint_allows(constraint: str, version: str) -> bool | None:
         base_value = _version_key(base)
         return version_value >= base_value and version_value[:2] == base_value[:2]
     terms = tuple(term.strip() for term in normalized.split(","))
-    if all(re.fullmatch(r"(?:==|=|>=|<=|>|<)\d+(?:\.\d+){0,3}", term) for term in terms):
-        for term in terms:
-            operator = re.match(r"(?:==|=|>=|<=|>|<)", term).group(0)
-            operand = term[len(operator):]
-            operand_value = _version_key(operand)
-            if operator in {"=", "=="} and version_value != operand_value:
-                return False
-            if operator == ">=" and version_value < operand_value:
-                return False
-            if operator == "<=" and version_value > operand_value:
-                return False
-            if operator == ">" and version_value <= operand_value:
-                return False
-            if operator == "<" and version_value >= operand_value:
-                return False
-        return True
-    return None
+    for term in terms:
+        match = re.fullmatch(r"(==|=|>=|<=|>|<)(.+)", term)
+        if not match:
+            return None
+        operator, operand = match.groups()
+        _version("constraint version", operand)
+        operand_value = _version_key(operand)
+        if operator in {"=", "=="} and version_value != operand_value:
+            return False
+        if operator == ">=" and version_value < operand_value:
+            return False
+        if operator == "<=" and version_value > operand_value:
+            return False
+        if operator == ">" and version_value <= operand_value:
+            return False
+        if operator == "<" and version_value >= operand_value:
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -268,6 +284,47 @@ class DocumentationCitation:
         _text("citation excerpt", self.excerpt, limit=_MAX_EXCERPT)
 
 
+@dataclass(frozen=True)
+class DocumentationClaim:
+    """Bounded normalized assertion; prose is never interpreted as a claim."""
+
+    assertion_key: str
+    assertion_value: str
+    claim_sha256: str
+
+    def to_dict(self) -> dict[str, str]:
+        return self.__dict__.copy()
+
+    def validate(self) -> None:
+        _text("claim assertion_key", self.assertion_key, limit=_MAX_CLAIM_TEXT)
+        _text("claim assertion_value", self.assertion_value, limit=_MAX_CLAIM_TEXT)
+        _sha("claim_sha256", self.claim_sha256, _SHA256)
+        unsigned = {
+            "assertion_key": self.assertion_key,
+            "assertion_value": self.assertion_value,
+            "claim_sha256": "",
+        }
+        expected = hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if self.claim_sha256 != expected:
+            raise DocumentationError("claim_sha256 does not match content")
+
+
+def seal_claim(assertion_key: str, assertion_value: str) -> DocumentationClaim:
+    unsigned = {
+        "assertion_key": assertion_key,
+        "assertion_value": assertion_value,
+        "claim_sha256": "",
+    }
+    digest = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    claim = DocumentationClaim(assertion_key, assertion_value, digest)
+    claim.validate()
+    return claim
+
+
 class DocumentationProvider(Protocol):
     """Provider contract: return bounded evidence, never authorize or mutate."""
 
@@ -292,6 +349,7 @@ class DocumentationEvidence:
     documentation_version: str | None
     documentation_source: str
     citations: tuple[DocumentationCitation, ...]
+    claims: tuple[DocumentationClaim, ...]
     observed_at: str
     freshness: DocumentationFreshness
     status: DocumentationStatus
@@ -312,6 +370,7 @@ class DocumentationEvidence:
             "documentation_version": self.documentation_version,
             "documentation_source": self.documentation_source,
             "citations": [item.to_dict() for item in self.citations],
+            "claims": [item.to_dict() for item in self.claims],
             "observed_at": self.observed_at,
             "freshness": self.freshness.value,
             "status": self.status.value,
@@ -344,13 +403,26 @@ class DocumentationEvidence:
             citation.validate()
         if sum(len(item.excerpt) for item in self.citations) > 16_000:
             raise DocumentationError("citation excerpts exceed the aggregate bound")
+        if len(self.claims) > _MAX_CLAIMS:
+            raise DocumentationError("claims exceed the bound")
+        claim_keys = set()
+        for claim in self.claims:
+            claim.validate()
+            if claim.assertion_key in claim_keys:
+                raise DocumentationError("claim assertion keys must be unique")
+            claim_keys.add(claim.assertion_key)
         _timestamp("observed_at", self.observed_at)
         if not isinstance(self.freshness, DocumentationFreshness):
             raise DocumentationError("freshness is invalid")
         if not isinstance(self.status, DocumentationStatus):
             raise DocumentationError("status is invalid")
         if self.status is DocumentationStatus.VALID:
-            if self.documentation_version is None or not self.returned_topic or not self.citations:
+            if (
+                self.documentation_version is None
+                or not self.returned_topic
+                or not self.citations
+                or not self.claims
+            ):
                 raise DocumentationError("valid evidence requires versioned citations")
             if self.freshness is not DocumentationFreshness.FRESH:
                 raise DocumentationError("valid evidence requires fresh evidence")
@@ -394,8 +466,15 @@ class DocumentationEvidence:
         if self.freshness is DocumentationFreshness.UNKNOWN:
             return DocumentationStatus.FRESHNESS_UNKNOWN
         observed = _timestamp("observed_at", self.observed_at)
+        dependency_observed = _timestamp(
+            "dependency observed_at", request.dependency.observed_at
+        )
         current = _timestamp("assessment now", now)
-        if (current - observed).total_seconds() > request.max_age_seconds:
+        observed_age = (current - observed).total_seconds()
+        dependency_age = (current - dependency_observed).total_seconds()
+        if observed_age < -_CLOCK_SKEW_SECONDS or dependency_age < -_CLOCK_SKEW_SECONDS:
+            return DocumentationStatus.FUTURE_DATED
+        if observed_age > request.max_age_seconds:
             return DocumentationStatus.STALE
         return DocumentationStatus.VALID
 
@@ -422,6 +501,7 @@ def evidence_from_dict(payload: dict[str, Any]) -> DocumentationEvidence:
             payload["requested_topic"], payload["returned_topic"],
             payload["documentation_version"], payload["documentation_source"],
             tuple(DocumentationCitation(**item) for item in payload["citations"]),
+            tuple(DocumentationClaim(**item) for item in payload["claims"]),
             payload["observed_at"], DocumentationFreshness(payload["freshness"]),
             DocumentationStatus(payload["status"]), payload["evidence_sha256"],
         )
@@ -531,6 +611,8 @@ def reconcile_evidence(evidence: tuple[DocumentationEvidence, ...]) -> Documenta
         if item.documentation_version != first.documentation_version:
             return DocumentationStatus.CONTRADICTORY
         if item.returned_topic != first.returned_topic:
+            return DocumentationStatus.CONTRADICTORY
+        if item.claims != first.claims:
             return DocumentationStatus.CONTRADICTORY
     return DocumentationStatus.VALID
 

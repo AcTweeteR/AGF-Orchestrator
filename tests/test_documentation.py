@@ -10,9 +10,7 @@ from agf_orchestrator.capability_extensions import (
     KnowledgeTransport,
     PrivacyClassification,
 )
-from agf_orchestrator.capability_extensions import (
-    seal as seal_profile,
-)
+from agf_orchestrator.capability_extensions import seal as seal_profile
 from agf_orchestrator.documentation import (
     DependencyVersionEvidence,
     DocumentationCitation,
@@ -29,6 +27,7 @@ from agf_orchestrator.documentation import (
     reconcile_evidence,
     resolve_provider,
     seal,
+    seal_claim,
 )
 from agf_orchestrator.session_store import SessionStore
 
@@ -65,6 +64,7 @@ def evidence(**changes):
                 "https://docs.example/requests/1.8.3", "timeouts", "timeout parameter"
             ),
         ),
+        (seal_claim("requests.timeouts.timeout_type", "float-or-none"),),
         NOW, DocumentationFreshness.FRESH, DocumentationStatus.VALID, "",
     )
     return seal(replace(value, **changes))
@@ -151,15 +151,47 @@ def test_project_repository_revision_topic_and_stale_bindings():
     assert old.assess(request(max_age_seconds=60), now=NOW) is DocumentationStatus.STALE
 
 
+def test_future_dated_evidence_never_becomes_fresh():
+    immediate = evidence(observed_at="2026-08-24T12:00:01Z")
+    assert immediate.assess(request(), now=NOW) is DocumentationStatus.FUTURE_DATED
+    far_future = evidence(observed_at="2099-01-01T00:00:00Z")
+    assert (
+        far_future.assess(request(max_age_seconds=0), now=NOW)
+        is DocumentationStatus.FUTURE_DATED
+    )
+    exact = evidence()
+    assert exact.assess(request(max_age_seconds=0), now=NOW) is DocumentationStatus.VALID
+
+
 def test_conflicting_sources_and_provider_responses_fail_closed():
     first = evidence()
     second = evidence(documentation_version="1.8.4", evidence_id="docs-evidence-2")
     assert reconcile_evidence((first, second)) is DocumentationStatus.CONTRADICTORY
     assert reconcile_evidence(()) is DocumentationStatus.UNAVAILABLE
+    same_claim = evidence(
+        evidence_id="docs-evidence-2", documentation_source="other-source"
+    )
+    assert reconcile_evidence((first, same_claim)) is DocumentationStatus.VALID
+    opposing = evidence(
+        evidence_id="docs-evidence-2",
+        claims=(seal_claim("requests.timeouts.timeout_type", "integer-only"),),
+    )
+    assert reconcile_evidence((first, opposing)) is DocumentationStatus.CONTRADICTORY
+    with pytest.raises(DocumentationError):
+        evidence(evidence_id="docs-evidence-2", claims=())
+    stale = evidence(
+        evidence_id="docs-evidence-2", status=DocumentationStatus.STALE,
+        freshness=DocumentationFreshness.STALE,
+    )
+    assert reconcile_evidence((first, stale)) is DocumentationStatus.CONTRADICTORY
     malformed = evidence().to_dict()
     malformed["documentation_version"] = "latest"
     with pytest.raises(DocumentationError):
         evidence_from_dict(malformed)
+    tampered_claim = evidence().to_dict()
+    tampered_claim["claims"][0]["assertion_value"] = "tampered"
+    with pytest.raises(DocumentationError):
+        evidence_from_dict(tampered_claim)
     malformed = evidence().to_dict()
     malformed["citations"] = ["not-a-citation"]
     with pytest.raises(DocumentationError):
@@ -241,3 +273,38 @@ def test_repository_identity_and_binding_validation():
         request(repository_id="github.com/example/../repository").validate()
     with pytest.raises(DocumentationError):
         request(repository_id=None, revision_sha=REVISION).validate()
+
+
+def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
+    prerelease = request(
+        dependency=dependency(
+            declared_constraint=">=2.0.0", locked_version=None, resolved_version="2.0.0-rc.1"
+        )
+    )
+    assert evidence(dependency=prerelease.dependency, documentation_version="2.0.0-rc.1").assess(
+        prerelease, now=NOW
+    ) is DocumentationStatus.CONTRADICTORY
+    beta = request(
+        dependency=dependency(
+            declared_constraint=">=2.0.0-rc.1", locked_version=None, resolved_version="2.0.0-beta.2"
+        )
+    )
+    assert evidence(dependency=beta.dependency, documentation_version="2.0.0-beta.2").assess(
+        beta, now=NOW
+    ) is DocumentationStatus.CONTRADICTORY
+    final = request(
+        dependency=dependency(
+            declared_constraint=">=2.0.0", locked_version=None, resolved_version="2.0.0"
+        )
+    )
+    assert evidence(dependency=final.dependency, documentation_version="2.0.0").assess(
+        final, now=NOW
+    ) is DocumentationStatus.VALID
+    exact = request(
+        dependency=dependency(
+            declared_constraint="==2.0.0-rc.1", locked_version=None, resolved_version="2.0.0-rc.1"
+        )
+    )
+    assert evidence(dependency=exact.dependency, documentation_version="2.0.0-rc.1").assess(
+        exact, now=NOW
+    ) is DocumentationStatus.VALID
