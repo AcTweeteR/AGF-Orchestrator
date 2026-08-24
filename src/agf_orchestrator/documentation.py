@@ -12,6 +12,8 @@ from enum import StrEnum
 from typing import Any, Protocol
 from urllib.parse import parse_qsl, urlsplit
 
+from packaging.version import InvalidVersion, Version
+
 from .capability_extensions import (
     CapabilityExtensionError,
     KnowledgeProviderProfile,
@@ -67,6 +69,24 @@ _MAVEN_COORDINATE = re.compile(
     r"(?::[A-Za-z0-9][A-Za-z0-9_.-]{0,127})?$"
 )
 _SUPPORTED_REGISTRIES = frozenset({"npm", "pypi", "go", "maven"})
+_MAVEN_VERSION = re.compile(
+    r"^(?P<core>[0-9]{1,32}(?:\.[0-9]{1,32}){0,15})"
+    r"(?:[.-](?P<qualifier>[A-Za-z]+(?:[-.]?[0-9]+)?))?$"
+)
+_MAVEN_QUALIFIER_RANK = {
+    "alpha": 0,
+    "a": 0,
+    "beta": 1,
+    "b": 1,
+    "milestone": 2,
+    "m": 2,
+    "rc": 3,
+    "snapshot": 4,
+    "final": 5,
+    "ga": 5,
+    "release": 5,
+    "sp": 6,
+}
 _VERSION = re.compile(
     r"^[0-9]{1,32}(?:\.[0-9]{1,32}){0,3}"
     r"(?:-[0-9A-Za-z-]{1,64}(?:\.[0-9A-Za-z-]{1,64})*)?"
@@ -155,8 +175,80 @@ def _version(label: str, value: Any) -> None:
 def _canonical_version(registry: str, label: str, value: Any) -> str:
     if registry == "go" and isinstance(value, str) and value.startswith("v"):
         value = value[1:]
+    if registry == "pypi" and isinstance(value, str):
+        try:
+            if len(value) > _MAX_VERSION_LENGTH:
+                raise DocumentationError(f"{label} is invalid")
+            if any(len(component) > 32 for component in re.findall(r"\d+", value)):
+                raise DocumentationError(f"{label} is invalid")
+            return str(Version(value))
+        except (InvalidVersion, TypeError, ValueError) as exc:
+            raise DocumentationError(f"{label} is invalid") from exc
+    if registry == "maven" and isinstance(value, str):
+        return _canonical_maven_version(label, value)
     _version(label, value)
     return value
+
+
+def _maven_parts(label: str, value: str) -> tuple[tuple[int, ...], str | None, int]:
+    if not isinstance(value, str) or len(value) > _MAX_VERSION_LENGTH:
+        raise DocumentationError(f"{label} is invalid")
+    match = _MAVEN_VERSION.fullmatch(value)
+    if not match:
+        raise DocumentationError(f"{label} is invalid")
+    try:
+        core = tuple(int(part) for part in match.group("core").split("."))
+    except (TypeError, ValueError) as exc:
+        raise DocumentationError(f"{label} is invalid") from exc
+    qualifier = match.group("qualifier")
+    if qualifier is None:
+        return core, None, 5
+    normalized = qualifier.casefold()
+    qualifier_match = re.fullmatch(r"([a-z]+)(?:[-.]?([0-9]+))?", normalized)
+    if not qualifier_match or qualifier_match.group(1) not in _MAVEN_QUALIFIER_RANK:
+        raise DocumentationError(f"{label} has unsupported Maven qualifier")
+    return (
+        core,
+        normalized,
+        _MAVEN_QUALIFIER_RANK[qualifier_match.group(1)],
+    )
+
+
+def _canonical_maven_version(label: str, value: str) -> str:
+    core, qualifier, _ = _maven_parts(label, value)
+    return ".".join(str(part) for part in core) + (
+        f".{qualifier}" if qualifier is not None else ""
+    )
+
+
+def _pypi_key(value: str) -> Version:
+    try:
+        return Version(value)
+    except (InvalidVersion, TypeError, ValueError) as exc:
+        raise DocumentationError("version is invalid") from exc
+
+
+def _maven_key(value: str) -> tuple[Any, ...]:
+    core, qualifier, rank = _maven_parts("version", value)
+    qualifier_root = ""
+    qualifier_number = -1
+    if qualifier is not None:
+        qualifier_match = re.fullmatch(
+            r"([a-z]+)(?:[-.]?([0-9]+))?", qualifier
+        )
+        if qualifier_match is None:
+            raise DocumentationError("version qualifier is invalid")
+        qualifier_root = qualifier_match.group(1)
+        qualifier_number = int(qualifier_match.group(2) or "-1")
+        if qualifier_root in {"final", "ga", "release"}:
+            qualifier_root = ""
+            qualifier_number = -1
+    return (
+        core + (0,) * (16 - len(core)),
+        rank,
+        qualifier_root,
+        qualifier_number,
+    )
 
 
 def _version_key(value: str) -> tuple[Any, ...]:
@@ -192,7 +284,11 @@ def _version_key(value: str) -> tuple[Any, ...]:
     return numbers + (0,) * (4 - len(numbers)) + (0, tuple(identifiers))
 
 
-def _version_identity(value: str) -> tuple[Any, str]:
+def _version_identity(value: str, registry: str = "semver") -> tuple[Any, ...]:
+    if registry == "pypi":
+        return ("pypi", _pypi_key(value))
+    if registry == "maven":
+        return ("maven", _maven_key(value))
     _version_key(value)
     build = value.partition("+")[2]
     return _version_key(value), build
@@ -271,11 +367,11 @@ def _constraint_allows(
     """Evaluate the small, deterministic constraint subset used by fixtures."""
     normalized = constraint.strip()
     canonical_version = _canonical_version(registry, "version", version)
+    if registry in {"pypi", "maven"}:
+        return _ecosystem_constraint_allows(normalized, canonical_version, registry)
     version_value = _version_key(canonical_version)
     if registry == "go" and normalized.startswith("v"):
         normalized = normalized[1:]
-    if _VERSION.fullmatch(normalized):
-        return _version_identity(canonical_version) == _version_identity(normalized)
     if "-" in canonical_version.partition("+")[0]:
         if _version_key(canonical_version)[:4] not in _explicit_prerelease_cores(
             normalized, registry
@@ -283,6 +379,20 @@ def _constraint_allows(
             return False
     if normalized in {"", "*"}:
         return True
+    if registry == "npm" and re.fullmatch(r"\d+(?:\.\d+)?", normalized):
+        components = len(normalized.split("."))
+        lower = _version_key(normalized + (".0" if components == 1 else ".0"))
+        numbers = lower[:4]
+        upper = (
+            (numbers[0] + 1, 0, 0, 0, 1, ())
+            if components == 1
+            else (numbers[0], numbers[1] + 1, 0, 0, 1, ())
+        )
+        return version_value >= lower and version_value < upper
+    if _VERSION.fullmatch(normalized):
+        return _version_identity(canonical_version, registry) == _version_identity(
+            normalized, registry
+        )
     if normalized.startswith("^"):
         base = normalized[1:]
         base = _canonical_version(registry, "constraint version", base)
@@ -325,7 +435,8 @@ def _constraint_allows(
         operand_value = _version_key(operand)
         if (
             operator in {"=", "=="}
-            and _version_identity(canonical_version) != _version_identity(operand)
+            and _version_identity(canonical_version, registry)
+            != _version_identity(operand, registry)
         ):
             return False
         if operator == ">=" and version_value < operand_value:
@@ -335,6 +446,86 @@ def _constraint_allows(
         if operator == ">" and version_value <= operand_value:
             return False
         if operator == "<" and version_value >= operand_value:
+            return False
+    return True
+
+
+def _ecosystem_constraint_allows(
+    constraint: str, version: str, registry: str
+) -> bool | None:
+    version_key = _pypi_key(version) if registry == "pypi" else _maven_key(version)
+    if registry == "pypi" and version_key.is_prerelease:
+        explicit_series = []
+        for term in constraint.split(","):
+            match = re.fullmatch(r"(?:==|=|>=|<=|>|<)?(.+)", term.strip())
+            if not match:
+                continue
+            try:
+                candidate = _pypi_key(
+                    _canonical_version("pypi", "constraint version", match.group(1))
+                )
+            except DocumentationError:
+                continue
+            if candidate.is_prerelease:
+                explicit_series.append(candidate.release[:3])
+        if version_key.release[:3] not in explicit_series:
+            return False
+    if constraint in {"", "*"}:
+        return True
+    if constraint.startswith("^") and registry == "pypi":
+        base = _pypi_key(_canonical_version("pypi", "constraint version", constraint[1:]))
+        components = constraint[1:].split(".")
+        if len(components) > 3:
+            return None
+        if len(components) == 1:
+            upper = Version(f"{base.release[0] + 1}.0.0")
+        elif base.release[0] > 0:
+            upper = Version(f"{base.release[0] + 1}.0.0")
+        elif len(components) == 2 and base.release[1] > 0:
+            upper = Version(f"0.{base.release[1] + 1}.0")
+        elif len(components) == 2:
+            upper = Version("0.1.0")
+        else:
+            upper = Version(f"0.0.{base.release[2] + 1}")
+        return version_key >= base and version_key < upper
+    if constraint.startswith("~") and registry == "pypi":
+        raw_base = constraint[1:]
+        base = _pypi_key(_canonical_version("pypi", "constraint version", raw_base))
+        if len(raw_base.split(".")) > 3:
+            return None
+        if len(raw_base.split(".")) == 1:
+            upper = Version(f"{base.release[0] + 1}.0.0")
+        else:
+            upper = Version(f"{base.release[0]}.{base.release[1] + 1}.0")
+        return version_key >= base and version_key < upper
+    if constraint.startswith(("^", "~")):
+        return None
+    for term in (term.strip() for term in constraint.split(",")):
+        match = re.fullmatch(r"(==|=|>=|<=|>|<)?(.+)", term)
+        if not match:
+            return None
+        operator, operand = match.groups()
+        try:
+            canonical_operand = _canonical_version(
+                registry, "constraint version", operand
+            )
+            operand_key = (
+                _pypi_key(canonical_operand)
+                if registry == "pypi"
+                else _maven_key(canonical_operand)
+            )
+        except DocumentationError:
+            return None
+        operator = operator or "=="
+        if operator in {"=", "=="} and version_key != operand_key:
+            return False
+        if operator == ">=" and version_key < operand_key:
+            return False
+        if operator == "<=" and version_key > operand_key:
+            return False
+        if operator == ">" and version_key <= operand_key:
+            return False
+        if operator == "<" and version_key >= operand_key:
             return False
     return True
 
@@ -386,7 +577,7 @@ class DependencyVersionEvidence:
             _canonical_version(self.registry, "dependency version", value)
             for value in values
         )
-        if len({_version_identity(value) for value in canonical_values}) != 1:
+        if len({_version_identity(value, self.registry) for value in canonical_values}) != 1:
             raise DocumentationError("dependency version sources contradict")
         allowed = _constraint_allows(
             self.declared_constraint, values[0], self.registry
@@ -806,11 +997,12 @@ class DocumentationEvidence:
         if self.documentation_version is None:
             return DocumentationStatus.AMBIGUOUS_VERSION
         registry = request.dependency.registry
-        if _version_identity(_canonical_version(
-            registry, "documentation_version", self.documentation_version
-        )) != _version_identity(_canonical_version(
-            registry, "project version", project_version
-        )):
+        if _version_identity(
+            _canonical_version(registry, "documentation_version", self.documentation_version),
+            registry,
+        ) != _version_identity(
+            _canonical_version(registry, "project version", project_version), registry
+        ):
             return DocumentationStatus.VERSION_MISMATCH
         if self.freshness is DocumentationFreshness.STALE:
             return DocumentationStatus.STALE
@@ -1018,12 +1210,18 @@ def reconcile_evidence(
         if (
             item.documentation_version is None
             or first.documentation_version is None
-            or _version_identity(_canonical_version(
-                registry, "documentation version", item.documentation_version
-            ))
-            != _version_identity(_canonical_version(
-                registry, "documentation version", first.documentation_version
-            ))
+            or _version_identity(
+                _canonical_version(
+                    registry, "documentation version", item.documentation_version
+                ),
+                registry,
+            )
+            != _version_identity(
+                _canonical_version(
+                    registry, "documentation version", first.documentation_version
+                ),
+                registry,
+            )
         ):
             return DocumentationStatus.CONTRADICTORY
         if item.returned_topic != first.returned_topic:

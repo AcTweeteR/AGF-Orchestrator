@@ -794,3 +794,66 @@ def test_reconciliation_uses_normalized_documentation_version_identity():
     first = evidence(documentation_version="1.8.3")
     second = evidence(evidence_id="docs-evidence-2", documentation_version="1.8.3.0")
     assert reconcile_evidence((first, second), request(), now=NOW) is DocumentationStatus.VALID
+
+
+@pytest.mark.parametrize("version", ["1.0", "1.0rc1", "1!2.0.0", "1.0.post1", "1.0.dev1"])
+def test_pypi_versions_use_pep440_canonicalization(version):
+    item = dependency(
+        registry="pypi",
+        declared_constraint=f"=={version}",
+        locked_version=version,
+        resolved_version=version,
+    )
+    assert item.demonstrated_version() == version
+
+
+@pytest.mark.parametrize("value", ["1..0", "1.0rc..1", "1" * 33 + ".0"])
+def test_pypi_malformed_versions_fail_closed(value):
+    with pytest.raises(DocumentationError):
+        dependency(registry="pypi", resolved_version=value).validate()
+
+
+def test_maven_versions_use_bounded_qualifier_ordering():
+    item = dependency(
+        registry="maven",
+        package_id="org.example:demo",
+        declared_constraint="==1.0.0.Final",
+        locked_version="1.0.0.Final",
+        resolved_version="1.0.0.Final",
+    )
+    assert item.demonstrated_version() == "1.0.0.Final"
+    prerelease = replace(
+        item,
+        declared_constraint="<1.0.0.Final",
+        locked_version="1.0.0.RC1",
+        resolved_version="1.0.0.RC1",
+    )
+    assert prerelease.demonstrated_version() == "1.0.0.RC1"
+
+
+@pytest.mark.parametrize("value", ["1..0", "1.0.0.unknown", "1.0.0."])
+def test_maven_malformed_or_unknown_versions_fail_closed(value):
+    with pytest.raises(DocumentationError):
+        dependency(
+            registry="maven", package_id="org.example:demo", resolved_version=value
+        ).validate()
+
+
+@pytest.mark.parametrize(
+    ("constraint", "resolved", "expected"),
+    [("1", "1.5.0", DocumentationStatus.VALID),
+     ("1", "2.0.0", DocumentationStatus.CONTRADICTORY),
+     ("1.2", "1.2.9", DocumentationStatus.VALID),
+     ("1.2", "1.3.0", DocumentationStatus.CONTRADICTORY),
+     ("1.2.3", "1.2.3", DocumentationStatus.VALID)],
+)
+def test_npm_bare_partial_versions_are_ranges(constraint, resolved, expected):
+    item = request(
+        dependency=dependency(
+            registry="npm", package_id="lodash", declared_constraint=constraint,
+            locked_version=None, resolved_version=resolved,
+        )
+    )
+    assert evidence(
+        dependency=item.dependency, documentation_version=resolved
+    ).assess(item, now=NOW) is expected
