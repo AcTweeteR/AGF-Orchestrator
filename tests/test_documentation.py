@@ -1,0 +1,239 @@
+import json
+from dataclasses import replace
+
+import pytest
+
+from agf_orchestrator.capability_extensions import (
+    IntegrationStability,
+    KnowledgeMutability,
+    KnowledgeProviderProfile,
+    KnowledgeTransport,
+    PrivacyClassification,
+)
+from agf_orchestrator.capability_extensions import (
+    seal as seal_profile,
+)
+from agf_orchestrator.documentation import (
+    DependencyVersionEvidence,
+    DocumentationCitation,
+    DocumentationError,
+    DocumentationEvidence,
+    DocumentationFreshness,
+    DocumentationOperation,
+    DocumentationRequest,
+    DocumentationStatus,
+    evidence_from_dict,
+    latest_is_unsafe_for_project,
+    load_evidence,
+    persist_evidence,
+    reconcile_evidence,
+    resolve_provider,
+    seal,
+)
+from agf_orchestrator.session_store import SessionStore
+
+PROJECT = "project-demo"
+REPOSITORY = "github.com/example/repository"
+REVISION = "a" * 40
+OTHER_REVISION = "b" * 40
+NOW = "2026-08-24T12:00:00Z"
+
+
+def dependency(**changes):
+    value = DependencyVersionEvidence(
+        "requests", "==1.8.3", "1.8.3", "1.8.3", None,
+        "poetry.lock", NOW,
+    )
+    return replace(value, **changes)
+
+
+def request(**changes):
+    value = DocumentationRequest(
+        PROJECT, REPOSITORY, REVISION, DocumentationOperation.RETRIEVE_TOPIC,
+        dependency(), "timeouts", 3600,
+    )
+    return replace(value, **changes)
+
+
+def evidence(**changes):
+    value = DocumentationEvidence(
+        "1.0", "docs-evidence-1", "knowledge-docs", PROJECT, REPOSITORY,
+        REVISION, DocumentationOperation.RETRIEVE_TOPIC, dependency(), "timeouts",
+        "timeouts", "1.8.3", "fixture-docs",
+        (
+            DocumentationCitation(
+                "https://docs.example/requests/1.8.3", "timeouts", "timeout parameter"
+            ),
+        ),
+        NOW, DocumentationFreshness.FRESH, DocumentationStatus.VALID, "",
+    )
+    return seal(replace(value, **changes))
+
+
+def profile(
+    *, network_required=False, privacy_review_required=False,
+    capabilities=("documentation",),
+):
+    return seal_profile(
+        KnowledgeProviderProfile(
+            "1.0", "knowledge-docs", PROJECT, 1, KnowledgeTransport.STDIO,
+            capabilities, False, False, network_required, False,
+            (
+                PrivacyClassification.EXTERNAL_PUBLIC
+                if network_required
+                else PrivacyClassification.LOCAL_ONLY
+            ),
+            privacy_review_required, KnowledgeMutability.READ_ONLY,
+            IntegrationStability.OFFICIAL, "fixture documentation profile", NOW,
+            "2026-08-25T12:00:00Z", "",
+        )
+    )
+
+
+def test_exact_version_is_valid_and_latest_major_is_rejected():
+    item = evidence()
+    assert item.assess(request(), now=NOW) is DocumentationStatus.VALID
+    latest = evidence(documentation_version="2.1.0")
+    assert latest.assess(request(), now=NOW) is DocumentationStatus.VERSION_MISMATCH
+    assert latest_is_unsafe_for_project(latest, request(), now=NOW)
+
+
+def test_version_sources_and_ranges_fail_closed():
+    mismatch = request(dependency=dependency(resolved_version="1.9.0"))
+    assert (
+        evidence(dependency=mismatch.dependency).assess(mismatch, now=NOW)
+        is DocumentationStatus.CONTRADICTORY
+    )
+    ambiguous = request(dependency=dependency(locked_version=None, resolved_version=None))
+    assert (
+        evidence(dependency=ambiguous.dependency).assess(ambiguous, now=NOW)
+        is DocumentationStatus.AMBIGUOUS_VERSION
+    )
+    minor = evidence(documentation_version="1.9.0")
+    assert minor.assess(request(), now=NOW) is DocumentationStatus.VERSION_MISMATCH
+    declared_mismatch = request(
+        dependency=dependency(locked_version=None, resolved_version="1.9.0")
+    )
+    assert (
+        evidence(dependency=declared_mismatch.dependency).assess(declared_mismatch, now=NOW)
+        is DocumentationStatus.CONTRADICTORY
+    )
+    ranged = request(
+        dependency=dependency(
+            declared_constraint=">=1.8,<2.0", locked_version=None, resolved_version="1.9.0"
+        )
+    )
+    assert evidence(
+        dependency=ranged.dependency, documentation_version="1.9.0"
+    ).assess(ranged, now=NOW) is DocumentationStatus.VALID
+
+
+def test_project_repository_revision_topic_and_stale_bindings():
+    item = evidence()
+    assert (
+        item.assess(request(project_id="project-other"), now=NOW)
+        is DocumentationStatus.PROJECT_MISMATCH
+    )
+    assert (
+        item.assess(request(repository_id="github.com/other/repository"), now=NOW)
+        is DocumentationStatus.REPOSITORY_MISMATCH
+    )
+    assert (
+        item.assess(request(revision_sha=OTHER_REVISION), now=NOW)
+        is DocumentationStatus.REVISION_MISMATCH
+    )
+    assert item.assess(request(topic="retries"), now=NOW) is DocumentationStatus.TOPIC_MISMATCH
+    stale = evidence(
+        freshness=DocumentationFreshness.STALE, status=DocumentationStatus.STALE
+    )
+    assert stale.assess(request(), now=NOW) is DocumentationStatus.STALE
+    old = evidence(observed_at="2026-08-24T00:00:00Z")
+    assert old.assess(request(max_age_seconds=60), now=NOW) is DocumentationStatus.STALE
+
+
+def test_conflicting_sources_and_provider_responses_fail_closed():
+    first = evidence()
+    second = evidence(documentation_version="1.8.4", evidence_id="docs-evidence-2")
+    assert reconcile_evidence((first, second)) is DocumentationStatus.CONTRADICTORY
+    assert reconcile_evidence(()) is DocumentationStatus.UNAVAILABLE
+    malformed = evidence().to_dict()
+    malformed["documentation_version"] = "latest"
+    with pytest.raises(DocumentationError):
+        evidence_from_dict(malformed)
+
+
+def test_bounds_secret_safety_hash_and_authority_boundary():
+    with pytest.raises(DocumentationError):
+        evidence(citations=(DocumentationCitation("source", "topic", "x" * 2401),))
+    with pytest.raises(DocumentationError):
+        evidence(citations=(DocumentationCitation("source", "topic", "api_key: leaked"),))
+    with pytest.raises(DocumentationError):
+        evidence(
+            citations=tuple(
+                DocumentationCitation("source", str(index), "x" * 1000)
+                for index in range(17)
+            )
+        )
+    assert evidence().evidence_sha256 == seal(evidence()).evidence_sha256
+    assert evidence().status is DocumentationStatus.VALID
+    upgrade = evidence(documentation_version="2.0.0")
+    assert upgrade.assess(request(), now=NOW) is DocumentationStatus.VERSION_MISMATCH
+
+
+def test_provider_required_optional_network_privacy_and_capability_gates():
+    kwargs = dict(
+        project_id=PROJECT, now=NOW, available=True, authenticated=True,
+        policy_authorized=True, privacy_eligible=True, network_allowed=True,
+    )
+    assert resolve_provider(profile(), required=True, **kwargs).status is DocumentationStatus.VALID
+    assert resolve_provider(profile(), required=False, **kwargs).status is DocumentationStatus.VALID
+    assert (
+        resolve_provider(profile(), required=True, **{**kwargs, "available": False}).status
+        is DocumentationStatus.UNAVAILABLE
+    )
+    assert (
+        resolve_provider(
+            profile(network_required=True),
+            required=True,
+            **{**kwargs, "network_allowed": False},
+        ).status
+        is DocumentationStatus.NETWORK_BLOCKED
+    )
+    assert (
+        resolve_provider(
+            profile(privacy_review_required=True),
+            required=True,
+            **{**kwargs, "privacy_eligible": False},
+        ).status
+        is DocumentationStatus.PRIVACY_BLOCKED
+    )
+    assert (
+        resolve_provider(profile(capabilities=("citations",)), required=True, **kwargs).status
+        is DocumentationStatus.PROVIDER_INELIGIBLE
+    )
+
+
+def test_persistence_restart_tamper_and_cross_session_replay(tmp_path):
+    store = SessionStore(tmp_path / "state")
+    item = evidence()
+    persist_evidence(store, "session-one", item)
+    assert load_evidence(store, "session-one", item.evidence_id) == item
+    with pytest.raises(DocumentationError):
+        load_evidence(store, "session-two", item.evidence_id)
+    path = store.artifacts_dir / "session-one" / f"documentation-{item.evidence_id}.json"
+    payload = json.loads(path.read_text())
+    payload["requested_topic"] = "tampered"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(DocumentationError):
+        load_evidence(store, "session-one", item.evidence_id)
+
+
+def test_repository_identity_and_binding_validation():
+    with pytest.raises(DocumentationError):
+        request(repository_id="not-a-repository").validate()
+    with pytest.raises(DocumentationError):
+        request(repository_id="/tmp/repository").validate()
+    with pytest.raises(DocumentationError):
+        request(repository_id="github.com/example/../repository").validate()
+    with pytest.raises(DocumentationError):
+        request(repository_id=None, revision_sha=REVISION).validate()
