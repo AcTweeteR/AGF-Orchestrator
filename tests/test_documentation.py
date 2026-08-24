@@ -463,6 +463,8 @@ def test_compound_secret_patterns_are_bounded():
         "https://bucket.example/object?%58-Amz-Signature=encoded-name",
         "https://bucket.example/object?region=us&amp;X-Amz-Signature=html-escaped",
         "https://bucket.example/object?region=us&#38;sig=numeric-escaped",
+        "https://alice&#58;s3cr3t&#64;example.test/manual",
+        "https://alice&#x3A;s3cr3t&#x40;example.test/manual",
     ):
         with pytest.raises(DocumentationError):
             DocumentationCitation("source", "topic", value).validate()
@@ -470,6 +472,7 @@ def test_compound_secret_patterns_are_bounded():
         "https://bucket.example/object?region=eu&format=json",
         "https://bucket.example/object?significant=true",
         "not-a-url?sig=just-text",
+        "https://alice&amp;#58;s3cr3t&amp;#64;example.test/manual",
     ):
         DocumentationCitation("source", "topic", value).validate()
     for value in ("private key rotation", "client secret lifecycle", "secret access key format"):
@@ -581,6 +584,35 @@ def test_repository_identity_and_binding_validation():
 ])
 def test_registry_aware_package_identifiers(registry, package_id):
     dependency(registry=registry, package_id=package_id).validate()
+
+
+def test_go_registry_accepts_v_prefixed_versions_without_global_normalization():
+    go = dependency(
+        registry="go", package_id="github.com/gin-gonic/gin",
+        declared_constraint="v1.10.0", locked_version="v1.10.0",
+        resolved_version="v1.10.0",
+    )
+    go.validate()
+    assert go.demonstrated_version() == "v1.10.0"
+    assert evidence(
+        dependency=go, documentation_version="v1.10.0"
+    ).assess(request(dependency=go), now=NOW) is DocumentationStatus.VALID
+    prerelease = replace(
+        go, declared_constraint=">=v1.10.0-rc.1",
+        locked_version="v1.10.0-rc.2", resolved_version="v1.10.0-rc.2",
+    )
+    prerelease.validate()
+    build = replace(
+        go, declared_constraint="==v1.10.0+linux",
+        locked_version="v1.10.0+linux", resolved_version="v1.10.0+linux",
+    )
+    build.validate()
+    assert build.demonstrated_version() == "v1.10.0+linux"
+
+
+def test_non_go_registries_reject_v_prefix():
+    with pytest.raises(DocumentationError):
+        dependency(registry="npm", resolved_version="v1.10.0").validate()
 
 
 @pytest.mark.parametrize("registry,package_id", [

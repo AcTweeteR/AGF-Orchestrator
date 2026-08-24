@@ -117,9 +117,12 @@ def _contains_credential_query(value: str) -> bool:
 def _text(label: str, value: Any, *, limit: int = _MAX_TEXT) -> None:
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
         raise DocumentationError(f"{label} is invalid")
+    decoded = html.unescape(value)
     if (
         _SECRET.search(value)
+        or _SECRET.search(decoded)
         or _URI_USERINFO.search(value)
+        or _URI_USERINFO.search(decoded)
         or _contains_credential_query(value)
     ):
         raise DocumentationError(f"{label} contains secret-shaped data")
@@ -147,6 +150,13 @@ def _version(label: str, value: Any) -> None:
     ):
         raise DocumentationError(f"{label} is invalid")
     _version_key(value)
+
+
+def _canonical_version(registry: str, label: str, value: Any) -> str:
+    if registry == "go" and isinstance(value, str) and value.startswith("v"):
+        value = value[1:]
+    _version(label, value)
+    return value
 
 
 def _version_key(value: str) -> tuple[Any, ...]:
@@ -236,7 +246,9 @@ def _hash_payload(payload: dict[str, Any]) -> str:
     ).hexdigest()
 
 
-def _explicit_prerelease_cores(constraint: str) -> set[tuple[Any, ...]]:
+def _explicit_prerelease_cores(
+    constraint: str, registry: str
+) -> set[tuple[Any, ...]]:
     if constraint.startswith(("^", "~")):
         operands = (constraint[1:],)
     else:
@@ -247,26 +259,33 @@ def _explicit_prerelease_cores(constraint: str) -> set[tuple[Any, ...]]:
         )
     cores = set()
     for operand in operands:
-        _version("constraint version", operand)
+        operand = _canonical_version(registry, "constraint version", operand)
         if "-" in operand.partition("+")[0]:
             cores.add(_version_key(operand)[:4])
     return cores
 
 
-def _constraint_allows(constraint: str, version: str) -> bool | None:
+def _constraint_allows(
+    constraint: str, version: str, registry: str
+) -> bool | None:
     """Evaluate the small, deterministic constraint subset used by fixtures."""
     normalized = constraint.strip()
-    version_value = _version_key(version)
+    canonical_version = _canonical_version(registry, "version", version)
+    version_value = _version_key(canonical_version)
+    if registry == "go" and normalized.startswith("v"):
+        normalized = normalized[1:]
     if _VERSION.fullmatch(normalized):
-        return _version_identity(version) == _version_identity(normalized)
-    if "-" in version.partition("+")[0]:
-        if _version_key(version)[:4] not in _explicit_prerelease_cores(normalized):
+        return _version_identity(canonical_version) == _version_identity(normalized)
+    if "-" in canonical_version.partition("+")[0]:
+        if _version_key(canonical_version)[:4] not in _explicit_prerelease_cores(
+            normalized, registry
+        ):
             return False
     if normalized in {"", "*"}:
         return True
     if normalized.startswith("^"):
         base = normalized[1:]
-        _version("constraint version", base)
+        base = _canonical_version(registry, "constraint version", base)
         base_value = _version_key(base)
         components = len(base.split("-", 1)[0].split("."))
         if components > 3:
@@ -285,7 +304,7 @@ def _constraint_allows(constraint: str, version: str) -> bool | None:
         return version_value >= base_value and version_value < upper
     if normalized.startswith("~"):
         base = normalized[1:]
-        _version("constraint version", base)
+        base = _canonical_version(registry, "constraint version", base)
         components = len(base.split("-", 1)[0].split("."))
         if components > 3:
             return None
@@ -302,9 +321,12 @@ def _constraint_allows(constraint: str, version: str) -> bool | None:
         if not match:
             return None
         operator, operand = match.groups()
-        _version("constraint version", operand)
+        operand = _canonical_version(registry, "constraint version", operand)
         operand_value = _version_key(operand)
-        if operator in {"=", "=="} and _version_identity(version) != _version_identity(operand):
+        if (
+            operator in {"=", "=="}
+            and _version_identity(canonical_version) != _version_identity(operand)
+        ):
             return False
         if operator == ">=" and version_value < operand_value:
             return False
@@ -343,7 +365,7 @@ class DependencyVersionEvidence:
             ("runtime_observed_version", self.runtime_observed_version),
         ):
             if value is not None:
-                _version(label, value)
+                _canonical_version(self.registry, label, value)
         _text("dependency source", self.source)
         _timestamp("dependency observed_at", self.observed_at)
 
@@ -360,15 +382,24 @@ class DependencyVersionEvidence:
         )
         if not values:
             return None
-        if len({_version_identity(value) for value in values}) != 1:
+        canonical_values = tuple(
+            _canonical_version(self.registry, "dependency version", value)
+            for value in values
+        )
+        if len({_version_identity(value) for value in canonical_values}) != 1:
             raise DocumentationError("dependency version sources contradict")
-        allowed = _constraint_allows(self.declared_constraint, values[0])
+        allowed = _constraint_allows(
+            self.declared_constraint, values[0], self.registry
+        )
         if allowed is not True:
             raise DocumentationError("resolved dependency does not satisfy declared constraint")
         return values[0]
 
     def has_exact_declaration(self) -> bool:
-        return bool(re.fullmatch(r"(?:==|=)?\d+(?:\.\d+){0,3}", self.declared_constraint))
+        constraint = self.declared_constraint
+        if self.registry == "go" and constraint.startswith("v"):
+            constraint = constraint[1:]
+        return bool(re.fullmatch(r"(?:==|=)?\d+(?:\.\d+){0,3}", constraint))
 
 
 @dataclass(frozen=True)
@@ -678,7 +709,9 @@ class DocumentationEvidence:
         _text("requested_topic", self.requested_topic, limit=512)
         _optional_text("returned_topic", self.returned_topic, limit=512)
         if self.documentation_version is not None:
-            _version("documentation_version", self.documentation_version)
+            _canonical_version(
+                self.dependency.registry, "documentation_version", self.documentation_version
+            )
         _text("documentation_source", self.documentation_source)
         if len(self.citations) > _MAX_CITATIONS:
             raise DocumentationError("citations exceed the bound")
@@ -772,7 +805,12 @@ class DocumentationEvidence:
             return DocumentationStatus.AMBIGUOUS_VERSION
         if self.documentation_version is None:
             return DocumentationStatus.AMBIGUOUS_VERSION
-        if _version_identity(self.documentation_version) != _version_identity(project_version):
+        registry = request.dependency.registry
+        if _version_identity(_canonical_version(
+            registry, "documentation_version", self.documentation_version
+        )) != _version_identity(_canonical_version(
+            registry, "project version", project_version
+        )):
             return DocumentationStatus.VERSION_MISMATCH
         if self.freshness is DocumentationFreshness.STALE:
             return DocumentationStatus.STALE
@@ -976,11 +1014,16 @@ def reconcile_evidence(
             item.dependency, item.requested_topic,
         ) != identity:
             return DocumentationStatus.CONTRADICTORY
+        registry = first.dependency.registry
         if (
             item.documentation_version is None
             or first.documentation_version is None
-            or _version_identity(item.documentation_version)
-            != _version_identity(first.documentation_version)
+            or _version_identity(_canonical_version(
+                registry, "documentation version", item.documentation_version
+            ))
+            != _version_identity(_canonical_version(
+                registry, "documentation version", first.documentation_version
+            ))
         ):
             return DocumentationStatus.CONTRADICTORY
         if item.returned_topic != first.returned_topic:
