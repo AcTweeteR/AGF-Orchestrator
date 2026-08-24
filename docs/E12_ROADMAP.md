@@ -156,7 +156,7 @@ other external reality. Local reversible mutation remains governed by the
 existing worktree and delivery controls; this decision does not authorize any
 rollback or external action.
 
-### E12-T11 — Serena code-intelligence provider — Executing
+### E12-T11 — Serena code-intelligence provider — Done
 
 Source: `oraios/serena`.
 
@@ -186,6 +186,8 @@ Current implementation evidence:
 - empty scopes, malformed repository identities, traversal and non-recursive glob escapes fail closed;
 - deterministic fixture comparison measures repository paths versus evidence-selected paths;
 - no mandatory concrete-provider dependency is introduced; a concrete provider remains an optional adapter/profile under existing capability selection.
+- final review corrected empty-scope acceptance, operation/query replay, non-valid efficiency evidence, malformed repository identity, and recursive glob handling;
+- final gates: 803 full-suite tests, 39 focused boundary tests, Ruff PASS and `git diff --check` PASS; review threads resolved and CI PASS.
 
 ### E12-T12 — Governed agent/skill catalog adapter for `wshobson/agents` — Planned
 
