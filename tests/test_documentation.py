@@ -40,7 +40,7 @@ NOW = "2026-08-24T12:00:00Z"
 
 def dependency(**changes):
     value = DependencyVersionEvidence(
-        "requests", "==1.8.3", "1.8.3", "1.8.3", None,
+        "pypi", "requests", "==1.8.3", "1.8.3", "1.8.3", None,
         "poetry.lock", NOW,
     )
     return replace(value, **changes)
@@ -213,6 +213,10 @@ def test_conflicting_sources_and_provider_responses_fail_closed():
     tampered_claim["claims"][0]["assertion_value"] = "tampered"
     with pytest.raises(DocumentationError):
         evidence_from_dict(tampered_claim)
+    unavailable = evidence(
+        status=DocumentationStatus.UNAVAILABLE, documentation_version=None
+    )
+    assert unavailable.assess(request(), now=NOW) is DocumentationStatus.UNAVAILABLE
     malformed = evidence().to_dict()
     malformed["citations"] = ["not-a-citation"]
     with pytest.raises(DocumentationError):
@@ -224,6 +228,8 @@ def test_bounds_secret_safety_hash_and_authority_boundary():
         evidence(citations=(DocumentationCitation("source", "topic", "x" * 2401),))
     with pytest.raises(DocumentationError):
         evidence(citations=(DocumentationCitation("source", "topic", "api_key: leaked"),))
+    with pytest.raises(DocumentationError):
+        evidence(citations=(DocumentationCitation("source", "topic", "api key: leaked"),))
     with pytest.raises(DocumentationError):
         evidence(
             citations=tuple(
@@ -296,6 +302,8 @@ def test_repository_identity_and_binding_validation():
         request(repository_id=None, revision_sha=REVISION).validate()
     with pytest.raises(DocumentationError):
         request(repository_id=None, revision_sha=None).validate()
+    npm = request(dependency=dependency(registry="npm"))
+    assert evidence().assess(npm, now=NOW) is DocumentationStatus.DEPENDENCY_MISMATCH
 
 
 def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
@@ -363,3 +371,11 @@ def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
     assert evidence(
         dependency=both.dependency, documentation_version="1.0.0-rc.1+cpu"
     ).assess(both, now=NOW) is DocumentationStatus.VALID
+    tilde_four = request(
+        dependency=dependency(
+            declared_constraint="~1.2.3.4", locked_version=None, resolved_version="1.2.99.0"
+        )
+    )
+    assert evidence(
+        dependency=tilde_four.dependency, documentation_version="1.2.99.0"
+    ).assess(tilde_four, now=NOW) is DocumentationStatus.CONTRADICTORY

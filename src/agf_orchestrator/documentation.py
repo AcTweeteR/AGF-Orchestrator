@@ -65,7 +65,7 @@ _SHA1 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _SECRET = re.compile(
-    r"(?i)(api[_-]?key|token|secret|password|authorization)\s*[:=]|"
+    r"(?i)(api(?:[_-]|\s)?key|token|secret|password|authorization)\s*[:=]|"
     r"(?:sk-|ghp_|github_pat_|xox[baprs]-|AIza)[A-Za-z0-9_-]{12,}"
 )
 _MAX_TEXT = 4000
@@ -189,6 +189,8 @@ def _constraint_allows(constraint: str, version: str) -> bool | None:
     if normalized.startswith("~"):
         base = normalized[1:]
         _version("constraint version", base)
+        if len(base.split("-", 1)[0].split(".")) > 3:
+            return None
         base_value = _version_key(base)
         return version_value >= base_value and version_value[:2] == base_value[:2]
     terms = tuple(term.strip() for term in normalized.split(","))
@@ -214,6 +216,7 @@ def _constraint_allows(constraint: str, version: str) -> bool | None:
 
 @dataclass(frozen=True)
 class DependencyVersionEvidence:
+    registry: str
     package_id: str
     declared_constraint: str
     locked_version: str | None
@@ -226,6 +229,8 @@ class DependencyVersionEvidence:
         return self.__dict__.copy()
 
     def validate(self) -> None:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,31}", self.registry):
+            raise DocumentationError("dependency registry is invalid")
         _canonical_package(self.package_id)
         _text("declared_constraint", self.declared_constraint, limit=256)
         for label, value in (
@@ -483,6 +488,8 @@ class DocumentationEvidence:
             or self.returned_topic not in {None, request.topic}
         ):
             return DocumentationStatus.TOPIC_MISMATCH
+        if self.status is not DocumentationStatus.VALID:
+            return self.status
         try:
             project_version = request.dependency.demonstrated_version()
         except DocumentationError:
@@ -493,8 +500,6 @@ class DocumentationEvidence:
             return DocumentationStatus.AMBIGUOUS_VERSION
         if _version_identity(self.documentation_version) != _version_identity(project_version):
             return DocumentationStatus.VERSION_MISMATCH
-        if self.status is not DocumentationStatus.VALID:
-            return self.status
         if self.freshness is DocumentationFreshness.STALE:
             return DocumentationStatus.STALE
         if self.freshness is DocumentationFreshness.UNKNOWN:
