@@ -130,3 +130,4 @@ Costs and risks:
 - Treat public API catalog membership as eligibility evidence: rejected because catalog presence does not establish security, licensing, stability or policy compliance.
 - Allow MCP servers to bypass the ExternalActionExecutor for convenience: rejected because it would create a parallel mutation path.
 - Implement this in AGF Desktop: rejected because governance must remain reusable without the GUI.
+
