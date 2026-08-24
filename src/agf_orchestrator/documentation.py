@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol
 
@@ -69,6 +69,12 @@ _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _URI_USERINFO = re.compile(
     r"(?i)\b[a-z][a-z0-9+.-]{1,31}://[^/\s:@]+:[^/\s@]+@"
 )
+_URI_CREDENTIAL_QUERY = re.compile(
+    r"(?i)\b[a-z][a-z0-9+.-]{1,31}://[^\s?#]+[?&](?:"
+    r"x-amz-signature|x-amz-credential|x-amz-security-token|"
+    r"x-goog-signature|googleaccessid|signature|sig|access_token|"
+    r"oauth_token|bearer_token|api_key|client_secret)=[^&#\s]+"
+)
 _SECRET = re.compile(
     r"(?i)(aws[_-]?secret[_-]?access[_-]?key|aws[_-]?access[_-]?key[_-]?id|"
     r"secret\s+access\s+key|client\s+secret|private\s+key|"
@@ -83,12 +89,18 @@ _MAX_CLAIMS = 32
 _MAX_CLAIM_TEXT = 512
 _CLOCK_SKEW_SECONDS = 0
 _MAX_VERSION_LENGTH = 256
+_MAX_CITATION_REFS = 8
+_PROVIDER_BINDING_TTL_SECONDS = 3600
 
 
 def _text(label: str, value: Any, *, limit: int = _MAX_TEXT) -> None:
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
         raise DocumentationError(f"{label} is invalid")
-    if _SECRET.search(value) or _URI_USERINFO.search(value):
+    if (
+        _SECRET.search(value)
+        or _URI_USERINFO.search(value)
+        or _URI_CREDENTIAL_QUERY.search(value)
+    ):
         raise DocumentationError(f"{label} contains secret-shaped data")
 
 
@@ -405,6 +417,10 @@ class DocumentationClaim:
         _sha("claim_sha256", self.claim_sha256, _SHA256)
         if not self.citation_sha256s:
             raise DocumentationError("claim must cite supporting evidence")
+        if len(self.citation_sha256s) > _MAX_CITATION_REFS:
+            raise DocumentationError("claim citation references exceed the bound")
+        if len(set(self.citation_sha256s)) != len(self.citation_sha256s):
+            raise DocumentationError("claim citation references must be unique")
         for citation_sha256 in self.citation_sha256s:
             _sha("claim citation_sha256", citation_sha256, _SHA256)
         unsigned = {
@@ -520,12 +536,16 @@ def _seal_provider_binding(
     privacy_eligible: bool | None,
     network_allowed: bool | None,
 ) -> ProviderBinding:
+    decision = _timestamp("provider binding decision_at", now)
+    binding_expires_at = profile.expires_at or (
+        decision + timedelta(seconds=_PROVIDER_BINDING_TTL_SECONDS)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
     unsigned = {
         "provider_id": profile.knowledge_provider_id,
         "project_id": profile.project_id,
         "profile_sha256": profile.profile_sha256,
         "decision_at": now,
-        "expires_at": profile.expires_at,
+        "expires_at": binding_expires_at,
         "available": available,
         "authenticated": authenticated,
         "policy_authorized": policy_authorized,
@@ -538,7 +558,7 @@ def _seal_provider_binding(
     ).hexdigest()
     binding = ProviderBinding(
         profile.knowledge_provider_id, profile.project_id, profile.profile_sha256,
-        now, profile.expires_at,
+        now, binding_expires_at,
         available, authenticated, policy_authorized, privacy_eligible, network_allowed,
         digest,
     )

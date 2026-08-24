@@ -81,6 +81,7 @@ def profile(
     *, network_required=False, privacy_review_required=False,
     capabilities=("documentation",),
     provider_id="knowledge-docs",
+    expires_at="2026-08-25T12:00:00Z",
 ):
     return seal_profile(
         KnowledgeProviderProfile(
@@ -93,7 +94,7 @@ def profile(
             ),
             privacy_review_required, KnowledgeMutability.READ_ONLY,
             IntegrationStability.OFFICIAL, "fixture documentation profile", NOW,
-            "2026-08-25T12:00:00Z", "",
+            expires_at, "",
         )
     )
 
@@ -444,6 +445,21 @@ def test_compound_secret_patterns_are_bounded():
     ):
         with pytest.raises(DocumentationError):
             DocumentationCitation("source", "topic", value).validate()
+    for value in (
+        "https://bucket.example/object?X-Amz-Signature=abc123",
+        "https://bucket.example/object?X-Amz-Credential=access%2Fscope",
+        "https://bucket.example/object?sig=opaque-token",
+        "https://bucket.example/object?signature=opaque-token",
+        "https://db.example/object?access_token=opaque-token",
+    ):
+        with pytest.raises(DocumentationError):
+            DocumentationCitation("source", "topic", value).validate()
+    for value in (
+        "https://bucket.example/object?region=eu&format=json",
+        "https://bucket.example/object?significant=true",
+        "not-a-url?sig=just-text",
+    ):
+        DocumentationCitation("source", "topic", value).validate()
     for value in ("private key rotation", "client secret lifecycle", "secret access key format"):
         DocumentationCitation("source", "topic", value).validate()
     pem_headers = (
@@ -476,6 +492,35 @@ def test_claims_must_reference_existing_citations():
             "requests.timeouts.timeout_type", "float-or-none",
             citation_sha256s=("b" * 64,),
         ),)))
+    with pytest.raises(DocumentationError):
+        seal_claim(
+            "requests.timeouts.timeout_type", "float-or-none",
+            citation_sha256s=tuple("a" * 64 for _ in range(9)),
+        )
+    with pytest.raises(DocumentationError):
+        seal_claim(
+            "requests.timeouts.timeout_type", "float-or-none",
+            citation_sha256s=("a" * 64, "a" * 64),
+        )
+
+
+def test_provider_binding_without_profile_expiry_has_bounded_ttl():
+    result = resolve_provider(
+        profile(expires_at=None), project_id=PROJECT, now=NOW,
+        available=True, authenticated=True, policy_authorized=True,
+        privacy_eligible=True, network_allowed=True, required=True,
+    )
+    assert result.binding is not None
+    assert result.binding.expires_at == "2026-08-24T13:00:00Z"
+    item = evidence(
+        provider_binding_sha256=result.binding.binding_sha256,
+    )
+    bound_request = request(provider_binding=result.binding)
+    assert item.assess(bound_request, now="2026-08-24T12:59:59Z") is DocumentationStatus.VALID
+    assert (
+        item.assess(bound_request, now="2026-08-24T13:00:00Z")
+        is DocumentationStatus.PROVIDER_INELIGIBLE
+    )
 
 
 def test_persistence_restart_tamper_and_cross_session_replay(tmp_path):
