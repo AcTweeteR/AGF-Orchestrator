@@ -119,11 +119,12 @@ Delivered through PR #168.
 
 Residual follow-up is not implied to be complete by E12-T3.
 
-### E12-T10 — Session resilience, workspace trust and evidence ergonomics — PLANNED
+### E12-T10 — Session resilience, workspace trust and evidence ergonomics — Executing
 
 Inspired by `qwen-code-dev-bot/oh-my-cli`, but implemented in AGF-native form.
 
 Scope:
+- read-only `WorkspaceTrust`, doctor findings, bounded evidence archives and evidence-derived scorecards are implemented in `agf_orchestrator.resilience`;
 - compare existing AGF recovery/session/evidence behavior against `oh-my-cli`;
 - workspace trust-boundary checks preventing resumed work against the wrong repository/workspace;
 - checkpoint/recovery with explicit lineage and stale-checkpoint rejection;
@@ -139,6 +140,16 @@ Acceptance:
 - undo/redo never rewrites external reality or bypasses external-result reconciliation;
 - evidence archives are bounded, attributable, deterministic and secret-safe;
 - no `oh-my-cli` runtime dependency.
+
+Delivered evidence so far:
+- workspace identity mismatch and unverifiable identity fail closed or remain `UNKNOWN`;
+- archives are deterministic, size-bounded and reject secret-shaped evidence;
+- scorecards contain only persisted session/evidence-derived facts;
+- focused resilience tests and the full suite pass.
+
+Residual follow-up remains `Backlog`: governed undo/redo evaluation and an
+explicit CLI surface for the observational doctor/archive views. T10 must not
+be marked `Done` until those follow-ups have evidence.
 
 ### E12-T11 — Serena code-intelligence provider — PLANNED
 
