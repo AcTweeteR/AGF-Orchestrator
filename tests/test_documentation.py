@@ -164,7 +164,10 @@ def test_project_repository_revision_topic_and_stale_bindings():
     )
     assert stale.assess(request(), now=NOW) is DocumentationStatus.STALE
     old = evidence(observed_at="2026-08-24T00:00:00Z")
-    assert old.assess(request(max_age_seconds=60), now=NOW) is DocumentationStatus.STALE
+    assert (
+        old.assess(request(max_age_seconds=60), now=NOW)
+        is DocumentationStatus.PROVIDER_INELIGIBLE
+    )
 
 
 def test_future_dated_evidence_never_becomes_fresh():
@@ -368,6 +371,10 @@ def test_provider_eligibility_is_bound_to_evidence_and_fallback():
         future_evidence.assess(future_request, now=NOW)
         is DocumentationStatus.PROVIDER_INELIGIBLE
     )
+    assert (
+        future_evidence.assess(future_request, now="2026-08-24T12:00:02Z")
+        is DocumentationStatus.PROVIDER_INELIGIBLE
+    )
 
 
 def test_reconciliation_requires_semantic_claim_agreement_across_providers():
@@ -524,6 +531,13 @@ def test_provider_binding_without_profile_expiry_has_bounded_ttl():
         item.assess(bound_request, now="2026-08-24T13:00:00Z")
         is DocumentationStatus.PROVIDER_INELIGIBLE
     )
+    distant = resolve_provider(
+        profile(expires_at="2099-01-01T00:00:00Z"), project_id=PROJECT, now=NOW,
+        available=True, authenticated=True, policy_authorized=True,
+        privacy_eligible=True, network_allowed=True, required=True,
+    )
+    assert distant.binding is not None
+    assert distant.binding.expires_at == "2026-08-24T13:00:00Z"
 
 
 def test_persistence_restart_tamper_and_cross_session_replay(tmp_path):

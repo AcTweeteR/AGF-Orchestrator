@@ -549,9 +549,14 @@ def _seal_provider_binding(
     network_allowed: bool | None,
 ) -> ProviderBinding:
     decision = _timestamp("provider binding decision_at", now)
-    binding_expires_at = profile.expires_at or (
-        decision + timedelta(seconds=_PROVIDER_BINDING_TTL_SECONDS)
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ttl_expires_at = decision + timedelta(seconds=_PROVIDER_BINDING_TTL_SECONDS)
+    if profile.expires_at is None:
+        effective_expiry = ttl_expires_at
+    else:
+        effective_expiry = min(
+            ttl_expires_at, _timestamp("provider profile expires_at", profile.expires_at)
+        )
+    binding_expires_at = effective_expiry.strftime("%Y-%m-%dT%H:%M:%SZ")
     unsigned = {
         "provider_id": profile.knowledge_provider_id,
         "project_id": profile.project_id,
@@ -725,6 +730,10 @@ class DocumentationEvidence:
             or self.project_id != request.project_id
             or self.provider_id != selected_binding.provider_id
             or self.provider_binding_sha256 != selected_binding.binding_sha256
+        ):
+            return DocumentationStatus.PROVIDER_INELIGIBLE
+        if _timestamp("provider binding decision_at", selected_binding.decision_at) > _timestamp(
+            "observed_at", self.observed_at
         ):
             return DocumentationStatus.PROVIDER_INELIGIBLE
         if self.status is not DocumentationStatus.VALID:
