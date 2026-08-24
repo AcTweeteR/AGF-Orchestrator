@@ -51,14 +51,18 @@ MCP servers are modeled as optional tool/knowledge providers. Their profiles may
 
 MCP does not become an authority source. Mutating external operations remain subject to the existing external-action and policy boundaries. Credential use, browser automation, upload of project material, paid actions and privacy-sensitive transfers require the applicable existing authorization/policy evidence.
 
-A NotebookLM MCP integration may be supplied only as an optional profile/example. Its default classification is external service, network required, authenticated Google session, browser automation, unofficial integration and privacy review required. Unavailability or integration drift degrades to unavailable/UNKNOWN rather than inferred success.
+An external knowledge-provider integration may be supplied only as an optional
+profile/example. Its default classification is external service, network
+required, authenticated session, browser automation, integration provenance
+requiring review, and privacy review required. Unavailability or integration
+drift degrades to unavailable/UNKNOWN rather than inferred success.
 
 ### 5. Code-intelligence providers
 
 A code-intelligence provider may return project/repository/revision-bound
 symbols, references, relationships and bounded navigation or edit-target
-evidence. Serena is an optional implementation, not a required runtime
-dependency.
+evidence. Concrete providers are optional implementations, not required
+runtime dependencies.
 
 Code intelligence is advisory evidence only. It cannot authorize edits,
 select work, expand allowed paths, lower risk, select itself or any other
@@ -70,8 +74,8 @@ revision is stale and fails closed when code intelligence is required.
 
 A browser-validation provider may execute an explicitly planned,
 project/task/environment/test-intent-bound workflow and return bounded
-assertion, URL, step, screenshot, snapshot or log evidence. Playwright or
-Playwright MCP may be used as optional implementations.
+assertion, URL, step, screenshot, snapshot or log evidence. Browser automation
+implementations are optional and provider-neutral.
 
 Browser evidence is not authority and does not authorize mutation. Host,
 environment, account/session, authentication, privacy and network policy must

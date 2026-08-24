@@ -55,6 +55,7 @@ from .provider_intelligence import (
     build_state,
     make_profile,
 )
+from .resilience import ResilienceError, bind_workspace, build_evidence_archive, doctor
 from .reviewer import CodexReviewerAdapter, DeterministicReviewer
 from .session_manager import SessionManager, SessionManagerError, _now
 from .session_store import SessionStore, SessionStoreError
@@ -172,11 +173,13 @@ def build_parser() -> argparse.ArgumentParser:
         item.add_argument("--json", action="store_true")
     for command in (
         "show", "resume", "assess", "repair-lineage", "reconcile-external",
-        "reconcile-external-result", "reconcile-canonical", "cancel",
+        "reconcile-external-result", "reconcile-canonical", "cancel", "doctor", "archive",
     ):
         item = session_commands.add_parser(command)
         item.add_argument("--session", required=True)
         item.add_argument("--json", action="store_true")
+        if command in {"doctor", "archive"}:
+            item.add_argument("--project", required=True)
         if command == "assess":
             item.add_argument(
                 "--architect-config",
@@ -395,6 +398,33 @@ def run_session(args: argparse.Namespace) -> int:
             _output(manager.reconcile_canonical_target(args.session).to_dict(), args.json)
         elif args.session_command == "cancel":
             _output(manager.cancel(args.session).to_dict(), args.json)
+        elif args.session_command in {"doctor", "archive"}:
+            project = manager.registry.verify_read_only(args.project)
+            session = manager.get(args.session)
+            if session.project_id != project.project_id:
+                raise SessionManagerError("session does not belong to selected project")
+            if args.session_command == "archive":
+                _output(build_evidence_archive(session, manager.store), args.json)
+            else:
+                try:
+                    binding = bind_workspace(
+                        project,
+                        repository_root=project.repository_root,
+                        origin_url=project.origin_url,
+                        target_sha=project.current_head_sha,
+                    )
+                    findings = doctor(
+                        session,
+                        manager.store,
+                        binding,
+                        repository_root=project.repository_root,
+                        origin_url=project.origin_url,
+                        target_sha=project.current_head_sha,
+                        project=project,
+                    )
+                except ResilienceError:
+                    findings = doctor(session, manager.store)
+                _output([finding.to_dict() for finding in findings], args.json)
         elif args.session_command == "lock-status":
             _output(manager.lock_status(args.session), args.json)
         return 0
@@ -402,6 +432,7 @@ def run_session(args: argparse.Namespace) -> int:
         SessionManagerError,
         ProjectRegistryError,
         SessionStoreError,
+        ResilienceError,
         LockError,
         OSError,
         ValueError,
