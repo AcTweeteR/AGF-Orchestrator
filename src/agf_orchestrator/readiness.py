@@ -106,14 +106,15 @@ def evaluate_readiness(
     return ReadinessReport(tuple(checks))
 
 
-def doctor(evidence: Mapping[str, bool | None], *, details: Mapping[str, str] | None = None) -> dict[str, object]:
+def doctor(
+    evidence: Mapping[str, bool | None],
+    *,
+    details: Mapping[str, str] | None = None,
+) -> dict[str, object]:
     """Return an observational doctor report; this function performs no writes."""
     report = evaluate_readiness(evidence, details=details)
     return {
         **report.to_dict(),
-        "remediation": [
-            f"resolve:{check.name}"
-            for check in report.blockers
-        ],
+        "remediation": [f"resolve:{check.name}" for check in report.blockers],
         "authority_effect": "NONE",
     }
