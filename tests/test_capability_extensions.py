@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from agf_orchestrator import capability_extensions as ext
+import agf_orchestrator.capability_extensions as ext
 from agf_orchestrator.risk_models import RiskLevel
 
 
