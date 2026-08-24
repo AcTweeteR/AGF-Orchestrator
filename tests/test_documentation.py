@@ -174,24 +174,37 @@ def test_dependency_evidence_has_the_same_freshness_bound():
 def test_conflicting_sources_and_provider_responses_fail_closed():
     first = evidence()
     second = evidence(documentation_version="1.8.4", evidence_id="docs-evidence-2")
-    assert reconcile_evidence((first, second)) is DocumentationStatus.CONTRADICTORY
-    assert reconcile_evidence(()) is DocumentationStatus.UNAVAILABLE
+    assert (
+        reconcile_evidence((first, second), request(), now=NOW)
+        is DocumentationStatus.CONTRADICTORY
+    )
+    assert reconcile_evidence((), request(), now=NOW) is DocumentationStatus.UNAVAILABLE
     same_claim = evidence(
         evidence_id="docs-evidence-2", documentation_source="other-source"
     )
-    assert reconcile_evidence((first, same_claim)) is DocumentationStatus.VALID
+    assert reconcile_evidence((first, same_claim), request(), now=NOW) is DocumentationStatus.VALID
+    reordered = evidence(
+        evidence_id="docs-evidence-2", claims=tuple(reversed(first.claims))
+    )
+    assert reconcile_evidence((first, reordered), request(), now=NOW) is DocumentationStatus.VALID
     opposing = evidence(
         evidence_id="docs-evidence-2",
         claims=(seal_claim("requests.timeouts.timeout_type", "integer-only"),),
     )
-    assert reconcile_evidence((first, opposing)) is DocumentationStatus.CONTRADICTORY
+    assert (
+        reconcile_evidence((first, opposing), request(), now=NOW)
+        is DocumentationStatus.CONTRADICTORY
+    )
     with pytest.raises(DocumentationError):
         evidence(evidence_id="docs-evidence-2", claims=())
     stale = evidence(
         evidence_id="docs-evidence-2", status=DocumentationStatus.STALE,
         freshness=DocumentationFreshness.STALE,
     )
-    assert reconcile_evidence((first, stale)) is DocumentationStatus.CONTRADICTORY
+    assert (
+        reconcile_evidence((first, stale), request(), now=NOW)
+        is DocumentationStatus.CONTRADICTORY
+    )
     malformed = evidence().to_dict()
     malformed["documentation_version"] = "latest"
     with pytest.raises(DocumentationError):
@@ -281,6 +294,8 @@ def test_repository_identity_and_binding_validation():
         request(repository_id="github.com/example/../repository").validate()
     with pytest.raises(DocumentationError):
         request(repository_id=None, revision_sha=REVISION).validate()
+    with pytest.raises(DocumentationError):
+        request(repository_id=None, revision_sha=None).validate()
 
 
 def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
@@ -333,3 +348,18 @@ def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
     assert evidence(
         dependency=build.dependency, documentation_version="1.0.0+gpu"
     ).assess(build, now=NOW) is DocumentationStatus.VERSION_MISMATCH
+    bare = request(
+        dependency=dependency(
+            declared_constraint="1.8.3", locked_version=None, resolved_version="1.8.3"
+        )
+    )
+    assert evidence(dependency=bare.dependency).assess(bare, now=NOW) is DocumentationStatus.VALID
+    both = request(
+        dependency=dependency(
+            declared_constraint="==1.0.0-rc.1+cpu", locked_version=None,
+            resolved_version="1.0.0-rc.1+cpu",
+        )
+    )
+    assert evidence(
+        dependency=both.dependency, documentation_version="1.0.0-rc.1+cpu"
+    ).assess(both, now=NOW) is DocumentationStatus.VALID

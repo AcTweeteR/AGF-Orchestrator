@@ -255,6 +255,7 @@ Current implementation evidence:
 - version compatibility is assessed separately from freshness, with latest-versus-project-version mismatch failing closed;
 - bounded citations, excerpt secret-safety, deterministic hashes, persistence, tamper/replay checks and claim-level contradictory-source reconciliation are covered by deterministic fixtures;
 - future-dated observations, stale dependency evidence, prerelease ordering, caret ranges below 1.0 and build-identity mismatches fail closed;
+- retrieval reconciliation requires request/time-bound assessment, repository/revision binding and order-independent normalized claims;
 - existing `KnowledgeProviderProfile`, network/privacy classification and knowledge-provider eligibility are reused; no Context7 runtime dependency is introduced.
 
 ### E12-T15 — Superpowers workflow-pattern review and procedure extraction — PLANNED

@@ -58,7 +58,9 @@ class DocumentationOperation(StrEnum):
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 _PACKAGE = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]{0,127}$")
-_VERSION = re.compile(r"^\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?$")
+_VERSION = re.compile(
+    r"^\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+)
 _SHA1 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -168,10 +170,14 @@ def _constraint_allows(constraint: str, version: str) -> bool | None:
     version_value = _version_key(version)
     if normalized in {"", "*"}:
         return True
+    if _VERSION.fullmatch(normalized):
+        return _version_identity(version) == _version_identity(normalized)
     if normalized.startswith("^"):
         base = normalized[1:]
         _version("constraint version", base)
         base_value = _version_key(base)
+        if len(base.split("-", 1)[0].split(".") ) > 3:
+            return None
         numbers = base_value[:4]
         if numbers[0] > 0:
             upper = (numbers[0] + 1, 0, 0, 0, 1, ())
@@ -285,6 +291,11 @@ class DocumentationRequest:
             raise DocumentationError("max_age_seconds is invalid")
         if self.repository_id is None and self.revision_sha is not None:
             raise DocumentationError("revision requires repository binding")
+        if self.operation in {
+            DocumentationOperation.RETRIEVE_VERSIONED,
+            DocumentationOperation.RETRIEVE_TOPIC,
+        } and (self.repository_id is None or self.revision_sha is None):
+            raise DocumentationError("retrieval requires repository and revision binding")
 
 
 @dataclass(frozen=True)
@@ -407,6 +418,11 @@ class DocumentationEvidence:
             _sha("revision_sha", self.revision_sha, _SHA1)
         if self.repository_id is None and self.revision_sha is not None:
             raise DocumentationError("revision requires repository binding")
+        if self.operation in {
+            DocumentationOperation.RETRIEVE_VERSIONED,
+            DocumentationOperation.RETRIEVE_TOPIC,
+        } and (self.repository_id is None or self.revision_sha is None):
+            raise DocumentationError("retrieval requires repository and revision binding")
         if not isinstance(self.operation, DocumentationOperation):
             raise DocumentationError("operation is invalid")
         self.dependency.validate()
@@ -609,12 +625,17 @@ def resolve_provider(
     return ProviderResolution(DocumentationStatus.VALID, reason)
 
 
-def reconcile_evidence(evidence: tuple[DocumentationEvidence, ...]) -> DocumentationStatus:
+def reconcile_evidence(
+    evidence: tuple[DocumentationEvidence, ...],
+    request: DocumentationRequest,
+    *,
+    now: str,
+) -> DocumentationStatus:
     if not evidence:
         return DocumentationStatus.UNAVAILABLE
     for item in evidence:
         item.validate()
-    statuses = {item.status for item in evidence}
+    statuses = {item.assess(request, now=now) for item in evidence}
     if statuses != {DocumentationStatus.VALID}:
         return next(iter(statuses)) if len(statuses) == 1 else DocumentationStatus.CONTRADICTORY
     first = evidence[0]
@@ -632,7 +653,15 @@ def reconcile_evidence(evidence: tuple[DocumentationEvidence, ...]) -> Documenta
             return DocumentationStatus.CONTRADICTORY
         if item.returned_topic != first.returned_topic:
             return DocumentationStatus.CONTRADICTORY
-        if item.claims != first.claims:
+        first_claims = {
+            claim.assertion_key: (claim.assertion_value, claim.claim_sha256)
+            for claim in first.claims
+        }
+        item_claims = {
+            claim.assertion_key: (claim.assertion_value, claim.claim_sha256)
+            for claim in item.claims
+        }
+        if item_claims != first_claims:
             return DocumentationStatus.CONTRADICTORY
     return DocumentationStatus.VALID
 
