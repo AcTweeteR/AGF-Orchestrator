@@ -629,6 +629,7 @@ def test_unsupported_or_malformed_package_identifiers_fail_closed(registry, pack
 def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
     prerelease = request(
         dependency=dependency(
+            registry="npm",
             declared_constraint=">=2.0.0", locked_version=None, resolved_version="2.0.0-rc.1"
         )
     )
@@ -637,6 +638,7 @@ def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
     ) is DocumentationStatus.CONTRADICTORY
     beta = request(
         dependency=dependency(
+            registry="npm",
             declared_constraint=">=2.0.0-rc.1", locked_version=None, resolved_version="2.0.0-beta.2"
         )
     )
@@ -645,6 +647,7 @@ def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
     ) is DocumentationStatus.CONTRADICTORY
     final = request(
         dependency=dependency(
+            registry="npm",
             declared_constraint=">=2.0.0", locked_version=None, resolved_version="2.0.0"
         )
     )
@@ -653,6 +656,7 @@ def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
     ) is DocumentationStatus.VALID
     exact = request(
         dependency=dependency(
+            registry="npm",
             declared_constraint="==2.0.0-rc.1", locked_version=None, resolved_version="2.0.0-rc.1"
         )
     )
@@ -661,6 +665,7 @@ def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
     ) is DocumentationStatus.VALID
     caret_zero = request(
         dependency=dependency(
+            registry="npm",
             declared_constraint="^0.2.0", locked_version=None, resolved_version="0.9.0"
         )
     )
@@ -669,6 +674,7 @@ def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
     ) is DocumentationStatus.CONTRADICTORY
     build = request(
         dependency=dependency(
+            registry="npm",
             declared_constraint="==1.0.0+cpu", locked_version=None,
             resolved_version="1.0.0+cpu",
         )
@@ -678,12 +684,14 @@ def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
     ).assess(build, now=NOW) is DocumentationStatus.VERSION_MISMATCH
     bare = request(
         dependency=dependency(
+            registry="npm",
             declared_constraint="1.8.3", locked_version=None, resolved_version="1.8.3"
         )
     )
     assert evidence(dependency=bare.dependency).assess(bare, now=NOW) is DocumentationStatus.VALID
     both = request(
         dependency=dependency(
+            registry="npm",
             declared_constraint="==1.0.0-rc.1+cpu", locked_version=None,
             resolved_version="1.0.0-rc.1+cpu",
         )
@@ -693,6 +701,7 @@ def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
     ).assess(both, now=NOW) is DocumentationStatus.VALID
     tilde_four = request(
         dependency=dependency(
+            registry="npm",
             declared_constraint="~1.2.3.4", locked_version=None, resolved_version="1.2.99.0"
         )
     )
@@ -705,6 +714,7 @@ def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
 def test_undeclared_prereleases_do_not_satisfy_ranges(constraint):
     ranged = request(
         dependency=dependency(
+            registry="npm",
             declared_constraint=constraint,
             locked_version=None,
             resolved_version="1.5.0-rc.1",
@@ -718,6 +728,7 @@ def test_undeclared_prereleases_do_not_satisfy_ranges(constraint):
 def test_wildcard_range_does_not_admit_undeclared_prerelease():
     ranged = request(
         dependency=dependency(
+            registry="npm",
             declared_constraint="*", locked_version=None, resolved_version="2.0.0-rc.1"
         )
     )
@@ -729,6 +740,7 @@ def test_wildcard_range_does_not_admit_undeclared_prerelease():
 def test_explicit_prerelease_series_can_satisfy_range():
     ranged = request(
         dependency=dependency(
+            registry="npm",
             declared_constraint=">=1.0.0-rc.1,<2.0.0",
             locked_version=None,
             resolved_version="1.0.0-rc.2",
@@ -763,6 +775,7 @@ def test_valid_prerelease_and_build_version_schema():
 def test_partial_tilde_range_uses_major_upper_bound():
     ranged = request(
         dependency=dependency(
+            registry="npm",
             declared_constraint="~1", locked_version=None, resolved_version="1.2.3"
         )
     )
@@ -774,6 +787,7 @@ def test_partial_tilde_range_uses_major_upper_bound():
 def test_partial_caret_zero_major_ranges_use_semver_upper_bounds():
     major_zero = request(
         dependency=dependency(
+            registry="npm",
             declared_constraint="^0", locked_version=None, resolved_version="0.5.0"
         )
     )
@@ -782,6 +796,7 @@ def test_partial_caret_zero_major_ranges_use_semver_upper_bounds():
     ).assess(major_zero, now=NOW) is DocumentationStatus.VALID
     minor_zero = request(
         dependency=dependency(
+            registry="npm",
             declared_constraint="^0.0", locked_version=None, resolved_version="0.0.5"
         )
     )
@@ -807,6 +822,43 @@ def test_pypi_versions_use_pep440_canonicalization(version):
     assert item.demonstrated_version() == version
 
 
+@pytest.mark.parametrize(
+    ("constraint", "resolved", "expected"),
+    [("~=1.4.2", "1.4.5", DocumentationStatus.VALID),
+     ("~=1.4.2", "1.5.0", DocumentationStatus.CONTRADICTORY),
+     ("~=1.4", "1.9", DocumentationStatus.VALID),
+     ("~=bad", "1.4.5", DocumentationStatus.CONTRADICTORY)],
+)
+def test_pypi_compatible_release_specifier_uses_pep440(constraint, resolved, expected):
+    item = request(
+        dependency=dependency(
+            registry="pypi", package_id="requests", declared_constraint=constraint,
+            locked_version=None, resolved_version=resolved,
+        )
+    )
+    assert evidence(
+        dependency=item.dependency, documentation_version=resolved
+    ).assess(item, now=NOW) is expected
+
+
+def test_pypi_prerelease_opt_in_is_set_wide_not_release_core_specific():
+    item = request(
+        dependency=dependency(
+            registry="pypi", declared_constraint=">=1.0rc1,<2",
+            locked_version=None, resolved_version="1.5rc1",
+        )
+    )
+    assert evidence(
+        dependency=item.dependency, documentation_version="1.5rc1"
+    ).assess(item, now=NOW) is DocumentationStatus.VALID
+    no_opt_in = replace(item, dependency=replace(
+        item.dependency, declared_constraint=">=1,<2", resolved_version="1.5rc1"
+    ))
+    assert evidence(
+        dependency=no_opt_in.dependency, documentation_version="1.5rc1"
+    ).assess(no_opt_in, now=NOW) is DocumentationStatus.CONTRADICTORY
+
+
 @pytest.mark.parametrize("value", ["1..0", "1.0rc..1", "1" * 33 + ".0"])
 def test_pypi_malformed_versions_fail_closed(value):
     with pytest.raises(DocumentationError):
@@ -829,6 +881,35 @@ def test_maven_versions_use_bounded_qualifier_ordering():
         resolved_version="1.0.0.RC1",
     )
     assert prerelease.demonstrated_version() == "1.0.0.RC1"
+
+
+@pytest.mark.parametrize(
+    "alias, long_form", [("a2", "alpha2"), ("b2", "beta2"), ("m3", "milestone3")]
+)
+def test_maven_qualifier_aliases_have_equivalent_identity(alias, long_form):
+    left = dependency(
+        registry="maven", package_id="org.example:demo",
+        declared_constraint=f"==1.0-{alias}", locked_version=f"1.0-{alias}",
+        resolved_version=f"1.0-{alias}",
+    )
+    right = replace(left, locked_version=f"1.0-{long_form}", resolved_version=f"1.0-{long_form}")
+    assert left.demonstrated_version() == f"1.0-{alias}"
+    assert right.demonstrated_version() == f"1.0-{long_form}"
+
+
+def test_maven_alias_ordering_is_numeric_and_fail_closed_for_unknown_qualifiers():
+    before = dependency(
+        registry="maven", package_id="org.example:demo", declared_constraint=">1.0-a2",
+        locked_version="1.0-alpha1", resolved_version="1.0-alpha1",
+    )
+    with pytest.raises(DocumentationError):
+        before.demonstrated_version()
+    after = replace(before, locked_version="1.0-alpha3", resolved_version="1.0-alpha3")
+    assert after.demonstrated_version() == "1.0-alpha3"
+    with pytest.raises(DocumentationError):
+        dependency(
+            registry="maven", package_id="org.example:demo", resolved_version="1.0-unknown1"
+        ).validate()
 
 
 @pytest.mark.parametrize("value", ["1..0", "1.0.0.unknown", "1.0.0."])

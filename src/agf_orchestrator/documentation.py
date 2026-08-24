@@ -12,6 +12,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 from urllib.parse import parse_qsl, urlsplit
 
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 from .capability_extensions import (
@@ -86,6 +87,11 @@ _MAVEN_QUALIFIER_RANK = {
     "ga": 5,
     "release": 5,
     "sp": 6,
+}
+_MAVEN_QUALIFIER_ALIASES = {
+    "a": "alpha",
+    "b": "beta",
+    "m": "milestone",
 }
 _VERSION = re.compile(
     r"^[0-9]{1,32}(?:\.[0-9]{1,32}){0,3}"
@@ -205,12 +211,18 @@ def _maven_parts(label: str, value: str) -> tuple[tuple[int, ...], str | None, i
         return core, None, 5
     normalized = qualifier.casefold()
     qualifier_match = re.fullmatch(r"([a-z]+)(?:[-.]?([0-9]+))?", normalized)
-    if not qualifier_match or qualifier_match.group(1) not in _MAVEN_QUALIFIER_RANK:
+    if not qualifier_match:
         raise DocumentationError(f"{label} has unsupported Maven qualifier")
+    qualifier_root = _MAVEN_QUALIFIER_ALIASES.get(
+        qualifier_match.group(1), qualifier_match.group(1)
+    )
+    if qualifier_root not in _MAVEN_QUALIFIER_RANK:
+        raise DocumentationError(f"{label} has unsupported Maven qualifier")
+    normalized = qualifier_root + (qualifier_match.group(2) or "")
     return (
         core,
         normalized,
-        _MAVEN_QUALIFIER_RANK[qualifier_match.group(1)],
+        _MAVEN_QUALIFIER_RANK[qualifier_root],
     )
 
 
@@ -454,50 +466,19 @@ def _ecosystem_constraint_allows(
     constraint: str, version: str, registry: str
 ) -> bool | None:
     version_key = _pypi_key(version) if registry == "pypi" else _maven_key(version)
-    if registry == "pypi" and version_key.is_prerelease:
-        explicit_series = []
-        for term in constraint.split(","):
-            match = re.fullmatch(r"(?:==|=|>=|<=|>|<)?(.+)", term.strip())
-            if not match:
-                continue
-            try:
-                candidate = _pypi_key(
-                    _canonical_version("pypi", "constraint version", match.group(1))
-                )
-            except DocumentationError:
-                continue
-            if candidate.is_prerelease:
-                explicit_series.append(candidate.release[:3])
-        if version_key.release[:3] not in explicit_series:
+    if registry == "pypi":
+        if constraint in {"", "*"}:
+            return True
+        specifier = constraint
+        if re.fullmatch(r"[0-9]+(?:[.!][0-9A-Za-z-]+)*", constraint):
+            specifier = f"=={constraint}"
+        try:
+            specifiers = SpecifierSet(specifier)
+        except (InvalidSpecifier, TypeError, ValueError):
+            return None
+        if version_key.is_prerelease and specifiers.prereleases is not True:
             return False
-    if constraint in {"", "*"}:
-        return True
-    if constraint.startswith("^") and registry == "pypi":
-        base = _pypi_key(_canonical_version("pypi", "constraint version", constraint[1:]))
-        components = constraint[1:].split(".")
-        if len(components) > 3:
-            return None
-        if len(components) == 1:
-            upper = Version(f"{base.release[0] + 1}.0.0")
-        elif base.release[0] > 0:
-            upper = Version(f"{base.release[0] + 1}.0.0")
-        elif len(components) == 2 and base.release[1] > 0:
-            upper = Version(f"0.{base.release[1] + 1}.0")
-        elif len(components) == 2:
-            upper = Version("0.1.0")
-        else:
-            upper = Version(f"0.0.{base.release[2] + 1}")
-        return version_key >= base and version_key < upper
-    if constraint.startswith("~") and registry == "pypi":
-        raw_base = constraint[1:]
-        base = _pypi_key(_canonical_version("pypi", "constraint version", raw_base))
-        if len(raw_base.split(".")) > 3:
-            return None
-        if len(raw_base.split(".")) == 1:
-            upper = Version(f"{base.release[0] + 1}.0.0")
-        else:
-            upper = Version(f"{base.release[0]}.{base.release[1] + 1}.0")
-        return version_key >= base and version_key < upper
+        return specifiers.contains(version_key, prereleases=True)
     if constraint.startswith(("^", "~")):
         return None
     for term in (term.strip() for term in constraint.split(",")):
