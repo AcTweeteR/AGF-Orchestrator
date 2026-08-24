@@ -163,6 +163,14 @@ def test_future_dated_evidence_never_becomes_fresh():
     assert exact.assess(request(max_age_seconds=0), now=NOW) is DocumentationStatus.VALID
 
 
+def test_dependency_evidence_has_the_same_freshness_bound():
+    old_dependency = request(
+        dependency=dependency(observed_at="2026-08-24T00:00:00Z")
+    )
+    item = evidence(dependency=old_dependency.dependency)
+    assert item.assess(old_dependency, now=NOW) is DocumentationStatus.STALE
+
+
 def test_conflicting_sources_and_provider_responses_fail_closed():
     first = evidence()
     second = evidence(documentation_version="1.8.4", evidence_id="docs-evidence-2")
@@ -308,3 +316,20 @@ def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
     assert evidence(dependency=exact.dependency, documentation_version="2.0.0-rc.1").assess(
         exact, now=NOW
     ) is DocumentationStatus.VALID
+    caret_zero = request(
+        dependency=dependency(
+            declared_constraint="^0.2.0", locked_version=None, resolved_version="0.9.0"
+        )
+    )
+    assert evidence(dependency=caret_zero.dependency, documentation_version="0.9.0").assess(
+        caret_zero, now=NOW
+    ) is DocumentationStatus.CONTRADICTORY
+    build = request(
+        dependency=dependency(
+            declared_constraint="==1.0.0+cpu", locked_version=None,
+            resolved_version="1.0.0+cpu",
+        )
+    )
+    assert evidence(
+        dependency=build.dependency, documentation_version="1.0.0+gpu"
+    ).assess(build, now=NOW) is DocumentationStatus.VERSION_MISMATCH

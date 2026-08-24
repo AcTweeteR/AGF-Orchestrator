@@ -102,7 +102,7 @@ def _version(label: str, value: Any) -> None:
 
 def _version_key(value: str) -> tuple[Any, ...]:
     match = re.fullmatch(
-        r"(\d+(?:\.\d+){0,3})(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?",
+        r"(\d+(?:\.\d+){0,3})(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?",
         value,
     )
     if not match:
@@ -117,6 +117,17 @@ def _version_key(value: str) -> tuple[Any, ...]:
             raise DocumentationError("version prerelease is invalid")
         identifiers.append((0, int(identifier)) if identifier.isdigit() else (1, identifier))
     return numbers + (0,) * (4 - len(numbers)) + (0, tuple(identifiers))
+
+
+def _version_identity(value: str) -> tuple[Any, str]:
+    _version_key(value)
+    match = re.fullmatch(
+        r"\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?(?:\+([0-9A-Za-z.-]+))?",
+        value,
+    )
+    if match is None:
+        raise DocumentationError("version is invalid")
+    return _version_key(value), match.group(1) or ""
 
 
 def _canonical_package(value: Any) -> None:
@@ -161,7 +172,14 @@ def _constraint_allows(constraint: str, version: str) -> bool | None:
         base = normalized[1:]
         _version("constraint version", base)
         base_value = _version_key(base)
-        return version_value >= base_value and version_value[0] == base_value[0]
+        numbers = base_value[:4]
+        if numbers[0] > 0:
+            upper = (numbers[0] + 1, 0, 0, 0, 1, ())
+        elif numbers[1] > 0:
+            upper = (0, numbers[1] + 1, 0, 0, 1, ())
+        else:
+            upper = (0, 0, numbers[2] + 1, 0, 1, ())
+        return version_value >= base_value and version_value < upper
     if normalized.startswith("~"):
         base = normalized[1:]
         _version("constraint version", base)
@@ -175,7 +193,7 @@ def _constraint_allows(constraint: str, version: str) -> bool | None:
         operator, operand = match.groups()
         _version("constraint version", operand)
         operand_value = _version_key(operand)
-        if operator in {"=", "=="} and version_value != operand_value:
+        if operator in {"=", "=="} and _version_identity(version) != _version_identity(operand):
             return False
         if operator == ">=" and version_value < operand_value:
             return False
@@ -227,7 +245,7 @@ class DependencyVersionEvidence:
         )
         if not values:
             return None
-        if len({_version_key(value) for value in values}) != 1:
+        if len({_version_identity(value) for value in values}) != 1:
             raise DocumentationError("dependency version sources contradict")
         allowed = _constraint_allows(self.declared_constraint, values[0])
         if allowed is not True:
@@ -457,7 +475,7 @@ class DocumentationEvidence:
             return DocumentationStatus.AMBIGUOUS_VERSION
         if self.documentation_version is None:
             return DocumentationStatus.AMBIGUOUS_VERSION
-        if _version_key(self.documentation_version) != _version_key(project_version):
+        if _version_identity(self.documentation_version) != _version_identity(project_version):
             return DocumentationStatus.VERSION_MISMATCH
         if self.status is not DocumentationStatus.VALID:
             return self.status
@@ -475,6 +493,8 @@ class DocumentationEvidence:
         if observed_age < -_CLOCK_SKEW_SECONDS or dependency_age < -_CLOCK_SKEW_SECONDS:
             return DocumentationStatus.FUTURE_DATED
         if observed_age > request.max_age_seconds:
+            return DocumentationStatus.STALE
+        if dependency_age > request.max_age_seconds:
             return DocumentationStatus.STALE
         return DocumentationStatus.VALID
 
