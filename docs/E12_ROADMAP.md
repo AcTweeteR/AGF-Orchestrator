@@ -181,8 +181,9 @@ Acceptance:
 
 Current implementation evidence:
 - symbol, definition, references, navigation and bounded edit-target operations are represented as evidence, without direct editing;
-- project, canonical repository, revision/index revision and provenance bindings are hash-validated;
+- project, canonical repository, revision/index revision, requested operation/query and provenance bindings are hash-validated;
 - stale, ambiguous, unavailable, malformed, mismatched and path-blocked outcomes remain distinct;
+- empty scopes, malformed repository identities, traversal and non-recursive glob escapes fail closed;
 - deterministic fixture comparison measures repository paths versus evidence-selected paths;
 - no mandatory concrete-provider dependency is introduced; a concrete provider remains an optional adapter/profile under existing capability selection.
 

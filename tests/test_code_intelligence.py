@@ -72,8 +72,26 @@ def test_revision_project_repository_and_path_bindings_fail_closed():
         item.assess(request(repository_id="github.com/other/repository"))
         is IntelligenceStatus.MISMATCHED_REPOSITORY
     )
+    assert (
+        item.assess(request(operation=IntelligenceOperation.REFERENCES))
+        is IntelligenceStatus.MISMATCHED_OPERATION
+    )
+    assert item.assess(request(query="Other")) is IntelligenceStatus.MISMATCHED_QUERY
     outside = seal(replace(item, locations=(CodeLocation("tests/test.py", 1, 1),)))
     assert outside.assess(request()) is IntelligenceStatus.BLOCKED_PATH
+
+
+def test_recursive_glob_is_segment_safe_and_repository_identity_is_canonical():
+    nested = seal(replace(evidence(), locations=(CodeLocation("src/lib/deep.py", 1, 1),)))
+    assert nested.assess(request(allowed_paths=("src/**/*.py",))) is IntelligenceStatus.VALID
+    assert nested.assess(request(allowed_paths=("src/*.py",))) is IntelligenceStatus.BLOCKED_PATH
+    with pytest.raises(CodeIntelligenceError):
+        request(repository_id="not-a-canonical-repository").validate()
+
+
+def test_missing_allowed_path_scope_fails_closed():
+    with pytest.raises(CodeIntelligenceError):
+        request(allowed_paths=()).validate()
 
 
 def test_ambiguity_stale_and_malformed_evidence_are_distinct():
@@ -98,6 +116,10 @@ def test_duplicate_conflicting_and_oversized_results_rejected():
         compare_efficiency(
             ("src/widget.py",),
             replace(item, locations=(CodeLocation("missing.py", 1, 1),)),
+        )
+    with pytest.raises(CodeIntelligenceError):
+        compare_efficiency(
+            ("src/widget.py",), evidence(status=IntelligenceStatus.STALE),
         )
 
 

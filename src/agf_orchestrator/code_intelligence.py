@@ -11,6 +11,7 @@ import json
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
@@ -20,6 +21,7 @@ from .capability_selection import (
     SelectionGates,
     SelectionResult,
 )
+from .remote_identity import RemoteIdentityError, canonical_remote_identity
 from .session_store import SessionStore, SessionStoreError
 
 
@@ -37,6 +39,8 @@ class IntelligenceStatus(StrEnum):
     MISMATCHED_PROJECT = "MISMATCHED_PROJECT"
     MISMATCHED_REPOSITORY = "MISMATCHED_REPOSITORY"
     MISMATCHED_REVISION = "MISMATCHED_REVISION"
+    MISMATCHED_OPERATION = "MISMATCHED_OPERATION"
+    MISMATCHED_QUERY = "MISMATCHED_QUERY"
     UNSUPPORTED_CAPABILITY = "UNSUPPORTED_CAPABILITY"
     BLOCKED_PATH = "BLOCKED_PATH"
 
@@ -79,6 +83,39 @@ def _relative_path(value: Any) -> None:
 def _sha(label: str, value: Any, pattern: re.Pattern[str]) -> None:
     if not isinstance(value, str) or not pattern.fullmatch(value):
         raise CodeIntelligenceError(f"{label} is invalid")
+
+
+def _repository_id(value: Any) -> None:
+    _text("repository_id", value)
+    try:
+        candidate = value if "://" in value or value.startswith("file:") else f"https://{value}"
+        if canonical_remote_identity(candidate) != value:
+            raise CodeIntelligenceError("repository_id must be canonical")
+    except (RemoteIdentityError, CodeIntelligenceError) as exc:
+        if isinstance(exc, CodeIntelligenceError):
+            raise
+        raise CodeIntelligenceError("repository_id is malformed") from exc
+
+
+def _path_matches(path: str, pattern: str) -> bool:
+    path_parts = PurePosixPath(path).parts
+    pattern_parts = PurePosixPath(pattern).parts
+
+    def match(path_index: int, pattern_index: int) -> bool:
+        if pattern_index == len(pattern_parts):
+            return path_index == len(path_parts)
+        part = pattern_parts[pattern_index]
+        if part == "**":
+            return match(path_index, pattern_index + 1) or (
+                path_index < len(path_parts) and match(path_index + 1, pattern_index)
+            )
+        return (
+            path_index < len(path_parts)
+            and fnmatchcase(path_parts[path_index], part)
+            and match(path_index + 1, pattern_index + 1)
+        )
+
+    return match(0, 0)
 
 
 class CodeIntelligenceProvider(Protocol):
@@ -131,11 +168,13 @@ class CodeIntelligenceRequest:
     def validate(self) -> None:
         if not _ID.fullmatch(self.project_id) or not self.project_id.startswith("project-"):
             raise CodeIntelligenceError("project_id is invalid")
-        _text("repository_id", self.repository_id)
+        _repository_id(self.repository_id)
         _sha("revision_sha", self.revision_sha, _SHA1)
         if not isinstance(self.operation, IntelligenceOperation):
             raise CodeIntelligenceError("operation is invalid")
         _text("query", self.query)
+        if not isinstance(self.allowed_paths, tuple) or not self.allowed_paths:
+            raise CodeIntelligenceError("allowed_paths must be a non-empty tuple")
         for path in self.allowed_paths:
             _relative_path(path)
 
@@ -184,7 +223,7 @@ class CodeIntelligenceEvidence:
             raise CodeIntelligenceError("provider_id is invalid")
         if not _ID.fullmatch(self.project_id) or not self.project_id.startswith("project-"):
             raise CodeIntelligenceError("project_id is invalid")
-        _text("repository_id", self.repository_id)
+        _repository_id(self.repository_id)
         _sha("revision_sha", self.revision_sha, _SHA1)
         if self.index_revision_sha is not None:
             _sha("index_revision_sha", self.index_revision_sha, _SHA1)
@@ -224,13 +263,17 @@ class CodeIntelligenceEvidence:
             return IntelligenceStatus.MISMATCHED_REPOSITORY
         if self.revision_sha != request.revision_sha:
             return IntelligenceStatus.MISMATCHED_REVISION
+        if self.operation is not request.operation:
+            return IntelligenceStatus.MISMATCHED_OPERATION
+        if self.query != request.query:
+            return IntelligenceStatus.MISMATCHED_QUERY
         if self.status is not IntelligenceStatus.VALID:
             return self.status
         def allowed(path: str, pattern: str) -> bool:
             return (
                 path == pattern
                 or path.startswith(pattern.rstrip("/") + "/")
-                or PurePosixPath(path).match(pattern)
+                or _path_matches(path, pattern)
             )
 
         if request.allowed_paths and any(
@@ -346,6 +389,8 @@ def compare_efficiency(
     repository_paths: tuple[str, ...], evidence: CodeIntelligenceEvidence
 ) -> EfficiencyComparison:
     evidence.validate()
+    if evidence.status is not IntelligenceStatus.VALID:
+        raise CodeIntelligenceError("efficiency requires valid intelligence evidence")
     selected = {location.path for location in evidence.locations}
     if not selected.issubset(set(repository_paths)):
         raise CodeIntelligenceError(
