@@ -59,13 +59,17 @@ class DocumentationOperation(StrEnum):
 _ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 _PACKAGE = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]{0,127}$")
 _VERSION = re.compile(
-    r"^\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+    r"^\d+(?:\.\d+){0,3}"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 _SHA1 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _SECRET = re.compile(
-    r"(?i)(api(?:[_-]|\s)?key|token|secret|password|authorization)\s*[:=]|"
+    r"(?i)(aws[_-]?secret[_-]?access[_-]?key|aws[_-]?access[_-]?key[_-]?id|"
+    r"secret\s+access\s+key|client\s+secret|private\s+key|"
+    r"api(?:[_-]|\s)?key|token|secret|password|authorization)\s*[:=]|"
     r"(?:sk-|ghp_|github_pat_|xox[baprs]-|AIza)[A-Za-z0-9_-]{12,}"
 )
 _MAX_TEXT = 4000
@@ -100,11 +104,13 @@ def _timestamp(label: str, value: Any) -> datetime:
 def _version(label: str, value: Any) -> None:
     if not isinstance(value, str) or not _VERSION.fullmatch(value):
         raise DocumentationError(f"{label} is invalid")
+    _version_key(value)
 
 
 def _version_key(value: str) -> tuple[Any, ...]:
     match = re.fullmatch(
-        r"(\d+(?:\.\d+){0,3})(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?",
+        r"(\d+(?:\.\d+){0,3})(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+        r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?",
         value,
     )
     if not match:
@@ -115,8 +121,8 @@ def _version_key(value: str) -> tuple[Any, ...]:
         return numbers + (0,) * (4 - len(numbers)) + (1, ())
     identifiers = []
     for identifier in prerelease.split("."):
-        if not identifier:
-            raise DocumentationError("version prerelease is invalid")
+        if identifier.isdigit() and len(identifier) > 1 and identifier.startswith("0"):
+            raise DocumentationError("version prerelease numeric identifier is invalid")
         identifiers.append((0, int(identifier)) if identifier.isdigit() else (1, identifier))
     return numbers + (0,) * (4 - len(numbers)) + (0, tuple(identifiers))
 
@@ -276,6 +282,7 @@ class DocumentationRequest:
     dependency: DependencyVersionEvidence
     topic: str
     max_age_seconds: int
+    provider_binding: "ProviderBinding | None" = None
 
     def validate(self) -> None:
         if not _ID.fullmatch(self.project_id) or not self.project_id.startswith("project-"):
@@ -286,6 +293,8 @@ class DocumentationRequest:
         if not isinstance(self.operation, DocumentationOperation):
             raise DocumentationError("operation is invalid")
         self.dependency.validate()
+        if self.provider_binding is not None:
+            self.provider_binding.validate()
         _text("topic", self.topic, limit=512)
         if (
             not isinstance(self.max_age_seconds, int)
@@ -369,10 +378,53 @@ class DocumentationProvider(Protocol):
 
 
 @dataclass(frozen=True)
+class ProviderBinding:
+    """Sealed identity of the provider eligibility decision used by evidence."""
+
+    provider_id: str
+    profile_sha256: str
+    binding_sha256: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "provider_id": self.provider_id,
+            "profile_sha256": self.profile_sha256,
+            "binding_sha256": self.binding_sha256,
+        }
+
+    def validate(self) -> None:
+        if not _ID.fullmatch(self.provider_id):
+            raise DocumentationError("provider binding provider_id is invalid")
+        _sha("provider binding profile_sha256", self.profile_sha256, _SHA256)
+        _sha("provider binding binding_sha256", self.binding_sha256, _SHA256)
+        unsigned = {**self.to_dict(), "binding_sha256": ""}
+        expected = hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if self.binding_sha256 != expected:
+            raise DocumentationError("provider binding hash does not match content")
+
+
+def _seal_provider_binding(profile: KnowledgeProviderProfile) -> ProviderBinding:
+    unsigned = {
+        "provider_id": profile.knowledge_provider_id,
+        "profile_sha256": profile.profile_sha256,
+        "binding_sha256": "",
+    }
+    digest = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    binding = ProviderBinding(profile.knowledge_provider_id, profile.profile_sha256, digest)
+    binding.validate()
+    return binding
+
+
+@dataclass(frozen=True)
 class DocumentationEvidence:
     schema_version: str
     evidence_id: str
     provider_id: str
+    provider_binding_sha256: str
     project_id: str
     repository_id: str | None
     revision_sha: str | None
@@ -394,6 +446,7 @@ class DocumentationEvidence:
             "schema_version": self.schema_version,
             "evidence_id": self.evidence_id,
             "provider_id": self.provider_id,
+            "provider_binding_sha256": self.provider_binding_sha256,
             "project_id": self.project_id,
             "repository_id": self.repository_id,
             "revision_sha": self.revision_sha,
@@ -416,6 +469,7 @@ class DocumentationEvidence:
             raise DocumentationError("evidence identity is invalid")
         if not _ID.fullmatch(self.provider_id):
             raise DocumentationError("provider_id is invalid")
+        _sha("provider_binding_sha256", self.provider_binding_sha256, _SHA256)
         if not _ID.fullmatch(self.project_id) or not self.project_id.startswith("project-"):
             raise DocumentationError("project_id is invalid")
         _repository_identity(self.repository_id)
@@ -469,7 +523,13 @@ class DocumentationEvidence:
         if self.evidence_sha256 != _hash_payload(self.to_dict()):
             raise DocumentationError("evidence_sha256 does not match content")
 
-    def assess(self, request: DocumentationRequest, *, now: str) -> DocumentationStatus:
+    def assess(
+        self,
+        request: DocumentationRequest,
+        *,
+        now: str,
+        provider_binding: ProviderBinding | None = None,
+    ) -> DocumentationStatus:
         self.validate()
         request.validate()
         _timestamp("assessment now", now)
@@ -488,6 +548,18 @@ class DocumentationEvidence:
             or self.returned_topic not in {None, request.topic}
         ):
             return DocumentationStatus.TOPIC_MISMATCH
+        selected_binding = provider_binding or request.provider_binding
+        if selected_binding is None:
+            return DocumentationStatus.PROVIDER_INELIGIBLE
+        try:
+            selected_binding.validate()
+        except DocumentationError:
+            return DocumentationStatus.PROVIDER_INELIGIBLE
+        if (
+            self.provider_id != selected_binding.provider_id
+            or self.provider_binding_sha256 != selected_binding.binding_sha256
+        ):
+            return DocumentationStatus.PROVIDER_INELIGIBLE
         if self.status is not DocumentationStatus.VALID:
             return self.status
         try:
@@ -536,15 +608,25 @@ def evidence_from_dict(payload: dict[str, Any]) -> DocumentationEvidence:
     try:
         dependency = DependencyVersionEvidence(**payload["dependency"])
         evidence = DocumentationEvidence(
-            payload["schema_version"], payload["evidence_id"], payload["provider_id"],
-            payload["project_id"], payload["repository_id"], payload["revision_sha"],
-            DocumentationOperation(payload["operation"]), dependency,
-            payload["requested_topic"], payload["returned_topic"],
-            payload["documentation_version"], payload["documentation_source"],
-            tuple(DocumentationCitation(**item) for item in payload["citations"]),
-            tuple(DocumentationClaim(**item) for item in payload["claims"]),
-            payload["observed_at"], DocumentationFreshness(payload["freshness"]),
-            DocumentationStatus(payload["status"]), payload["evidence_sha256"],
+            schema_version=payload["schema_version"],
+            evidence_id=payload["evidence_id"],
+            provider_id=payload["provider_id"],
+            provider_binding_sha256=payload["provider_binding_sha256"],
+            project_id=payload["project_id"],
+            repository_id=payload["repository_id"],
+            revision_sha=payload["revision_sha"],
+            operation=DocumentationOperation(payload["operation"]),
+            dependency=dependency,
+            requested_topic=payload["requested_topic"],
+            returned_topic=payload["returned_topic"],
+            documentation_version=payload["documentation_version"],
+            documentation_source=payload["documentation_source"],
+            citations=tuple(DocumentationCitation(**item) for item in payload["citations"]),
+            claims=tuple(DocumentationClaim(**item) for item in payload["claims"]),
+            observed_at=payload["observed_at"],
+            freshness=DocumentationFreshness(payload["freshness"]),
+            status=DocumentationStatus(payload["status"]),
+            evidence_sha256=payload["evidence_sha256"],
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise DocumentationError("documentation structure is invalid") from exc
@@ -585,6 +667,7 @@ def load_evidence(
 class ProviderResolution:
     status: DocumentationStatus
     reason: str
+    binding: ProviderBinding | None = None
 
 
 def resolve_provider(
@@ -627,7 +710,7 @@ def resolve_provider(
             return ProviderResolution(DocumentationStatus.UNAVAILABLE, reason)
         return ProviderResolution(DocumentationStatus.PROVIDER_INELIGIBLE, reason)
     reason = "eligible" if required else "optional-eligible"
-    return ProviderResolution(DocumentationStatus.VALID, reason)
+    return ProviderResolution(DocumentationStatus.VALID, reason, _seal_provider_binding(profile))
 
 
 def reconcile_evidence(
@@ -635,12 +718,25 @@ def reconcile_evidence(
     request: DocumentationRequest,
     *,
     now: str,
+    provider_bindings: tuple[ProviderBinding, ...] = (),
 ) -> DocumentationStatus:
     if not evidence:
         return DocumentationStatus.UNAVAILABLE
     for item in evidence:
         item.validate()
-    statuses = {item.assess(request, now=now) for item in evidence}
+    bindings = {binding.binding_sha256: binding for binding in provider_bindings}
+    statuses = {
+        (
+            DocumentationStatus.PROVIDER_INELIGIBLE
+            if provider_bindings and item.provider_binding_sha256 not in bindings
+            else item.assess(
+                request,
+                now=now,
+                provider_binding=bindings.get(item.provider_binding_sha256),
+            )
+        )
+        for item in evidence
+    }
     if statuses != {DocumentationStatus.VALID}:
         return next(iter(statuses)) if len(statuses) == 1 else DocumentationStatus.CONTRADICTORY
     first = evidence[0]

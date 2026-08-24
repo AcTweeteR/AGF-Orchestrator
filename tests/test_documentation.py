@@ -20,6 +20,7 @@ from agf_orchestrator.documentation import (
     DocumentationOperation,
     DocumentationRequest,
     DocumentationStatus,
+    ProviderBinding,
     evidence_from_dict,
     latest_is_unsafe_for_project,
     load_evidence,
@@ -49,14 +50,15 @@ def dependency(**changes):
 def request(**changes):
     value = DocumentationRequest(
         PROJECT, REPOSITORY, REVISION, DocumentationOperation.RETRIEVE_TOPIC,
-        dependency(), "timeouts", 3600,
+        dependency(), "timeouts", 3600, DEFAULT_BINDING,
     )
     return replace(value, **changes)
 
 
 def evidence(**changes):
     value = DocumentationEvidence(
-        "1.0", "docs-evidence-1", "knowledge-docs", PROJECT, REPOSITORY,
+        "1.0", "docs-evidence-1", "knowledge-docs", DEFAULT_BINDING.binding_sha256,
+        PROJECT, REPOSITORY,
         REVISION, DocumentationOperation.RETRIEVE_TOPIC, dependency(), "timeouts",
         "timeouts", "1.8.3", "fixture-docs",
         (
@@ -73,10 +75,11 @@ def evidence(**changes):
 def profile(
     *, network_required=False, privacy_review_required=False,
     capabilities=("documentation",),
+    provider_id="knowledge-docs",
 ):
     return seal_profile(
         KnowledgeProviderProfile(
-            "1.0", "knowledge-docs", PROJECT, 1, KnowledgeTransport.STDIO,
+            "1.0", provider_id, PROJECT, 1, KnowledgeTransport.STDIO,
             capabilities, False, False, network_required, False,
             (
                 PrivacyClassification.EXTERNAL_PUBLIC
@@ -88,6 +91,13 @@ def profile(
             "2026-08-25T12:00:00Z", "",
         )
     )
+
+
+DEFAULT_BINDING = resolve_provider(
+    profile(), project_id=PROJECT, now=NOW, available=True, authenticated=True,
+    policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
+).binding
+assert isinstance(DEFAULT_BINDING, ProviderBinding)
 
 
 def test_exact_version_is_valid_and_latest_major_is_rejected():
@@ -248,7 +258,9 @@ def test_provider_required_optional_network_privacy_and_capability_gates():
         project_id=PROJECT, now=NOW, available=True, authenticated=True,
         policy_authorized=True, privacy_eligible=True, network_allowed=True,
     )
-    assert resolve_provider(profile(), required=True, **kwargs).status is DocumentationStatus.VALID
+    eligible = resolve_provider(profile(), required=True, **kwargs)
+    assert eligible.status is DocumentationStatus.VALID
+    assert eligible.binding is not None
     assert resolve_provider(profile(), required=False, **kwargs).status is DocumentationStatus.VALID
     assert (
         resolve_provider(profile(), required=True, **{**kwargs, "available": False}).status
@@ -274,6 +286,105 @@ def test_provider_required_optional_network_privacy_and_capability_gates():
         resolve_provider(profile(capabilities=("citations",)), required=True, **kwargs).status
         is DocumentationStatus.PROVIDER_INELIGIBLE
     )
+
+
+def binding_for(provider_id):
+    result = resolve_provider(
+        profile(provider_id=provider_id), project_id=PROJECT, now=NOW,
+        available=True, authenticated=True, policy_authorized=True,
+        privacy_eligible=True, network_allowed=True, required=True,
+    )
+    assert result.binding is not None
+    return result.binding
+
+
+def test_provider_eligibility_is_bound_to_evidence_and_fallback():
+    binding_a = binding_for("knowledge-provider-a")
+    binding_b = binding_for("knowledge-provider-b")
+    request_a = request(provider_binding=binding_a)
+    assert evidence(
+        provider_id=binding_a.provider_id,
+        provider_binding_sha256=binding_a.binding_sha256,
+    ).assess(request_a, now=NOW) is DocumentationStatus.VALID
+    evidence_b = evidence(
+        provider_id=binding_b.provider_id,
+        provider_binding_sha256=binding_b.binding_sha256,
+    )
+    assert evidence_b.assess(request_a, now=NOW) is DocumentationStatus.PROVIDER_INELIGIBLE
+    blocked_b = resolve_provider(
+        profile(provider_id=binding_b.provider_id), project_id=PROJECT, now=NOW,
+        available=True, authenticated=True, policy_authorized=False,
+        privacy_eligible=True, network_allowed=True, required=True,
+    )
+    assert blocked_b.binding is None
+    assert (
+        evidence_b.assess(request(provider_binding=None), now=NOW)
+        is DocumentationStatus.PROVIDER_INELIGIBLE
+    )
+    request_b = request(provider_binding=binding_b)
+    assert evidence_b.assess(request_b, now=NOW) is DocumentationStatus.VALID
+    assert evidence(
+        provider_id=binding_a.provider_id,
+        provider_binding_sha256=binding_a.binding_sha256,
+    ).assess(request_b, now=NOW) is DocumentationStatus.PROVIDER_INELIGIBLE
+    tampered = evidence().to_dict()
+    tampered["provider_id"] = "knowledge-provider-b"
+    with pytest.raises(DocumentationError):
+        evidence_from_dict(tampered)
+
+
+def test_reconciliation_requires_semantic_claim_agreement_across_providers():
+    binding_a = binding_for("knowledge-provider-a")
+    binding_b = binding_for("knowledge-provider-b")
+    first = evidence(
+        provider_id=binding_a.provider_id,
+        provider_binding_sha256=binding_a.binding_sha256,
+    )
+    second = evidence(
+        evidence_id="docs-evidence-2",
+        provider_id=binding_b.provider_id,
+        provider_binding_sha256=binding_b.binding_sha256,
+        documentation_source=first.documentation_source,
+    )
+    assert (
+        reconcile_evidence(
+            (first, second), request(provider_binding=binding_a), now=NOW,
+            provider_bindings=(binding_a, binding_b),
+        ) is DocumentationStatus.VALID
+    )
+    opposing = replace(
+        second,
+        claims=(seal_claim("requests.timeouts.timeout_type", "integer-only"),),
+    )
+    opposing = seal(opposing)
+    assert (
+        reconcile_evidence(
+            (first, opposing), request(provider_binding=binding_a), now=NOW,
+            provider_bindings=(binding_a, binding_b),
+        ) is DocumentationStatus.CONTRADICTORY
+    )
+    same_topic = replace(second, claims=(seal_claim("requests.timeouts.unit", "seconds"),))
+    same_topic = seal(same_topic)
+    assert (
+        reconcile_evidence(
+            (first, same_topic), request(provider_binding=binding_a), now=NOW,
+            provider_bindings=(binding_a, binding_b),
+        ) is DocumentationStatus.CONTRADICTORY
+    )
+
+
+def test_compound_secret_patterns_are_bounded():
+    for value in (
+        "AWS_SECRET_ACCESS_KEY=leaked",
+        "AWS_ACCESS_KEY_ID: leaked",
+        "secret access key: leaked",
+        "client secret: leaked",
+        "private key: leaked",
+    ):
+        with pytest.raises(DocumentationError):
+            DocumentationCitation("source", "topic", value).validate()
+    for value in ("private key rotation", "client secret lifecycle", "secret access key format"):
+        DocumentationCitation("source", "topic", value).validate()
 
 
 def test_persistence_restart_tamper_and_cross_session_replay(tmp_path):
@@ -379,3 +490,16 @@ def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
     assert evidence(
         dependency=tilde_four.dependency, documentation_version="1.2.99.0"
     ).assess(tilde_four, now=NOW) is DocumentationStatus.CONTRADICTORY
+
+
+@pytest.mark.parametrize("value", [
+    "1.8.3-rc..1", "1.8.3-.rc1", "1.8.3-rc1.", "1.8.3+",
+    "1.8.3-rc..1+build", "1.8.3-rc1+..build",
+])
+def test_malformed_prerelease_and_build_versions_rejected_before_assessment(value):
+    with pytest.raises(DocumentationError):
+        dependency(resolved_version=value).validate()
+
+
+def test_valid_prerelease_and_build_version_schema():
+    dependency(resolved_version="1.8.3-rc.1+build.7").validate()
