@@ -157,13 +157,15 @@ other external reality. Local reversible mutation remains governed by the
 existing worktree and delivery controls; this decision does not authorize any
 rollback or external action.
 
-### E12-T11 — Serena code-intelligence provider — Planned
+### E12-T11 — Serena code-intelligence provider — Executing
 
 Source: `oraios/serena`.
 
 Objective: let eligible providers obtain symbol/reference-aware repository intelligence and precise edit targets without making Serena an authority source.
 
 Scope:
+- provider-neutral advisory evidence boundary implemented in `agf_orchestrator.code_intelligence`;
+- persistence reuses `SessionStore` artifacts; provider eligibility reuses `CapabilityProfile` and `CapabilitySelector`;
 - define a provider-neutral `CodeIntelligenceProvider` capability boundary;
 - optional Serena adapter/profile;
 - operations such as symbol lookup, reference discovery and bounded code-navigation evidence;
@@ -177,6 +179,13 @@ Acceptance:
 - stale/indexed-against-wrong-revision intelligence cannot authorize current work;
 - missing/ambiguous symbol evidence fails closed where required;
 - disposable comparison shows reduced unnecessary file/context loading without weakening correctness gates.
+
+Current implementation evidence:
+- symbol, definition, references, navigation and bounded edit-target operations are represented as evidence, without direct editing;
+- project, canonical repository, revision/index revision and provenance bindings are hash-validated;
+- stale, ambiguous, unavailable, malformed, mismatched and path-blocked outcomes remain distinct;
+- deterministic fixture comparison measures repository paths versus evidence-selected paths;
+- no mandatory concrete-provider dependency is introduced; a concrete provider remains an optional adapter/profile under existing capability selection.
 
 ### E12-T12 — Governed agent/skill catalog adapter for `wshobson/agents` — Planned
 
@@ -318,4 +327,3 @@ E12 is complete only when:
 - CRITICAL boundaries remain `HUMAN_REQUIRED` where policy requires;
 - no new authority source, parallel policy engine, scheduler, credential store, merge path or audit-truth store has been introduced;
 - disposable end-to-end canaries prove fail-closed behavior across procedures, providers, code intelligence, documentation and browser validation.
-
