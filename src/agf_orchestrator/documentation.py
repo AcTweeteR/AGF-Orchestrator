@@ -59,9 +59,9 @@ class DocumentationOperation(StrEnum):
 _ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 _PACKAGE = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]{0,127}$")
 _VERSION = re.compile(
-    r"^\d+(?:\.\d+){0,3}"
-    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
-    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+    r"^[0-9]{1,32}(?:\.[0-9]{1,32}){0,3}"
+    r"(?:-[0-9A-Za-z-]{1,64}(?:\.[0-9A-Za-z-]{1,64})*)?"
+    r"(?:\+[0-9A-Za-z-]{1,64}(?:\.[0-9A-Za-z-]{1,64})*)?$"
 )
 _SHA1 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -70,6 +70,7 @@ _SECRET = re.compile(
     r"(?i)(aws[_-]?secret[_-]?access[_-]?key|aws[_-]?access[_-]?key[_-]?id|"
     r"secret\s+access\s+key|client\s+secret|private\s+key|"
     r"api(?:[_-]|\s)?key|token|secret|password|authorization)\s*[:=]|"
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|"
     r"(?:sk-|ghp_|github_pat_|xox[baprs]-|AIza)[A-Za-z0-9_-]{12,}"
 )
 _MAX_TEXT = 4000
@@ -78,6 +79,7 @@ _MAX_EXCERPT = 2400
 _MAX_CLAIMS = 32
 _MAX_CLAIM_TEXT = 512
 _CLOCK_SKEW_SECONDS = 0
+_MAX_VERSION_LENGTH = 256
 
 
 def _text(label: str, value: Any, *, limit: int = _MAX_TEXT) -> None:
@@ -102,20 +104,30 @@ def _timestamp(label: str, value: Any) -> datetime:
 
 
 def _version(label: str, value: Any) -> None:
-    if not isinstance(value, str) or not _VERSION.fullmatch(value):
+    if (
+        not isinstance(value, str)
+        or len(value) > _MAX_VERSION_LENGTH
+        or not _VERSION.fullmatch(value)
+    ):
         raise DocumentationError(f"{label} is invalid")
     _version_key(value)
 
 
 def _version_key(value: str) -> tuple[Any, ...]:
+    if not isinstance(value, str) or len(value) > _MAX_VERSION_LENGTH:
+        raise DocumentationError("version is invalid")
     match = re.fullmatch(
-        r"(\d+(?:\.\d+){0,3})(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
-        r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?",
+        r"([0-9]{1,32}(?:\.[0-9]{1,32}){0,3})"
+        r"(?:-([0-9A-Za-z-]{1,64}(?:\.[0-9A-Za-z-]{1,64})*))?"
+        r"(?:\+([0-9A-Za-z-]{1,64}(?:\.[0-9A-Za-z-]{1,64})*))?",
         value,
     )
     if not match:
         raise DocumentationError("version is invalid")
-    numbers = tuple(int(item) for item in match.group(1).split("."))
+    try:
+        numbers = tuple(int(item) for item in match.group(1).split("."))
+    except (TypeError, ValueError) as exc:
+        raise DocumentationError("version numeric component is invalid") from exc
     prerelease = match.group(2)
     if not prerelease:
         return numbers + (0,) * (4 - len(numbers)) + (1, ())
@@ -123,19 +135,21 @@ def _version_key(value: str) -> tuple[Any, ...]:
     for identifier in prerelease.split("."):
         if identifier.isdigit() and len(identifier) > 1 and identifier.startswith("0"):
             raise DocumentationError("version prerelease numeric identifier is invalid")
-        identifiers.append((0, int(identifier)) if identifier.isdigit() else (1, identifier))
+        if identifier.isdigit():
+            try:
+                numeric_identifier = int(identifier)
+            except ValueError as exc:
+                raise DocumentationError("version prerelease identifier is invalid") from exc
+            identifiers.append((0, numeric_identifier))
+        else:
+            identifiers.append((1, identifier))
     return numbers + (0,) * (4 - len(numbers)) + (0, tuple(identifiers))
 
 
 def _version_identity(value: str) -> tuple[Any, str]:
     _version_key(value)
-    match = re.fullmatch(
-        r"\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?(?:\+([0-9A-Za-z.-]+))?",
-        value,
-    )
-    if match is None:
-        raise DocumentationError("version is invalid")
-    return _version_key(value), match.group(1) or ""
+    build = value.partition("+")[2]
+    return _version_key(value), build
 
 
 def _canonical_package(value: Any) -> None:
@@ -182,13 +196,18 @@ def _constraint_allows(constraint: str, version: str) -> bool | None:
         base = normalized[1:]
         _version("constraint version", base)
         base_value = _version_key(base)
-        if len(base.split("-", 1)[0].split(".") ) > 3:
+        components = len(base.split("-", 1)[0].split("."))
+        if components > 3:
             return None
         numbers = base_value[:4]
         if numbers[0] > 0:
             upper = (numbers[0] + 1, 0, 0, 0, 1, ())
+        elif components == 1:
+            upper = (1, 0, 0, 0, 1, ())
         elif numbers[1] > 0:
             upper = (0, numbers[1] + 1, 0, 0, 1, ())
+        elif components == 2:
+            upper = (0, 1, 0, 0, 1, ())
         else:
             upper = (0, 0, numbers[2] + 1, 0, 1, ())
         return version_value >= base_value and version_value < upper
@@ -412,6 +431,7 @@ class ProviderBinding:
     """Sealed identity of the provider eligibility decision used by evidence."""
 
     provider_id: str
+    project_id: str
     profile_sha256: str
     decision_at: str
     expires_at: str | None
@@ -425,6 +445,7 @@ class ProviderBinding:
     def to_dict(self) -> dict[str, str]:
         return {
             "provider_id": self.provider_id,
+            "project_id": self.project_id,
             "profile_sha256": self.profile_sha256,
             "decision_at": self.decision_at,
             "expires_at": self.expires_at,
@@ -439,8 +460,12 @@ class ProviderBinding:
     def validate(self, *, now: str | None = None) -> None:
         if not _ID.fullmatch(self.provider_id):
             raise DocumentationError("provider binding provider_id is invalid")
+        if not _ID.fullmatch(self.project_id) or not self.project_id.startswith("project-"):
+            raise DocumentationError("provider binding project_id is invalid")
         _sha("provider binding profile_sha256", self.profile_sha256, _SHA256)
-        _timestamp("provider binding decision_at", self.decision_at)
+        decision = _timestamp("provider binding decision_at", self.decision_at)
+        if now is not None and decision > _timestamp("provider binding now", now):
+            raise DocumentationError("provider binding is future-dated")
         if self.expires_at is not None:
             expiry = _timestamp("provider binding expires_at", self.expires_at)
             if expiry <= _timestamp("provider binding decision_at", self.decision_at):
@@ -474,6 +499,7 @@ def _seal_provider_binding(
 ) -> ProviderBinding:
     unsigned = {
         "provider_id": profile.knowledge_provider_id,
+        "project_id": profile.project_id,
         "profile_sha256": profile.profile_sha256,
         "decision_at": now,
         "expires_at": profile.expires_at,
@@ -488,7 +514,8 @@ def _seal_provider_binding(
         json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     binding = ProviderBinding(
-        profile.knowledge_provider_id, profile.profile_sha256, now, profile.expires_at,
+        profile.knowledge_provider_id, profile.project_id, profile.profile_sha256,
+        now, profile.expires_at,
         available, authenticated, policy_authorized, privacy_eligible, network_allowed,
         digest,
     )
@@ -639,7 +666,9 @@ class DocumentationEvidence:
         except DocumentationError:
             return DocumentationStatus.PROVIDER_INELIGIBLE
         if (
-            self.provider_id != selected_binding.provider_id
+            self.project_id != selected_binding.project_id
+            or self.project_id != request.project_id
+            or self.provider_id != selected_binding.provider_id
             or self.provider_binding_sha256 != selected_binding.binding_sha256
         ):
             return DocumentationStatus.PROVIDER_INELIGIBLE
@@ -851,16 +880,21 @@ def reconcile_evidence(
             item.dependency, item.requested_topic,
         ) != identity:
             return DocumentationStatus.CONTRADICTORY
-        if item.documentation_version != first.documentation_version:
+        if (
+            item.documentation_version is None
+            or first.documentation_version is None
+            or _version_identity(item.documentation_version)
+            != _version_identity(first.documentation_version)
+        ):
             return DocumentationStatus.CONTRADICTORY
         if item.returned_topic != first.returned_topic:
             return DocumentationStatus.CONTRADICTORY
         first_claims = {
-            claim.assertion_key: (claim.assertion_value, claim.claim_sha256)
+            claim.assertion_key: claim.assertion_value
             for claim in first.claims
         }
         item_claims = {
-            claim.assertion_key: (claim.assertion_value, claim.claim_sha256)
+            claim.assertion_key: claim.assertion_value
             for claim in item.claims
         }
         if item_claims != first_claims:

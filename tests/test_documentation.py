@@ -343,6 +343,26 @@ def test_provider_eligibility_is_bound_to_evidence_and_fallback():
         evidence().assess(request(), now="2026-08-26T12:00:00Z")
         is DocumentationStatus.PROVIDER_INELIGIBLE
     )
+    cross_project = request(project_id="project-other", provider_binding=DEFAULT_BINDING)
+    cross_project_evidence = evidence(project_id="project-other")
+    assert (
+        cross_project_evidence.assess(cross_project, now=NOW)
+        is DocumentationStatus.PROVIDER_INELIGIBLE
+    )
+    future_resolution = resolve_provider(
+        profile(), project_id=PROJECT, now="2026-08-24T12:00:01Z",
+        available=True, authenticated=True, policy_authorized=True,
+        privacy_eligible=True, network_allowed=True, required=True,
+    )
+    assert future_resolution.binding is not None
+    future_request = request(provider_binding=future_resolution.binding)
+    future_evidence = evidence(
+        provider_binding_sha256=future_resolution.binding.binding_sha256,
+    )
+    assert (
+        future_evidence.assess(future_request, now=NOW)
+        is DocumentationStatus.PROVIDER_INELIGIBLE
+    )
 
 
 def test_reconciliation_requires_semantic_claim_agreement_across_providers():
@@ -392,6 +412,22 @@ def test_reconciliation_requires_semantic_claim_agreement_across_providers():
             provider_bindings=(binding_a, binding_b),
         ) is DocumentationStatus.CONTRADICTORY
     )
+    alternate_citation = DocumentationCitation("other-source", "timeouts", "same fact")
+    corroborating = replace(
+        second,
+        citations=(alternate_citation,),
+        claims=(seal_claim(
+            "requests.timeouts.timeout_type", "float-or-none",
+            citation_sha256s=(citation_sha256(alternate_citation),),
+        ),),
+    )
+    corroborating = seal(corroborating)
+    assert (
+        reconcile_evidence(
+            (first, corroborating), request(provider_binding=binding_a), now=NOW,
+            provider_bindings=(binding_a, binding_b),
+        ) is DocumentationStatus.VALID
+    )
 
 
 def test_compound_secret_patterns_are_bounded():
@@ -406,6 +442,15 @@ def test_compound_secret_patterns_are_bounded():
             DocumentationCitation("source", "topic", value).validate()
     for value in ("private key rotation", "client secret lifecycle", "secret access key format"):
         DocumentationCitation("source", "topic", value).validate()
+    pem_headers = (
+        "-----BEGIN " + "PRIVATE KEY-----",
+        "-----BEGIN RSA " + "PRIVATE KEY-----",
+        "-----BEGIN OPENSSH " + "PRIVATE KEY-----",
+    )
+    for header in pem_headers:
+        value = header + "\nmaterial\n" + header.replace("BEGIN", "END")
+        with pytest.raises(DocumentationError):
+            DocumentationCitation("source", "topic", value).validate()
 
 
 def test_claims_must_reference_existing_citations():
@@ -530,6 +575,14 @@ def test_malformed_prerelease_and_build_versions_rejected_before_assessment(valu
         dependency(resolved_version=value).validate()
 
 
+def test_hostile_numeric_version_lengths_fail_closed():
+    oversized_component = "1" * 33 + ".0.0"
+    with pytest.raises(DocumentationError):
+        dependency(resolved_version=oversized_component).validate()
+    with pytest.raises(DocumentationError):
+        dependency(resolved_version="9" * 5000).validate()
+
+
 def test_valid_prerelease_and_build_version_schema():
     dependency(resolved_version="1.8.3-rc.1+build.7").validate()
 
@@ -543,3 +596,28 @@ def test_partial_tilde_range_uses_major_upper_bound():
     assert evidence(
         dependency=ranged.dependency, documentation_version="1.2.3"
     ).assess(ranged, now=NOW) is DocumentationStatus.VALID
+
+
+def test_partial_caret_zero_major_ranges_use_semver_upper_bounds():
+    major_zero = request(
+        dependency=dependency(
+            declared_constraint="^0", locked_version=None, resolved_version="0.5.0"
+        )
+    )
+    assert evidence(
+        dependency=major_zero.dependency, documentation_version="0.5.0"
+    ).assess(major_zero, now=NOW) is DocumentationStatus.VALID
+    minor_zero = request(
+        dependency=dependency(
+            declared_constraint="^0.0", locked_version=None, resolved_version="0.0.5"
+        )
+    )
+    assert evidence(
+        dependency=minor_zero.dependency, documentation_version="0.0.5"
+    ).assess(minor_zero, now=NOW) is DocumentationStatus.VALID
+
+
+def test_reconciliation_uses_normalized_documentation_version_identity():
+    first = evidence(documentation_version="1.8.3")
+    second = evidence(evidence_id="docs-evidence-2", documentation_version="1.8.3.0")
+    assert reconcile_evidence((first, second), request(), now=NOW) is DocumentationStatus.VALID
