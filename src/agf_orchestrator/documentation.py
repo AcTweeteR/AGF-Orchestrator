@@ -208,13 +208,13 @@ def _constraint_allows(constraint: str, version: str) -> bool | None:
     """Evaluate the small, deterministic constraint subset used by fixtures."""
     normalized = constraint.strip()
     version_value = _version_key(version)
-    if normalized in {"", "*"}:
-        return True
     if _VERSION.fullmatch(normalized):
         return _version_identity(version) == _version_identity(normalized)
     if "-" in version.partition("+")[0]:
         if _version_key(version)[:4] not in _explicit_prerelease_cores(normalized):
             return False
+    if normalized in {"", "*"}:
+        return True
     if normalized.startswith("^"):
         base = normalized[1:]
         _version("constraint version", base)
@@ -741,6 +741,12 @@ def evidence_from_dict(payload: dict[str, Any]) -> DocumentationEvidence:
     if not isinstance(payload, dict) or set(payload) != expected:
         raise DocumentationError("documentation schema is missing or contains unknown fields")
     try:
+        claim_fields = {"assertion_key", "assertion_value", "claim_sha256", "citation_sha256s"}
+        if any(
+            not isinstance(item, dict) or set(item) != claim_fields
+            for item in payload["claims"]
+        ):
+            raise DocumentationError("claim schema is missing or contains unknown fields")
         dependency = DependencyVersionEvidence(**payload["dependency"])
         evidence = DocumentationEvidence(
             schema_version=payload["schema_version"],

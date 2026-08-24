@@ -227,6 +227,10 @@ def test_conflicting_sources_and_provider_responses_fail_closed():
     malformed["documentation_version"] = "latest"
     with pytest.raises(DocumentationError):
         evidence_from_dict(malformed)
+    unknown_claim_field = evidence().to_dict()
+    unknown_claim_field["claims"][0]["unexpected"] = "tampered"
+    with pytest.raises(DocumentationError):
+        evidence_from_dict(unknown_claim_field)
     tampered_claim = evidence().to_dict()
     tampered_claim["claims"][0]["assertion_value"] = "tampered"
     with pytest.raises(DocumentationError):
@@ -590,6 +594,17 @@ def test_undeclared_prereleases_do_not_satisfy_ranges(constraint):
     )
     assert evidence(
         dependency=ranged.dependency, documentation_version="1.5.0-rc.1"
+    ).assess(ranged, now=NOW) is DocumentationStatus.CONTRADICTORY
+
+
+def test_wildcard_range_does_not_admit_undeclared_prerelease():
+    ranged = request(
+        dependency=dependency(
+            declared_constraint="*", locked_version=None, resolved_version="2.0.0-rc.1"
+        )
+    )
+    assert evidence(
+        dependency=ranged.dependency, documentation_version="2.0.0-rc.1"
     ).assess(ranged, now=NOW) is DocumentationStatus.CONTRADICTORY
 
 
