@@ -195,10 +195,16 @@ def _constraint_allows(constraint: str, version: str) -> bool | None:
     if normalized.startswith("~"):
         base = normalized[1:]
         _version("constraint version", base)
-        if len(base.split("-", 1)[0].split(".")) > 3:
+        components = len(base.split("-", 1)[0].split("."))
+        if components > 3:
             return None
         base_value = _version_key(base)
-        return version_value >= base_value and version_value[:2] == base_value[:2]
+        numbers = base_value[:4]
+        if components == 1:
+            upper = (numbers[0] + 1, 0, 0, 0, 1, ())
+        else:
+            upper = (numbers[0], numbers[1] + 1, 0, 0, 1, ())
+        return version_value >= base_value and version_value < upper
     terms = tuple(term.strip() for term in normalized.split(","))
     for term in terms:
         match = re.fullmatch(r"(==|=|>=|<=|>|<)(.+)", term)
@@ -327,6 +333,13 @@ class DocumentationCitation:
         _text("citation excerpt", self.excerpt, limit=_MAX_EXCERPT)
 
 
+def citation_sha256(citation: DocumentationCitation) -> str:
+    citation.validate()
+    return hashlib.sha256(
+        json.dumps(citation.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 @dataclass(frozen=True)
 class DocumentationClaim:
     """Bounded normalized assertion; prose is never interpreted as a claim."""
@@ -334,18 +347,29 @@ class DocumentationClaim:
     assertion_key: str
     assertion_value: str
     claim_sha256: str
+    citation_sha256s: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, str]:
-        return self.__dict__.copy()
+        return {
+            "assertion_key": self.assertion_key,
+            "assertion_value": self.assertion_value,
+            "claim_sha256": self.claim_sha256,
+            "citation_sha256s": list(self.citation_sha256s),
+        }
 
     def validate(self) -> None:
         _text("claim assertion_key", self.assertion_key, limit=_MAX_CLAIM_TEXT)
         _text("claim assertion_value", self.assertion_value, limit=_MAX_CLAIM_TEXT)
         _sha("claim_sha256", self.claim_sha256, _SHA256)
+        if not self.citation_sha256s:
+            raise DocumentationError("claim must cite supporting evidence")
+        for citation_sha256 in self.citation_sha256s:
+            _sha("claim citation_sha256", citation_sha256, _SHA256)
         unsigned = {
             "assertion_key": self.assertion_key,
             "assertion_value": self.assertion_value,
             "claim_sha256": "",
+            "citation_sha256s": list(self.citation_sha256s),
         }
         expected = hashlib.sha256(
             json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
@@ -354,16 +378,22 @@ class DocumentationClaim:
             raise DocumentationError("claim_sha256 does not match content")
 
 
-def seal_claim(assertion_key: str, assertion_value: str) -> DocumentationClaim:
+def seal_claim(
+    assertion_key: str,
+    assertion_value: str,
+    *,
+    citation_sha256s: tuple[str, ...],
+) -> DocumentationClaim:
     unsigned = {
         "assertion_key": assertion_key,
         "assertion_value": assertion_value,
         "claim_sha256": "",
+        "citation_sha256s": list(citation_sha256s),
     }
     digest = hashlib.sha256(
         json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    claim = DocumentationClaim(assertion_key, assertion_value, digest)
+    claim = DocumentationClaim(assertion_key, assertion_value, digest, citation_sha256s)
     claim.validate()
     return claim
 
@@ -383,20 +413,47 @@ class ProviderBinding:
 
     provider_id: str
     profile_sha256: str
+    decision_at: str
+    expires_at: str | None
+    available: bool
+    authenticated: bool
+    policy_authorized: bool
+    privacy_eligible: bool | None
+    network_allowed: bool | None
     binding_sha256: str
 
     def to_dict(self) -> dict[str, str]:
         return {
             "provider_id": self.provider_id,
             "profile_sha256": self.profile_sha256,
+            "decision_at": self.decision_at,
+            "expires_at": self.expires_at,
+            "available": self.available,
+            "authenticated": self.authenticated,
+            "policy_authorized": self.policy_authorized,
+            "privacy_eligible": self.privacy_eligible,
+            "network_allowed": self.network_allowed,
             "binding_sha256": self.binding_sha256,
         }
 
-    def validate(self) -> None:
+    def validate(self, *, now: str | None = None) -> None:
         if not _ID.fullmatch(self.provider_id):
             raise DocumentationError("provider binding provider_id is invalid")
         _sha("provider binding profile_sha256", self.profile_sha256, _SHA256)
-        _sha("provider binding binding_sha256", self.binding_sha256, _SHA256)
+        _timestamp("provider binding decision_at", self.decision_at)
+        if self.expires_at is not None:
+            expiry = _timestamp("provider binding expires_at", self.expires_at)
+            if expiry <= _timestamp("provider binding decision_at", self.decision_at):
+                raise DocumentationError("provider binding expiry is invalid")
+            if now is not None and _timestamp("provider binding now", now) >= expiry:
+                raise DocumentationError("provider binding has expired")
+        for label, value in (
+            ("available", self.available),
+            ("authenticated", self.authenticated),
+            ("policy_authorized", self.policy_authorized),
+        ):
+            if value is not True:
+                raise DocumentationError(f"provider binding {label} is not eligible")
         unsigned = {**self.to_dict(), "binding_sha256": ""}
         expected = hashlib.sha256(
             json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
@@ -405,16 +462,36 @@ class ProviderBinding:
             raise DocumentationError("provider binding hash does not match content")
 
 
-def _seal_provider_binding(profile: KnowledgeProviderProfile) -> ProviderBinding:
+def _seal_provider_binding(
+    profile: KnowledgeProviderProfile,
+    *,
+    now: str,
+    available: bool,
+    authenticated: bool,
+    policy_authorized: bool,
+    privacy_eligible: bool | None,
+    network_allowed: bool | None,
+) -> ProviderBinding:
     unsigned = {
         "provider_id": profile.knowledge_provider_id,
         "profile_sha256": profile.profile_sha256,
+        "decision_at": now,
+        "expires_at": profile.expires_at,
+        "available": available,
+        "authenticated": authenticated,
+        "policy_authorized": policy_authorized,
+        "privacy_eligible": privacy_eligible,
+        "network_allowed": network_allowed,
         "binding_sha256": "",
     }
     digest = hashlib.sha256(
         json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    binding = ProviderBinding(profile.knowledge_provider_id, profile.profile_sha256, digest)
+    binding = ProviderBinding(
+        profile.knowledge_provider_id, profile.profile_sha256, now, profile.expires_at,
+        available, authenticated, policy_authorized, privacy_eligible, network_allowed,
+        digest,
+    )
     binding.validate()
     return binding
 
@@ -494,6 +571,10 @@ class DocumentationEvidence:
             raise DocumentationError("citations exceed the bound")
         for citation in self.citations:
             citation.validate()
+        citation_hashes = {
+            citation_sha256(citation)
+            for citation in self.citations
+        }
         if sum(len(item.excerpt) for item in self.citations) > 16_000:
             raise DocumentationError("citation excerpts exceed the aggregate bound")
         if len(self.claims) > _MAX_CLAIMS:
@@ -501,6 +582,8 @@ class DocumentationEvidence:
         claim_keys = set()
         for claim in self.claims:
             claim.validate()
+            if not set(claim.citation_sha256s).issubset(citation_hashes):
+                raise DocumentationError("claim cites unknown evidence")
             if claim.assertion_key in claim_keys:
                 raise DocumentationError("claim assertion keys must be unique")
             claim_keys.add(claim.assertion_key)
@@ -552,7 +635,7 @@ class DocumentationEvidence:
         if selected_binding is None:
             return DocumentationStatus.PROVIDER_INELIGIBLE
         try:
-            selected_binding.validate()
+            selected_binding.validate(now=now)
         except DocumentationError:
             return DocumentationStatus.PROVIDER_INELIGIBLE
         if (
@@ -622,7 +705,13 @@ def evidence_from_dict(payload: dict[str, Any]) -> DocumentationEvidence:
             documentation_version=payload["documentation_version"],
             documentation_source=payload["documentation_source"],
             citations=tuple(DocumentationCitation(**item) for item in payload["citations"]),
-            claims=tuple(DocumentationClaim(**item) for item in payload["claims"]),
+            claims=tuple(
+                DocumentationClaim(
+                    item["assertion_key"], item["assertion_value"],
+                    item["claim_sha256"], tuple(item["citation_sha256s"]),
+                )
+                for item in payload["claims"]
+            ),
             observed_at=payload["observed_at"],
             freshness=DocumentationFreshness(payload["freshness"]),
             status=DocumentationStatus(payload["status"]),
@@ -710,7 +799,19 @@ def resolve_provider(
             return ProviderResolution(DocumentationStatus.UNAVAILABLE, reason)
         return ProviderResolution(DocumentationStatus.PROVIDER_INELIGIBLE, reason)
     reason = "eligible" if required else "optional-eligible"
-    return ProviderResolution(DocumentationStatus.VALID, reason, _seal_provider_binding(profile))
+    return ProviderResolution(
+        DocumentationStatus.VALID,
+        reason,
+        _seal_provider_binding(
+            profile,
+            now=now,
+            available=available is True,
+            authenticated=authenticated is True,
+            policy_authorized=policy_authorized is True,
+            privacy_eligible=privacy_eligible,
+            network_allowed=network_allowed,
+        ),
+    )
 
 
 def reconcile_evidence(

@@ -21,6 +21,7 @@ from agf_orchestrator.documentation import (
     DocumentationRequest,
     DocumentationStatus,
     ProviderBinding,
+    citation_sha256,
     evidence_from_dict,
     latest_is_unsafe_for_project,
     load_evidence,
@@ -56,17 +57,21 @@ def request(**changes):
 
 
 def evidence(**changes):
+    citation = DocumentationCitation(
+        "https://docs.example/requests/1.8.3", "timeouts", "timeout parameter"
+    )
     value = DocumentationEvidence(
         "1.0", "docs-evidence-1", "knowledge-docs", DEFAULT_BINDING.binding_sha256,
         PROJECT, REPOSITORY,
         REVISION, DocumentationOperation.RETRIEVE_TOPIC, dependency(), "timeouts",
         "timeouts", "1.8.3", "fixture-docs",
+        (citation,),
         (
-            DocumentationCitation(
-                "https://docs.example/requests/1.8.3", "timeouts", "timeout parameter"
+            seal_claim(
+                "requests.timeouts.timeout_type", "float-or-none",
+                citation_sha256s=(citation_sha256(citation),),
             ),
         ),
-        (seal_claim("requests.timeouts.timeout_type", "float-or-none"),),
         NOW, DocumentationFreshness.FRESH, DocumentationStatus.VALID, "",
     )
     return seal(replace(value, **changes))
@@ -199,7 +204,10 @@ def test_conflicting_sources_and_provider_responses_fail_closed():
     assert reconcile_evidence((first, reordered), request(), now=NOW) is DocumentationStatus.VALID
     opposing = evidence(
         evidence_id="docs-evidence-2",
-        claims=(seal_claim("requests.timeouts.timeout_type", "integer-only"),),
+        claims=(seal_claim(
+            "requests.timeouts.timeout_type", "integer-only",
+            citation_sha256s=(citation_sha256(first.citations[0]),),
+        ),),
     )
     assert (
         reconcile_evidence((first, opposing), request(), now=NOW)
@@ -331,6 +339,10 @@ def test_provider_eligibility_is_bound_to_evidence_and_fallback():
     tampered["provider_id"] = "knowledge-provider-b"
     with pytest.raises(DocumentationError):
         evidence_from_dict(tampered)
+    assert (
+        evidence().assess(request(), now="2026-08-26T12:00:00Z")
+        is DocumentationStatus.PROVIDER_INELIGIBLE
+    )
 
 
 def test_reconciliation_requires_semantic_claim_agreement_across_providers():
@@ -354,7 +366,10 @@ def test_reconciliation_requires_semantic_claim_agreement_across_providers():
     )
     opposing = replace(
         second,
-        claims=(seal_claim("requests.timeouts.timeout_type", "integer-only"),),
+        claims=(seal_claim(
+            "requests.timeouts.timeout_type", "integer-only",
+            citation_sha256s=(citation_sha256(second.citations[0]),),
+        ),),
     )
     opposing = seal(opposing)
     assert (
@@ -363,7 +378,13 @@ def test_reconciliation_requires_semantic_claim_agreement_across_providers():
             provider_bindings=(binding_a, binding_b),
         ) is DocumentationStatus.CONTRADICTORY
     )
-    same_topic = replace(second, claims=(seal_claim("requests.timeouts.unit", "seconds"),))
+    same_topic = replace(
+        second,
+        claims=(seal_claim(
+            "requests.timeouts.unit", "seconds",
+            citation_sha256s=(citation_sha256(second.citations[0]),),
+        ),),
+    )
     same_topic = seal(same_topic)
     assert (
         reconcile_evidence(
@@ -385,6 +406,14 @@ def test_compound_secret_patterns_are_bounded():
             DocumentationCitation("source", "topic", value).validate()
     for value in ("private key rotation", "client secret lifecycle", "secret access key format"):
         DocumentationCitation("source", "topic", value).validate()
+
+
+def test_claims_must_reference_existing_citations():
+    with pytest.raises(DocumentationError):
+        seal(evidence(claims=(seal_claim(
+            "requests.timeouts.timeout_type", "float-or-none",
+            citation_sha256s=("b" * 64,),
+        ),)))
 
 
 def test_persistence_restart_tamper_and_cross_session_replay(tmp_path):
@@ -503,3 +532,14 @@ def test_malformed_prerelease_and_build_versions_rejected_before_assessment(valu
 
 def test_valid_prerelease_and_build_version_schema():
     dependency(resolved_version="1.8.3-rc.1+build.7").validate()
+
+
+def test_partial_tilde_range_uses_major_upper_bound():
+    ranged = request(
+        dependency=dependency(
+            declared_constraint="~1", locked_version=None, resolved_version="1.2.3"
+        )
+    )
+    assert evidence(
+        dependency=ranged.dependency, documentation_version="1.2.3"
+    ).assess(ranged, now=NOW) is DocumentationStatus.VALID
