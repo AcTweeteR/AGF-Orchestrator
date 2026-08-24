@@ -119,11 +119,12 @@ Delivered through PR #168.
 
 Residual follow-up is not implied to be complete by E12-T3.
 
-### E12-T10 — Session resilience, workspace trust and evidence ergonomics — PLANNED
+### E12-T10 — Session resilience, workspace trust and evidence ergonomics — Done
 
 Inspired by `qwen-code-dev-bot/oh-my-cli`, but implemented in AGF-native form.
 
 Scope:
+- read-only `WorkspaceTrust`, doctor findings, bounded evidence archives and evidence-derived scorecards are implemented in `agf_orchestrator.resilience`;
 - compare existing AGF recovery/session/evidence behavior against `oh-my-cli`;
 - workspace trust-boundary checks preventing resumed work against the wrong repository/workspace;
 - checkpoint/recovery with explicit lineage and stale-checkpoint rejection;
@@ -140,7 +141,23 @@ Acceptance:
 - evidence archives are bounded, attributable, deterministic and secret-safe;
 - no `oh-my-cli` runtime dependency.
 
-### E12-T11 — Serena code-intelligence provider — PLANNED
+Delivered evidence so far:
+- workspace identity mismatch and unverifiable identity fail closed or remain `UNKNOWN`;
+- archives are deterministic, size-bounded and reject secret-shaped evidence;
+- scorecards contain only persisted session/evidence-derived facts;
+- focused resilience and CLI tests pass;
+- `session doctor` and `session archive` are read-only, project/session-bound
+  and machine-readable with `--json`.
+
+Undo/redo evaluation: `NO_JUSTIFIED_IMPLEMENTATION` is the current bounded
+decision. AGF already has Git/worktree isolation, immutable artifacts and
+external-result reconciliation. A second undo/redo store would duplicate Git,
+could obscure remote provenance, and could not reverse pushes, PRs, merges or
+other external reality. Local reversible mutation remains governed by the
+existing worktree and delivery controls; this decision does not authorize any
+rollback or external action.
+
+### E12-T11 — Serena code-intelligence provider — Planned
 
 Source: `oraios/serena`.
 
@@ -161,7 +178,7 @@ Acceptance:
 - missing/ambiguous symbol evidence fails closed where required;
 - disposable comparison shows reduced unnecessary file/context loading without weakening correctness gates.
 
-### E12-T12 — Governed agent/skill catalog adapter for `wshobson/agents` — PLANNED
+### E12-T12 — Governed agent/skill catalog adapter for `wshobson/agents` — Planned
 
 Objective: treat large third-party agent/skill collections as candidate procedure sources, never as trusted autonomous roles.
 
@@ -180,7 +197,7 @@ Acceptance:
 - no repository-wide bulk import becomes automatically selectable;
 - no runtime dependency on `wshobson/agents`.
 
-### E12-T13 — Playwright browser/real-workflow validation provider — PLANNED
+### E12-T13 — Playwright browser/real-workflow validation provider — Planned
 
 Source: `microsoft/playwright-mcp` and/or a provider-neutral Playwright adapter.
 
@@ -202,7 +219,7 @@ Acceptance:
 - failed/partial workflows produce failure/UNKNOWN, never inferred success;
 - evidence is replayable enough to identify URL/step/assertion/revision without storing secrets.
 
-### E12-T14 — Context7 current-documentation provider — PLANNED
+### E12-T14 — Context7 current-documentation provider — Planned
 
 Source: `upstash/context7`.
 
@@ -222,7 +239,7 @@ Acceptance:
 - technical claims used for implementation/review remain attributable to retrieved documentation;
 - Context7 has no authority over dependency upgrades or code changes.
 
-### E12-T15 — Superpowers workflow-pattern review and procedure extraction — PLANNED
+### E12-T15 — Superpowers workflow-pattern review and procedure extraction — Planned
 
 Source: `obra/superpowers`.
 
@@ -240,7 +257,7 @@ Acceptance:
 - any imported procedure remains bounded by normal AGF risk/path/evidence/provider controls;
 - no runtime dependency on `obra/superpowers`.
 
-### E12-T16 — Combined governed development intelligence pilot — PLANNED
+### E12-T16 — Combined governed development intelligence pilot — Planned
 
 Objective: prove that the new capabilities compose safely and materially improve execution quality.
 
@@ -301,6 +318,4 @@ E12 is complete only when:
 - CRITICAL boundaries remain `HUMAN_REQUIRED` where policy requires;
 - no new authority source, parallel policy engine, scheduler, credential store, merge path or audit-truth store has been introduced;
 - disposable end-to-end canaries prove fail-closed behavior across procedures, providers, code intelligence, documentation and browser validation.
-
-
 
