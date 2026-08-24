@@ -451,6 +451,19 @@ def test_compound_secret_patterns_are_bounded():
         value = header + "\nmaterial\n" + header.replace("BEGIN", "END")
         with pytest.raises(DocumentationError):
             DocumentationCitation("source", "topic", value).validate()
+    for value in (
+        "https://alice:s3cr3t@example.test/manual",
+        "postgresql://admin:s3cr3t@db.example/app",
+        "custom+db://service:p%40ss@host.example/path",
+    ):
+        with pytest.raises(DocumentationError):
+            DocumentationCitation("source", "topic", value).validate()
+    for value in (
+        "https://example.test/manual",
+        "https://alice@example.test/manual",
+        "postgresql://db.example/app",
+    ):
+        DocumentationCitation("source", "topic", value).validate()
 
 
 def test_claims_must_reference_existing_citations():
@@ -564,6 +577,33 @@ def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
     assert evidence(
         dependency=tilde_four.dependency, documentation_version="1.2.99.0"
     ).assess(tilde_four, now=NOW) is DocumentationStatus.CONTRADICTORY
+
+
+@pytest.mark.parametrize("constraint", ["^1.0.0", "~1.2", ">=1.0.0"])
+def test_undeclared_prereleases_do_not_satisfy_ranges(constraint):
+    ranged = request(
+        dependency=dependency(
+            declared_constraint=constraint,
+            locked_version=None,
+            resolved_version="1.5.0-rc.1",
+        )
+    )
+    assert evidence(
+        dependency=ranged.dependency, documentation_version="1.5.0-rc.1"
+    ).assess(ranged, now=NOW) is DocumentationStatus.CONTRADICTORY
+
+
+def test_explicit_prerelease_series_can_satisfy_range():
+    ranged = request(
+        dependency=dependency(
+            declared_constraint=">=1.0.0-rc.1,<2.0.0",
+            locked_version=None,
+            resolved_version="1.0.0-rc.2",
+        )
+    )
+    assert evidence(
+        dependency=ranged.dependency, documentation_version="1.0.0-rc.2"
+    ).assess(ranged, now=NOW) is DocumentationStatus.VALID
 
 
 @pytest.mark.parametrize("value", [

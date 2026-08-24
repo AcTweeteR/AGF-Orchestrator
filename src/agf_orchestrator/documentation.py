@@ -66,6 +66,9 @@ _VERSION = re.compile(
 _SHA1 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_URI_USERINFO = re.compile(
+    r"(?i)\b[a-z][a-z0-9+.-]{1,31}://[^/\s:@]+:[^/\s@]+@"
+)
 _SECRET = re.compile(
     r"(?i)(aws[_-]?secret[_-]?access[_-]?key|aws[_-]?access[_-]?key[_-]?id|"
     r"secret\s+access\s+key|client\s+secret|private\s+key|"
@@ -85,7 +88,7 @@ _MAX_VERSION_LENGTH = 256
 def _text(label: str, value: Any, *, limit: int = _MAX_TEXT) -> None:
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
         raise DocumentationError(f"{label} is invalid")
-    if _SECRET.search(value):
+    if _SECRET.search(value) or _URI_USERINFO.search(value):
         raise DocumentationError(f"{label} contains secret-shaped data")
 
 
@@ -184,6 +187,23 @@ def _hash_payload(payload: dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def _explicit_prerelease_cores(constraint: str) -> set[tuple[Any, ...]]:
+    if constraint.startswith(("^", "~")):
+        operands = (constraint[1:],)
+    else:
+        operands = tuple(
+            match.group(2)
+            for term in constraint.split(",")
+            if (match := re.fullmatch(r"(==|=|>=|<=|>|<)(.+)", term.strip()))
+        )
+    cores = set()
+    for operand in operands:
+        _version("constraint version", operand)
+        if "-" in operand.partition("+")[0]:
+            cores.add(_version_key(operand)[:4])
+    return cores
+
+
 def _constraint_allows(constraint: str, version: str) -> bool | None:
     """Evaluate the small, deterministic constraint subset used by fixtures."""
     normalized = constraint.strip()
@@ -192,6 +212,9 @@ def _constraint_allows(constraint: str, version: str) -> bool | None:
         return True
     if _VERSION.fullmatch(normalized):
         return _version_identity(version) == _version_identity(normalized)
+    if "-" in version.partition("+")[0]:
+        if _version_key(version)[:4] not in _explicit_prerelease_cores(normalized):
+            return False
     if normalized.startswith("^"):
         base = normalized[1:]
         _version("constraint version", base)
