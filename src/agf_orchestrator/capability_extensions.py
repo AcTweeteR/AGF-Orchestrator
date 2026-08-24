@@ -73,7 +73,15 @@ _SECRET = re.compile(
 _MAX_TEXT = 4000
 _MAX_ITEMS = 200
 _REQUIRED_TOOL_CHECKS = frozenset(
-    {"official_documentation", "authentication", "limits", "license", "privacy", "stability", "policy"}
+    {
+        "official_documentation",
+        "authentication",
+        "limits",
+        "license",
+        "privacy",
+        "stability",
+        "policy",
+    }
 )
 
 
@@ -126,7 +134,13 @@ def _path(value: str) -> None:
 def _hash_payload(payload: dict[str, Any], hash_field: str) -> str:
     clean = dict(payload)
     clean[hash_field] = ""
-    canonical = json.dumps(clean, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True)
+    canonical = json.dumps(
+        clean,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -136,6 +150,22 @@ def _validate_hash(payload: dict[str, Any], field: str) -> None:
         raise CapabilityExtensionError(f"{field} is invalid")
     if value != _hash_payload(payload, field):
         raise CapabilityExtensionError(f"{field} does not match content")
+
+
+def _validate_version(value: Any) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise CapabilityExtensionError("profile_version is invalid")
+
+
+def _validate_expiry(observed_at: str, expires_at: str | None, now: str | None) -> None:
+    observed = _timestamp(observed_at)
+    if expires_at is None:
+        return
+    expires = _timestamp(expires_at)
+    if expires <= observed:
+        raise CapabilityExtensionError("expires_at must be after observed_at")
+    if now is not None and _timestamp(now) >= expires:
+        raise CapabilityExtensionError("profile evidence is stale")
 
 
 @dataclass(frozen=True)
@@ -177,28 +207,20 @@ class ProcedureProfile:
         if self.schema_version != "1.0":
             raise CapabilityExtensionError("schema_version must be 1.0")
         _id("procedure_id", self.procedure_id, "procedure-")
-        if not isinstance(self.project_id, str) or not _PROJECT_ID.fullmatch(self.project_id):
+        if not _PROJECT_ID.fullmatch(self.project_id):
             raise CapabilityExtensionError("project_id is invalid")
-        if not isinstance(self.profile_version, int) or isinstance(self.profile_version, bool) or self.profile_version < 1:
-            raise CapabilityExtensionError("profile_version is invalid")
+        _validate_version(self.profile_version)
         _texts("capabilities", self.capabilities, nonempty=True)
         if not isinstance(self.max_risk, RiskLevel):
             raise CapabilityExtensionError("max_risk is invalid")
-        paths = _texts("allowed_paths", self.allowed_paths, nonempty=True)
-        for value in paths:
+        for value in _texts("allowed_paths", self.allowed_paths, nonempty=True):
             _path(value)
         _texts("provider_requirements", self.provider_requirements)
         _texts("required_evidence", self.required_evidence, nonempty=True)
         if not isinstance(self.invocation_policy, InvocationPolicy):
             raise CapabilityExtensionError("invocation_policy is invalid")
         _text("provenance_source", self.provenance_source)
-        observed = _timestamp(self.observed_at)
-        if self.expires_at is not None:
-            expires = _timestamp(self.expires_at)
-            if expires <= observed:
-                raise CapabilityExtensionError("expires_at must be after observed_at")
-            if now is not None and _timestamp(now) >= expires:
-                raise CapabilityExtensionError("procedure profile is stale")
+        _validate_expiry(self.observed_at, self.expires_at, now)
         _validate_hash(self.to_dict(), "profile_sha256")
 
 
@@ -241,14 +263,16 @@ class ProcedureSelection:
         _texts("required_capabilities", self.required_capabilities, nonempty=True)
         _timestamp(self.selected_at)
         _validate_hash(self.to_dict(), "selection_sha256")
-        if profile is not None:
-            profile.validate()
-            if profile.project_id != self.project_id or profile.procedure_id != self.procedure_id:
-                raise CapabilityExtensionError("procedure selection binding does not match profile")
-            if profile.profile_sha256 != self.procedure_profile_sha256:
-                raise CapabilityExtensionError("procedure selection profile hash does not match")
-            if not set(self.required_capabilities).issubset(profile.capabilities):
-                raise CapabilityExtensionError("procedure does not satisfy required capabilities")
+        if profile is None:
+            return
+        profile.validate()
+        binding = (profile.project_id, profile.procedure_id)
+        if binding != (self.project_id, self.procedure_id):
+            raise CapabilityExtensionError("procedure selection binding does not match profile")
+        if profile.profile_sha256 != self.procedure_profile_sha256:
+            raise CapabilityExtensionError("procedure selection profile hash does not match")
+        if not set(self.required_capabilities).issubset(profile.capabilities):
+            raise CapabilityExtensionError("procedure does not satisfy required capabilities")
 
 
 @dataclass(frozen=True)
@@ -258,7 +282,11 @@ class VerificationCheck:
     evidence_ref: str
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "status": self.status.value, "evidence_ref": self.evidence_ref}
+        return {
+            "name": self.name,
+            "status": self.status.value,
+            "evidence_ref": self.evidence_ref,
+        }
 
     def validate(self) -> None:
         _text("verification check name", self.name)
@@ -315,9 +343,12 @@ class ToolCandidate:
             if check.name in names:
                 raise CapabilityExtensionError("verification check names must be unique")
             names.add(check.name)
+        all_pass = all(item.status is CheckStatus.PASS for item in self.checks)
         if self.status is CandidateStatus.VERIFIED:
-            if names != _REQUIRED_TOOL_CHECKS or any(item.status is not CheckStatus.PASS for item in self.checks):
-                raise CapabilityExtensionError("verified candidate requires all mandatory checks to pass")
+            if names != _REQUIRED_TOOL_CHECKS or not all_pass:
+                raise CapabilityExtensionError(
+                    "verified candidate requires all mandatory checks to pass"
+                )
         _timestamp(self.observed_at)
         _validate_hash(self.to_dict(), "candidate_sha256")
 
@@ -376,102 +407,147 @@ class KnowledgeProviderProfile:
         _id("knowledge_provider_id", self.knowledge_provider_id, "knowledge-")
         if not _PROJECT_ID.fullmatch(self.project_id):
             raise CapabilityExtensionError("project_id is invalid")
-        if not isinstance(self.profile_version, int) or isinstance(self.profile_version, bool) or self.profile_version < 1:
-            raise CapabilityExtensionError("profile_version is invalid")
-        if not isinstance(self.transport, KnowledgeTransport) or self.transport is KnowledgeTransport.UNKNOWN:
+        _validate_version(self.profile_version)
+        if (
+            not isinstance(self.transport, KnowledgeTransport)
+            or self.transport is KnowledgeTransport.UNKNOWN
+        ):
             raise CapabilityExtensionError("knowledge transport must be known")
         _texts("capabilities", self.capabilities, nonempty=True)
-        for name, value in (
+        bools = (
             ("requires_credentials", self.requires_credentials),
             ("requires_authenticated_session", self.requires_authenticated_session),
             ("network_required", self.network_required),
             ("browser_automation", self.browser_automation),
             ("privacy_review_required", self.privacy_review_required),
-        ):
+        )
+        for name, value in bools:
             if not isinstance(value, bool):
                 raise CapabilityExtensionError(f"{name} is invalid")
         if not isinstance(self.privacy_classification, PrivacyClassification):
             raise CapabilityExtensionError("privacy classification is invalid")
-        if not isinstance(self.mutability, KnowledgeMutability) or self.mutability is KnowledgeMutability.UNKNOWN:
+        if (
+            not isinstance(self.mutability, KnowledgeMutability)
+            or self.mutability is KnowledgeMutability.UNKNOWN
+        ):
             raise CapabilityExtensionError("knowledge mutability must be known")
         if not isinstance(self.stability, IntegrationStability):
             raise CapabilityExtensionError("integration stability is invalid")
         _text("provenance_source", self.provenance_source)
-        observed = _timestamp(self.observed_at)
-        if self.expires_at is not None:
-            expires = _timestamp(self.expires_at)
-            if expires <= observed:
-                raise CapabilityExtensionError("expires_at must be after observed_at")
-            if now is not None and _timestamp(now) >= expires:
-                raise CapabilityExtensionError("knowledge provider profile is stale")
+        _validate_expiry(self.observed_at, self.expires_at, now)
         _validate_hash(self.to_dict(), "profile_sha256")
 
 
-def seal(record: ProcedureProfile | ProcedureSelection | ToolCandidate | KnowledgeProviderProfile):
+ExtensionRecord = (
+    ProcedureProfile | ProcedureSelection | ToolCandidate | KnowledgeProviderProfile
+)
+
+
+def seal(record: ExtensionRecord) -> ExtensionRecord:
     """Return an immutable record with its content hash populated."""
     if isinstance(record, ProcedureProfile):
-        return replace(record, profile_sha256=_hash_payload(record.to_dict(), "profile_sha256"))
+        digest = _hash_payload(record.to_dict(), "profile_sha256")
+        return replace(record, profile_sha256=digest)
     if isinstance(record, ProcedureSelection):
-        return replace(record, selection_sha256=_hash_payload(record.to_dict(), "selection_sha256"))
+        digest = _hash_payload(record.to_dict(), "selection_sha256")
+        return replace(record, selection_sha256=digest)
     if isinstance(record, ToolCandidate):
-        return replace(record, candidate_sha256=_hash_payload(record.to_dict(), "candidate_sha256"))
+        digest = _hash_payload(record.to_dict(), "candidate_sha256")
+        return replace(record, candidate_sha256=digest)
     if isinstance(record, KnowledgeProviderProfile):
-        return replace(record, profile_sha256=_hash_payload(record.to_dict(), "profile_sha256"))
+        digest = _hash_payload(record.to_dict(), "profile_sha256")
+        return replace(record, profile_sha256=digest)
     raise CapabilityExtensionError("unsupported record type")
 
 
-def procedure_profile_from_dict(payload: dict[str, Any]) -> ProcedureProfile:
-    expected = set(ProcedureProfile.__dataclass_fields__)
+def _exact_schema(payload: Any, expected: set[str], label: str) -> None:
     if not isinstance(payload, dict) or set(payload) != expected:
-        raise CapabilityExtensionError("procedure profile schema is missing or contains unknown fields")
-    try:
-        record = ProcedureProfile(
-            **{**payload, "capabilities": tuple(payload["capabilities"]), "allowed_paths": tuple(payload["allowed_paths"]),
-               "provider_requirements": tuple(payload["provider_requirements"]), "required_evidence": tuple(payload["required_evidence"]),
-               "max_risk": RiskLevel[payload["max_risk"]], "invocation_policy": InvocationPolicy(payload["invocation_policy"])}
+        raise CapabilityExtensionError(
+            f"{label} schema is missing or contains unknown fields"
         )
+
+
+def procedure_profile_from_dict(payload: dict[str, Any]) -> ProcedureProfile:
+    _exact_schema(payload, set(ProcedureProfile.__dataclass_fields__), "procedure profile")
+    try:
+        values = dict(payload)
+        values["capabilities"] = tuple(payload["capabilities"])
+        values["allowed_paths"] = tuple(payload["allowed_paths"])
+        values["provider_requirements"] = tuple(payload["provider_requirements"])
+        values["required_evidence"] = tuple(payload["required_evidence"])
+        values["max_risk"] = RiskLevel[payload["max_risk"]]
+        values["invocation_policy"] = InvocationPolicy(payload["invocation_policy"])
+        record = ProcedureProfile(**values)
     except (KeyError, TypeError, ValueError) as exc:
-        raise CapabilityExtensionError(f"invalid procedure profile structure: {exc}") from exc
+        raise CapabilityExtensionError(
+            f"invalid procedure profile structure: {exc}"
+        ) from exc
     record.validate()
     return record
 
 
 def procedure_selection_from_dict(payload: dict[str, Any]) -> ProcedureSelection:
-    expected = set(ProcedureSelection.__dataclass_fields__)
-    if not isinstance(payload, dict) or set(payload) != expected:
-        raise CapabilityExtensionError("procedure selection schema is missing or contains unknown fields")
+    _exact_schema(
+        payload,
+        set(ProcedureSelection.__dataclass_fields__),
+        "procedure selection",
+    )
     try:
-        record = ProcedureSelection(**{**payload, "required_capabilities": tuple(payload["required_capabilities"])})
+        values = dict(payload)
+        values["required_capabilities"] = tuple(payload["required_capabilities"])
+        record = ProcedureSelection(**values)
     except (TypeError, ValueError) as exc:
-        raise CapabilityExtensionError(f"invalid procedure selection structure: {exc}") from exc
+        raise CapabilityExtensionError(
+            f"invalid procedure selection structure: {exc}"
+        ) from exc
     record.validate()
     return record
 
 
 def tool_candidate_from_dict(payload: dict[str, Any]) -> ToolCandidate:
-    expected = set(ToolCandidate.__dataclass_fields__)
-    if not isinstance(payload, dict) or set(payload) != expected:
-        raise CapabilityExtensionError("tool candidate schema is missing or contains unknown fields")
+    _exact_schema(payload, set(ToolCandidate.__dataclass_fields__), "tool candidate")
     try:
-        checks = tuple(VerificationCheck(item["name"], CheckStatus(item["status"]), item["evidence_ref"]) for item in payload["checks"])
-        record = ToolCandidate(**{**payload, "status": CandidateStatus(payload["status"]), "checks": checks})
+        checks = tuple(
+            VerificationCheck(
+                item["name"],
+                CheckStatus(item["status"]),
+                item["evidence_ref"],
+            )
+            for item in payload["checks"]
+        )
+        values = dict(payload)
+        values["status"] = CandidateStatus(payload["status"])
+        values["checks"] = checks
+        record = ToolCandidate(**values)
     except (KeyError, TypeError, ValueError) as exc:
-        raise CapabilityExtensionError(f"invalid tool candidate structure: {exc}") from exc
+        raise CapabilityExtensionError(
+            f"invalid tool candidate structure: {exc}"
+        ) from exc
     record.validate()
     return record
 
 
-def knowledge_provider_profile_from_dict(payload: dict[str, Any]) -> KnowledgeProviderProfile:
-    expected = set(KnowledgeProviderProfile.__dataclass_fields__)
-    if not isinstance(payload, dict) or set(payload) != expected:
-        raise CapabilityExtensionError("knowledge provider schema is missing or contains unknown fields")
+def knowledge_provider_profile_from_dict(
+    payload: dict[str, Any],
+) -> KnowledgeProviderProfile:
+    _exact_schema(
+        payload,
+        set(KnowledgeProviderProfile.__dataclass_fields__),
+        "knowledge provider",
+    )
     try:
-        record = KnowledgeProviderProfile(
-            **{**payload, "transport": KnowledgeTransport(payload["transport"]), "capabilities": tuple(payload["capabilities"]),
-               "privacy_classification": PrivacyClassification(payload["privacy_classification"]),
-               "mutability": KnowledgeMutability(payload["mutability"]), "stability": IntegrationStability(payload["stability"])}
+        values = dict(payload)
+        values["transport"] = KnowledgeTransport(payload["transport"])
+        values["capabilities"] = tuple(payload["capabilities"])
+        values["privacy_classification"] = PrivacyClassification(
+            payload["privacy_classification"]
         )
+        values["mutability"] = KnowledgeMutability(payload["mutability"])
+        values["stability"] = IntegrationStability(payload["stability"])
+        record = KnowledgeProviderProfile(**values)
     except (KeyError, TypeError, ValueError) as exc:
-        raise CapabilityExtensionError(f"invalid knowledge provider structure: {exc}") from exc
+        raise CapabilityExtensionError(
+            f"invalid knowledge provider structure: {exc}"
+        ) from exc
     record.validate()
     return record
