@@ -37,7 +37,7 @@ Extend AGF-Orchestrator with reusable governed procedures, external capability a
 
 ## Execution backlog
 
-### E12-T1 — Architecture and schemas — COMPLETED
+### E12-T1 — Architecture and schemas — Done
 
 - ADR defining governed procedure/tool/knowledge-provider boundaries.
 - Deterministic versioned `ProcedureProfile`, `ProcedureSelection`, `ToolCandidate`, and `KnowledgeProviderProfile` evidence schemas.
@@ -45,7 +45,7 @@ Extend AGF-Orchestrator with reusable governed procedures, external capability a
 
 Delivered through PR #166 after ADR PR #165.
 
-### E12-T2 — Mission readiness and doctor — COMPLETED
+### E12-T2 — Mission readiness and doctor — Done
 
 - Deterministic readiness result derived from explicit persisted evidence.
 - UNKNOWN remains blocking.
@@ -54,15 +54,15 @@ Delivered through PR #166 after ADR PR #165.
 
 Delivered through PR #167.
 
-### E12-T3 — Governed procedure/skill registry — COMPLETED CORE
+### E12-T3 — Governed procedure/skill registry — Done
 
 - Project-isolated reusable procedure registry.
 - Capabilities, risk ceiling, allowed paths, provider requirements, required evidence, invocation policy, provenance/version/hash.
 - Deterministic selection and fail-closed ambiguity/staleness behavior.
 
-Delivered through PR #167. Explicit `SKILL.md` import ergonomics remain follow-up work.
+Delivered through PR #167. The residual `SKILL.md` import ergonomics follow-up is tracked separately as `Backlog` below.
 
-### E12-T4 — Governed loop patterns — COMPLETED CORE
+### E12-T4 — Governed loop patterns — Done
 
 - CI repair.
 - PR babysitting.
@@ -73,7 +73,7 @@ Delivered through PR #167. Explicit `SKILL.md` import ergonomics remain follow-u
 
 Delivered through PR #167.
 
-### E12-T5 — External capability catalog adapters — COMPLETED CORE
+### E12-T5 — External capability catalog adapters — Done
 
 - Public-APIs-style rows become `UNVERIFIED` discovery candidates only.
 - Catalog membership is never treated as eligibility evidence.
@@ -81,7 +81,7 @@ Delivered through PR #167.
 
 Delivered through PR #168.
 
-### E12-T6 — MCP tool/knowledge-provider boundary — COMPLETED CORE
+### E12-T6 — MCP tool/knowledge-provider boundary — Done
 
 - Provider-neutral MCP profile support.
 - Transport, capabilities, auth/session, network, browser automation, privacy, mutability, stability and provenance modeled explicitly.
@@ -89,7 +89,7 @@ Delivered through PR #168.
 
 Delivered through PR #168.
 
-### E12-T7 — NotebookLM MCP optional profile — COMPLETED CORE
+### E12-T7 — NotebookLM MCP optional profile — Done
 
 - External/private, authenticated, networked, browser-automated, unofficial and privacy-review-required classification.
 - Project material upload requires separate explicit authorization and privacy eligibility.
@@ -97,7 +97,7 @@ Delivered through PR #168.
 
 Delivered through PR #168.
 
-### E12-T8 — Cost/fleet observability — COMPLETED CORE
+### E12-T8 — Cost/fleet observability — Done
 
 - Read-only per-task/provider/procedure budget and remaining-capacity observations.
 - Kill-switch visibility without new clear/stop authority.
@@ -105,13 +105,19 @@ Delivered through PR #168.
 
 Delivered through PR #168.
 
-### E12-T9 — End-to-end disposable pilot — COMPLETED CORE
+### E12-T9 — End-to-end disposable pilot — Done
 
 - Readiness -> procedure selection -> optional verified tool -> optional knowledge provider -> execution readiness.
 - Canaries for budget exhaustion, kill switch, unverified catalog candidate and privacy-denied knowledge provider.
 - No live network call or external mutation required for the deterministic pilot.
 
 Delivered through PR #168.
+
+### Follow-up register
+
+- `E12-T3-SKILL-MD` — explicit `SKILL.md` import ergonomics — `Backlog`.
+
+Residual follow-up is not implied to be complete by E12-T3.
 
 ### E12-T10 — Session resilience, workspace trust and evidence ergonomics — PLANNED
 
@@ -295,3 +301,6 @@ E12 is complete only when:
 - CRITICAL boundaries remain `HUMAN_REQUIRED` where policy requires;
 - no new authority source, parallel policy engine, scheduler, credential store, merge path or audit-truth store has been introduced;
 - disposable end-to-end canaries prove fail-closed behavior across procedures, providers, code intelligence, documentation and browser validation.
+
+
+
