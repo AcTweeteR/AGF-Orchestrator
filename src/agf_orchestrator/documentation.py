@@ -340,10 +340,10 @@ class DocumentationEvidence:
         _text("documentation_source", self.documentation_source)
         if len(self.citations) > _MAX_CITATIONS:
             raise DocumentationError("citations exceed the bound")
-        if sum(len(item.excerpt) for item in self.citations) > 16_000:
-            raise DocumentationError("citation excerpts exceed the aggregate bound")
         for citation in self.citations:
             citation.validate()
+        if sum(len(item.excerpt) for item in self.citations) > 16_000:
+            raise DocumentationError("citation excerpts exceed the aggregate bound")
         _timestamp("observed_at", self.observed_at)
         if not isinstance(self.freshness, DocumentationFreshness):
             raise DocumentationError("freshness is invalid")

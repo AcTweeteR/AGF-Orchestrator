@@ -160,6 +160,10 @@ def test_conflicting_sources_and_provider_responses_fail_closed():
     malformed["documentation_version"] = "latest"
     with pytest.raises(DocumentationError):
         evidence_from_dict(malformed)
+    malformed = evidence().to_dict()
+    malformed["citations"] = ["not-a-citation"]
+    with pytest.raises(DocumentationError):
+        evidence_from_dict(malformed)
 
 
 def test_bounds_secret_safety_hash_and_authority_boundary():
