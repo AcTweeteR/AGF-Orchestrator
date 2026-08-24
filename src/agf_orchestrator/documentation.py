@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import re
 from dataclasses import dataclass
@@ -58,7 +59,14 @@ class DocumentationOperation(StrEnum):
 
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
-_PACKAGE = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]{0,127}$")
+_NPM_PACKAGE = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]{0,63}/)?[a-z0-9][a-z0-9._-]{0,127}$")
+_PYPI_PACKAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_GO_MODULE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,63}(?:/[A-Za-z0-9][A-Za-z0-9._~-]{0,63})+$")
+_MAVEN_COORDINATE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}:[A-Za-z0-9][A-Za-z0-9_.-]{0,127}"
+    r"(?::[A-Za-z0-9][A-Za-z0-9_.-]{0,127})?$"
+)
+_SUPPORTED_REGISTRIES = frozenset({"npm", "pypi", "go", "maven"})
 _VERSION = re.compile(
     r"^[0-9]{1,32}(?:\.[0-9]{1,32}){0,3}"
     r"(?:-[0-9A-Za-z-]{1,64}(?:\.[0-9A-Za-z-]{1,64})*)?"
@@ -95,13 +103,14 @@ _PROVIDER_BINDING_TTL_SECONDS = 3600
 
 
 def _contains_credential_query(value: str) -> bool:
-    for candidate in _URI_CANDIDATE.findall(value):
-        try:
-            query = parse_qsl(urlsplit(candidate).query, keep_blank_values=True)
-        except ValueError:
-            continue
-        if any(name.casefold() in _CREDENTIAL_QUERY_NAMES for name, _ in query):
-            return True
+    for candidate_text in (value, html.unescape(value)):
+        for candidate in _URI_CANDIDATE.findall(candidate_text):
+            try:
+                query = parse_qsl(urlsplit(candidate).query, keep_blank_values=True)
+            except ValueError:
+                continue
+            if any(name.casefold() in _CREDENTIAL_QUERY_NAMES for name, _ in query):
+                return True
     return False
 
 
@@ -180,8 +189,24 @@ def _version_identity(value: str) -> tuple[Any, str]:
 
 
 def _canonical_package(value: Any) -> None:
-    if not isinstance(value, str) or not _PACKAGE.fullmatch(value) or ".." in value:
+    if not isinstance(value, str) or len(value) > 256:
         raise DocumentationError("package identity is invalid")
+    _text("package_id", value, limit=256)
+
+
+def _validate_registry_package(registry: str, package_id: str) -> None:
+    if registry not in _SUPPORTED_REGISTRIES:
+        raise DocumentationError("dependency registry is unsupported")
+    patterns = {
+        "npm": _NPM_PACKAGE,
+        "pypi": _PYPI_PACKAGE,
+        "go": _GO_MODULE,
+        "maven": _MAVEN_COORDINATE,
+    }
+    if not patterns[registry].fullmatch(package_id):
+        raise DocumentationError("package identity is invalid for registry")
+    if ".." in package_id or "/./" in f"/{package_id}/" or "/../" in f"/{package_id}/":
+        raise DocumentationError("package identity contains traversal")
 
 
 def _repository_identity(value: Any) -> None:
@@ -310,6 +335,7 @@ class DependencyVersionEvidence:
         if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,31}", self.registry):
             raise DocumentationError("dependency registry is invalid")
         _canonical_package(self.package_id)
+        _validate_registry_package(self.registry, self.package_id)
         _text("declared_constraint", self.declared_constraint, limit=256)
         for label, value in (
             ("locked_version", self.locked_version),

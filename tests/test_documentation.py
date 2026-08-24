@@ -461,6 +461,8 @@ def test_compound_secret_patterns_are_bounded():
         "https://bucket.example/object?foo=1&X-AMZ-SIGNATURE=",
         "https://bucket.example/object?sig=one&sig=two",
         "https://bucket.example/object?%58-Amz-Signature=encoded-name",
+        "https://bucket.example/object?region=us&amp;X-Amz-Signature=html-escaped",
+        "https://bucket.example/object?region=us&#38;sig=numeric-escaped",
     ):
         with pytest.raises(DocumentationError):
             DocumentationCitation("source", "topic", value).validate()
@@ -568,6 +570,28 @@ def test_repository_identity_and_binding_validation():
         request(repository_id=None, revision_sha=None).validate()
     npm = request(dependency=dependency(registry="npm"))
     assert evidence().assess(npm, now=NOW) is DocumentationStatus.DEPENDENCY_MISMATCH
+
+
+@pytest.mark.parametrize("registry,package_id", [
+    ("npm", "@scope/package"),
+    ("npm", "package-name"),
+    ("pypi", "requests_http"),
+    ("go", "github.com/gin-gonic/gin"),
+    ("maven", "org.slf4j:slf4j-api"),
+])
+def test_registry_aware_package_identifiers(registry, package_id):
+    dependency(registry=registry, package_id=package_id).validate()
+
+
+@pytest.mark.parametrize("registry,package_id", [
+    ("unknown", "package"),
+    ("go", "github.com/example/../secret"),
+    ("maven", "org.slf4j"),
+    ("npm", "@scope/"),
+])
+def test_unsupported_or_malformed_package_identifiers_fail_closed(registry, package_id):
+    with pytest.raises(DocumentationError):
+        dependency(registry=registry, package_id=package_id).validate()
 
 
 def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
