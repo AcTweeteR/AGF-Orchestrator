@@ -6,6 +6,7 @@ import hashlib
 import html
 import json
 import re
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -126,6 +127,7 @@ _CLOCK_SKEW_SECONDS = 0
 _MAX_VERSION_LENGTH = 256
 _MAX_CITATION_REFS = 8
 _PROVIDER_BINDING_TTL_SECONDS = 3600
+_ISSUED_PROVIDER_BINDINGS: dict[str, str] = {}
 
 
 def _contains_credential_query(value: str) -> bool:
@@ -721,6 +723,7 @@ class ProviderBinding:
     privacy_eligible: bool | None
     network_allowed: bool | None
     binding_sha256: str
+    issuance_token: str = ""
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -735,6 +738,7 @@ class ProviderBinding:
             "privacy_eligible": self.privacy_eligible,
             "network_allowed": self.network_allowed,
             "binding_sha256": self.binding_sha256,
+            "issuance_token": self.issuance_token,
         }
 
     def validate(self, *, now: str | None = None) -> None:
@@ -743,6 +747,8 @@ class ProviderBinding:
         if not _ID.fullmatch(self.project_id) or not self.project_id.startswith("project-"):
             raise DocumentationError("provider binding project_id is invalid")
         _sha("provider binding profile_sha256", self.profile_sha256, _SHA256)
+        if not isinstance(self.issuance_token, str) or len(self.issuance_token) < 32:
+            raise DocumentationError("provider binding issuance is missing")
         decision = _timestamp("provider binding decision_at", self.decision_at)
         if now is not None and decision > _timestamp("provider binding now", now):
             raise DocumentationError("provider binding is future-dated")
@@ -765,6 +771,8 @@ class ProviderBinding:
         ).hexdigest()
         if self.binding_sha256 != expected:
             raise DocumentationError("provider binding hash does not match content")
+        if _ISSUED_PROVIDER_BINDINGS.get(self.issuance_token) != self.binding_sha256:
+            raise DocumentationError("provider binding was not issued by AGF eligibility")
 
 
 def _seal_provider_binding(
@@ -786,6 +794,7 @@ def _seal_provider_binding(
             ttl_expires_at, _timestamp("provider profile expires_at", profile.expires_at)
         )
     binding_expires_at = effective_expiry.strftime("%Y-%m-%dT%H:%M:%SZ")
+    issuance_token = secrets.token_urlsafe(32)
     unsigned = {
         "provider_id": profile.knowledge_provider_id,
         "project_id": profile.project_id,
@@ -798,6 +807,7 @@ def _seal_provider_binding(
         "privacy_eligible": privacy_eligible,
         "network_allowed": network_allowed,
         "binding_sha256": "",
+        "issuance_token": issuance_token,
     }
     digest = hashlib.sha256(
         json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
@@ -806,8 +816,9 @@ def _seal_provider_binding(
         profile.knowledge_provider_id, profile.project_id, profile.profile_sha256,
         now, binding_expires_at,
         available, authenticated, policy_authorized, privacy_eligible, network_allowed,
-        digest,
+        digest, issuance_token,
     )
+    _ISSUED_PROVIDER_BINDINGS[issuance_token] = digest
     binding.validate()
     return binding
 

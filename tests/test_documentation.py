@@ -1,3 +1,4 @@
+import hashlib
 import json
 from dataclasses import replace
 
@@ -375,6 +376,40 @@ def test_provider_eligibility_is_bound_to_evidence_and_fallback():
         future_evidence.assess(future_request, now="2026-08-24T12:00:02Z")
         is DocumentationStatus.PROVIDER_INELIGIBLE
     )
+
+
+def test_provider_binding_requires_authenticated_agf_issuance():
+    issued = binding_for("knowledge-provider-issued")
+    assert evidence(
+        provider_id=issued.provider_id,
+        provider_binding_sha256=issued.binding_sha256,
+    ).assess(request(provider_binding=issued), now=NOW) is DocumentationStatus.VALID
+
+    fabricated = replace(issued, issuance_token="x" * 43)
+    unsigned = {**fabricated.to_dict(), "binding_sha256": ""}
+    fabricated = replace(
+        fabricated,
+        binding_sha256=hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    )
+    with pytest.raises(DocumentationError):
+        evidence(
+            provider_id=fabricated.provider_id,
+            provider_binding_sha256=fabricated.binding_sha256,
+        ).assess(request(provider_binding=fabricated), now=NOW)
+
+    tampered = replace(issued, policy_authorized=False)
+    with pytest.raises(DocumentationError):
+        evidence(
+            provider_id=tampered.provider_id,
+            provider_binding_sha256=issued.binding_sha256,
+        ).assess(request(provider_binding=tampered), now=NOW)
+
+
+def test_provider_binding_issuance_is_not_persisted_in_documentation_evidence():
+    payload = evidence().to_dict()
+    assert "issuance_token" not in payload
 
 
 def test_reconciliation_requires_semantic_claim_agreement_across_providers():
