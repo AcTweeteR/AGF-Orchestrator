@@ -24,6 +24,7 @@ from agf_orchestrator.capability_selection import CapabilityCandidate, Selection
 from agf_orchestrator.provider_eligibility import (
     ProviderEligibilityAuthority,
     ProviderEligibilityError,
+    canonical_knowledge_security_posture,
 )
 from agf_orchestrator.provider_intelligence import (
     ProviderIntelligenceStore,
@@ -62,7 +63,7 @@ def candidate(provider_id="knowledge-docs", *, docs=True, priority=0):
 
 def state(
     provider_id="knowledge-docs", *, observed=NOW, expires=EXPIRES, gates=None,
-    provider_gate_evidence=None, **kwargs
+    provider_gate_evidence=None, security_profile=None, **kwargs
 ):
     active_gates = gates or SelectionGates(True, True, True, True, True, True)
     gate_evidence = (
@@ -96,6 +97,12 @@ def state(
         provider_gate_evidence=provider_gate_evidence or (
             ("network_eligible", True),
             ("authentication_eligible", True),
+        ),
+        provider_security_posture=(
+            (
+                provider_id,
+                canonical_knowledge_security_posture(security_profile or knowledge_profile()),
+            ),
         ),
         **kwargs,
     )
@@ -202,7 +209,9 @@ def test_knowledge_profile_requires_owner_network_and_authentication(tmp_path):
 
 
 def test_credentials_require_owner_authentication_eligibility(tmp_path):
-    authority_value, _ = make_authority(tmp_path)
+    authority_value, _ = make_authority(
+        tmp_path, state(security_profile=knowledge_profile(credentials=True))
+    )
     assert authority_value.resolve_knowledge_profile(
         knowledge_profile(credentials=True), now=NOW, target_sha=TARGET,
         required_capability="documentation",
@@ -226,6 +235,18 @@ def test_credentials_require_owner_authentication_eligibility(tmp_path):
         denied.resolve_knowledge_profile(
             knowledge_profile(credentials=True), now=NOW, target_sha=TARGET,
             required_capability="documentation",
+        )
+
+
+def test_caller_cannot_downgrade_owner_security_posture(tmp_path):
+    owner_profile = knowledge_profile(network_required=True, auth_required=True, credentials=True)
+    authority_value, _ = make_authority(
+        tmp_path, state(security_profile=owner_profile)
+    )
+    downgraded = knowledge_profile(network_required=False, auth_required=False, credentials=False)
+    with pytest.raises(ProviderEligibilityError, match="security posture"):
+        authority_value.resolve_knowledge_profile(
+            downgraded, now=NOW, target_sha=TARGET, required_capability="documentation"
         )
 
 

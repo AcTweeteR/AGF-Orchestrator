@@ -58,6 +58,26 @@ def _now(value: str) -> datetime:
     return parsed.replace(microsecond=0)
 
 
+def canonical_knowledge_security_posture(profile: KnowledgeProviderProfile) -> str:
+    """Canonical owner-bindable security metadata for a knowledge profile."""
+    return json.dumps(
+        {
+            "capabilities": sorted(profile.capabilities),
+            "transport": profile.transport.value,
+            "requires_credentials": profile.requires_credentials,
+            "requires_authenticated_session": profile.requires_authenticated_session,
+            "network_required": profile.network_required,
+            "browser_automation": profile.browser_automation,
+            "privacy_classification": profile.privacy_classification.value,
+            "privacy_review_required": profile.privacy_review_required,
+            "mutability": profile.mutability.value,
+            "stability": profile.stability.value,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 @dataclass(frozen=True)
 class ProviderEligibilityDecision:
     """A verifiable projection of an owner-authenticated provider decision.
@@ -73,6 +93,7 @@ class ProviderEligibilityDecision:
     capability_domain: str
     target_sha: str
     revision_scope: str
+    security_posture_sha256: str
     authorized_requirements: tuple[str, ...]
     authority_context_hash: str
     source_state_sha256: str
@@ -98,6 +119,7 @@ class ProviderEligibilityDecision:
             "capability_domain": self.capability_domain,
             "target_sha": self.target_sha,
             "revision_scope": self.revision_scope,
+            "security_posture_sha256": self.security_posture_sha256,
             "authorized_requirements": list(self.authorized_requirements),
             "authority_context_hash": self.authority_context_hash,
             "source_state_sha256": self.source_state_sha256,
@@ -142,6 +164,8 @@ class ProviderEligibilityDecision:
             raise ProviderEligibilityError("provider decision target revision is invalid")
         if self.revision_scope not in _REVISION_SCOPES:
             raise ProviderEligibilityError("provider decision revision scope is invalid")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.security_posture_sha256):
+            raise ProviderEligibilityError("provider decision security posture is invalid")
         if not self.authorized_requirements or any(
             not isinstance(item, str) or not item.strip()
             for item in self.authorized_requirements
@@ -221,6 +245,16 @@ def _decision_from_state(
     )
     if candidate is None or candidate.diagnostic_only:
         raise ProviderEligibilityError("provider is not owner-registered")
+    posture_payload = dict(state.provider_security_posture).get(provider_id)
+    if provider_kind in {"knowledge", "documentation"} and posture_payload is None:
+        raise ProviderEligibilityError("owner provider security posture is unavailable")
+    if posture_payload is None:
+        posture_hash = _hash({})
+    else:
+        try:
+            posture_hash = _hash(json.loads(posture_payload))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProviderEligibilityError("owner provider security posture is invalid") from exc
     requested = tuple(required_capabilities)
     if (
         not requested
@@ -272,6 +306,7 @@ def _decision_from_state(
         capability_domain=capability_domain,
         target_sha=state.target_sha,
         revision_scope=revision_scope,
+        security_posture_sha256=posture_hash,
         authorized_requirements=requested,
         authority_context_hash=context_hash,
         source_state_sha256=state.state_sha256,
@@ -382,6 +417,11 @@ class ProviderEligibilityAuthority:
             now=now,
             required_capabilities=(required_capability,),
         )
+        caller_posture_hash = _hash(
+            json.loads(canonical_knowledge_security_posture(profile))
+        )
+        if caller_posture_hash != decision.security_posture_sha256:
+            raise ProviderEligibilityError("knowledge provider security posture differs from owner")
         if required_network and decision.network_eligible is not True:
             raise ProviderEligibilityError("network eligibility is unavailable")
         if (

@@ -46,7 +46,10 @@ from agf_orchestrator.documentation import (
 from agf_orchestrator.documentation import (
     resolve_provider as _resolve_provider,
 )
-from agf_orchestrator.provider_eligibility import ProviderEligibilityAuthority
+from agf_orchestrator.provider_eligibility import (
+    ProviderEligibilityAuthority,
+    canonical_knowledge_security_posture,
+)
 from agf_orchestrator.provider_intelligence import (
     ProviderIntelligenceStore,
     build_state,
@@ -180,6 +183,10 @@ def _documentation_authority(profile_value, kwargs):
             ("network_eligible", network),
             ("authentication_eligible", authenticated),
         ),
+        provider_security_posture=tuple(
+            (item.provider_id, canonical_knowledge_security_posture(profile_value))
+            for item in candidate_profiles
+        ),
     )
     has_caller_denial = any(
         kwargs.get(name) is False
@@ -189,7 +196,9 @@ def _documentation_authority(profile_value, kwargs):
         )
     )
     root = str(Path(tempfile.mkdtemp(prefix="agf-doc-authority-")).resolve()) if (
-        has_caller_denial or kwargs.get("now", NOW) != NOW
+        has_caller_denial
+        or kwargs.get("now", NOW) != NOW
+        or profile_value.capabilities != ("documentation",)
     ) else str(_DOCUMENTATION_STATE_ROOT)
     store = ProviderIntelligenceStore(
         root, signing_key=b"test-owner-key-which-is-long-enough-123456", staging=True

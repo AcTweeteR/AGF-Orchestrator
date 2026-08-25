@@ -147,6 +147,7 @@ class ProviderIntelligenceState:
     state_sha256: str
     provider_gate_evidence: tuple[tuple[str, bool], ...] = ()
     decision_domain: str = "architect"
+    provider_security_posture: tuple[tuple[str, str], ...] = ()
 
     def _unsigned(self) -> dict[str, Any]:
         payload = {
@@ -187,6 +188,10 @@ class ProviderIntelligenceState:
             payload["provider_gate_evidence"] = [list(item) for item in self.provider_gate_evidence]
         if self.decision_domain != "architect":
             payload["decision_domain"] = self.decision_domain
+        if self.provider_security_posture:
+            payload["provider_security_posture"] = [
+                list(item) for item in self.provider_security_posture
+            ]
         return payload
 
     def to_dict(self) -> dict[str, Any]:
@@ -240,6 +245,16 @@ class ProviderIntelligenceState:
             self.provider_gate_evidence
         ):
             raise ProviderIntelligenceError("provider gate evidence is invalid")
+        if any(
+            not isinstance(provider_id, str)
+            or not provider_id
+            or not isinstance(posture, str)
+            or len(posture) > 4096
+            for provider_id, posture in self.provider_security_posture
+        ) or len({provider_id for provider_id, _ in self.provider_security_posture}) != len(
+            self.provider_security_posture
+        ):
+            raise ProviderIntelligenceError("provider security posture is invalid")
         if self.state_sha256 != _hash(self._unsigned()):
             raise ProviderIntelligenceError("provider intelligence state hash is invalid")
         observed_at = _utc_timestamp(self.observed_at)
@@ -260,6 +275,10 @@ class ProviderIntelligenceState:
         if self.provider_gate_evidence:
             evidence_bundle["provider_gate_evidence"] = [
                 list(item) for item in self.provider_gate_evidence
+            ]
+        if self.provider_security_posture:
+            evidence_bundle["provider_security_posture"] = [
+                list(item) for item in self.provider_security_posture
             ]
         if self.decision_domain != "architect":
             evidence_bundle["decision_domain"] = self.decision_domain
@@ -397,7 +416,7 @@ def state_from_dict(payload: dict[str, Any]) -> ProviderIntelligenceState:
         "signing_key_id",
         "signature",
     }
-    optional = {"provider_gate_evidence", "decision_domain"}
+    optional = {"provider_gate_evidence", "decision_domain", "provider_security_posture"}
     if not set(payload).issubset(required | optional) or not required.issubset(payload):
         raise ProviderIntelligenceError("provider intelligence state schema is invalid")
     try:
@@ -432,6 +451,7 @@ def state_from_dict(payload: dict[str, Any]) -> ProviderIntelligenceState:
             payload["state_sha256"],
             tuple(tuple(item) for item in payload.get("provider_gate_evidence", ())),
             payload.get("decision_domain", "architect"),
+            tuple(tuple(item) for item in payload.get("provider_security_posture", ())),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ProviderIntelligenceError("provider intelligence state schema is invalid") from exc
@@ -457,6 +477,7 @@ def build_state(
     provider_gate_evidence: tuple[tuple[str, bool], ...] = (),
     requirements: tuple[str, ...] | None = None,
     decision_domain: str = "architect",
+    provider_security_posture: tuple[tuple[str, str], ...] = (),
 ) -> ProviderIntelligenceState:
     requirements = tuple(requirements or ARCHITECT_REQUIREMENTS)
     requirements_hash = _hash(list(requirements))
@@ -480,6 +501,10 @@ def build_state(
     if provider_gate_evidence:
         evidence_bundle["provider_gate_evidence"] = [
             list(item) for item in provider_gate_evidence
+        ]
+    if provider_security_posture:
+        evidence_bundle["provider_security_posture"] = [
+            list(item) for item in provider_security_posture
         ]
     if decision_domain != "architect":
         evidence_bundle["decision_domain"] = decision_domain
@@ -506,6 +531,7 @@ def build_state(
         "0" * 64,
         provider_gate_evidence,
         decision_domain,
+        provider_security_posture,
     )
     return ProviderIntelligenceState(
         **{**unsigned.__dict__, "state_sha256": _hash(unsigned._unsigned())}
