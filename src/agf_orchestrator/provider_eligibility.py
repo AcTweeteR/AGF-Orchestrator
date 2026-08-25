@@ -477,13 +477,57 @@ class ProviderEligibilityAuthority:
         target_sha: str | None = None,
         revision_scope: str = "revision-bound",
     ):
-        ordered = tuple(candidates)
         required = tuple(required_capabilities)
         if not required:
             raise ProviderEligibilityError("required capabilities are missing")
+
+        # Candidate identity, priority, and ordering are part of the
+        # owner-authenticated ProviderIntelligenceState. The caller's
+        # candidates are observations only: accepting them here would let a
+        # caller add, omit, or reorder a provider and thereby change primary
+        # versus fallback semantics.
+        domain = {
+            "code-intelligence": "code-intelligence",
+            "knowledge": "knowledge",
+            "documentation": "documentation",
+            "capability": "architect",
+        }.get(provider_kind)
+        if domain is None:
+            raise ProviderEligibilityError("provider decision domain is invalid")
+        if revision_scope == "resolve-library" and (
+            provider_kind != "knowledge" or domain != "documentation"
+        ):
+            raise ProviderEligibilityError(
+                "revisionless selection is limited to knowledge documentation"
+            )
+        try:
+            owner_state = self.store.for_project(
+                project_id, decision_domain=domain
+            ).load()
+        except (ProviderIntelligenceError, OSError, TypeError, ValueError) as exc:
+            raise ProviderEligibilityError(
+                "owner provider intelligence is unavailable"
+            ) from exc
+        try:
+            if revision_scope == "revision-bound":
+                if target_sha is None:
+                    raise ProviderEligibilityError("target revision is required")
+                owner_state.validate(now=now, target_sha=target_sha)
+            elif revision_scope == "resolve-library":
+                owner_state.validate(now=now)
+            else:
+                raise ProviderEligibilityError("revision scope is invalid")
+        except ProviderIntelligenceError as exc:
+            raise ProviderEligibilityError(
+                "owner provider intelligence is unavailable"
+            ) from exc
+        owner_candidates = tuple(owner_state.candidates)
+        if not owner_candidates:
+            raise ProviderEligibilityError("owner candidate set is empty")
+
         eligible: list[CapabilityCandidate] = []
         fallback_allowed = True
-        for candidate in ordered:
+        for candidate in owner_candidates:
             try:
                 decision = self.resolve(
                     project_id=project_id,
@@ -516,7 +560,7 @@ class ProviderEligibilityAuthority:
             now=now,
             gates=SelectionGates(True, True, True, True, True, True),
         )
-        canonical_primary = CapabilitySelector.order_candidates(ordered)
+        canonical_primary = CapabilitySelector.order_candidates(owner_candidates)
         if canonical_primary and selected.provider_id != canonical_primary[0].profile.provider_id:
             if not fallback_allowed:
                 raise ProviderEligibilityError("owner policy forbids provider fallback")

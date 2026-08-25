@@ -241,7 +241,9 @@ def test_fallback_is_existing_selector_policy_and_never_changes_scope(tmp_path):
         eligibility_authority=eligibility_authority(tmp_path, (second,)),
     )
     assert fallback.status is IntelligenceStatus.VALID
-    assert fallback.selection is not None and fallback.selection.fallback_used is True
+    # A caller cannot omit the owner candidate and turn it into a fallback;
+    # the owner state contains only ``second``, so it is the primary.
+    assert fallback.selection is not None and fallback.selection.fallback_used is False
     forbidden = resolve_provider(
         (first, second),
         project_id=PROJECT, required=True, now=NOW,
@@ -265,4 +267,28 @@ def test_fallback_uses_selector_priority_order_not_input_order(tmp_path):
     assert result.status is IntelligenceStatus.VALID
     assert result.selection is not None
     assert result.selection.provider_id == "provider-low"
+    assert result.selection.fallback_used is False
+
+
+def test_caller_cannot_add_or_omit_owner_candidates_or_change_priority(tmp_path):
+    owner_low = provider_candidate(provider_id="provider-low", priority=0)
+    owner_high = provider_candidate(provider_id="provider-high", priority=1)
+    authority = eligibility_authority(tmp_path, (owner_low, owner_high))
+
+    # The caller omits the owner primary, supplies a fabricated candidate,
+    # and changes the apparent priority. Selection must still use the
+    # owner-authenticated candidate set and its priority/order.
+    fabricated = provider_candidate(provider_id="provider-fabricated", priority=-100)
+    result = resolve_provider(
+        (replace(owner_high, priority=-100), fabricated),
+        project_id=PROJECT,
+        required=True,
+        now=NOW,
+        gates=SelectionGates(True, True, True, True, True, True),
+        eligibility_authority=authority,
+    )
+    assert result.status is IntelligenceStatus.VALID
+    assert result.selection is not None
+    assert result.selection.provider_id == "provider-low"
+    assert result.selection.profile_id == owner_low.profile.profile_id
     assert result.selection.fallback_used is False
