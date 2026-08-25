@@ -619,6 +619,10 @@ class DocumentationRequest:
             DocumentationOperation.RETRIEVE_TOPIC,
         } and (self.repository_id is None or self.revision_sha is None):
             raise DocumentationError("retrieval requires repository and revision binding")
+        if self.operation is DocumentationOperation.RESOLVE_LIBRARY and (
+            self.repository_id is not None or self.revision_sha is not None
+        ):
+            raise DocumentationError("library resolution is explicitly revisionless")
 
 
 @dataclass(frozen=True)
@@ -732,6 +736,7 @@ class ProviderBinding:
     issuance_token: str = ""
     decision_sha256: str = ""
     target_sha: str = ""
+    revision_scope: str = "revision-bound"
     # Runtime-only injection; persisted bindings always re-resolve canonical state.
     authority: Any = field(default=None, compare=False, repr=False)
 
@@ -751,6 +756,7 @@ class ProviderBinding:
             "issuance_token": self.issuance_token,
             "decision_sha256": self.decision_sha256,
             "target_sha": self.target_sha,
+            "revision_scope": self.revision_scope,
         }
 
     def validate(
@@ -767,6 +773,8 @@ class ProviderBinding:
         if not isinstance(self.issuance_token, str) or len(self.issuance_token) < 32:
             raise DocumentationError("provider binding issuance is missing")
         _sha("provider binding decision_sha256", self.decision_sha256, _SHA256)
+        if self.revision_scope not in {"revision-bound", "resolve-library"}:
+            raise DocumentationError("provider binding revision scope is invalid")
         if not re.fullmatch(r"[0-9a-f]{40}", self.target_sha):
             raise DocumentationError("provider binding target revision is invalid")
         decision = _timestamp("provider binding decision_at", self.decision_at)
@@ -789,7 +797,8 @@ class ProviderBinding:
                 capability_domain="documentation",
                 now=now or self.decision_at,
                 required_capabilities=("documentation",),
-                target_sha=self.target_sha,
+                target_sha=(self.target_sha if self.revision_scope == "revision-bound" else None),
+                revision_scope=self.revision_scope,
                 decision_domain="documentation",
             )
         except (ProviderEligibilityError, OSError, ValueError) as exc:
@@ -807,6 +816,8 @@ class ProviderBinding:
             raise DocumentationError("provider binding decision time differs from authority")
         if self.target_sha != decision.target_sha:
             raise DocumentationError("provider binding target revision differs from authority")
+        if self.revision_scope != decision.revision_scope:
+            raise DocumentationError("provider binding revision scope differs from authority")
         expected_token = hashlib.sha256(
             f"agf-provider-binding-v1:{decision.decision_sha256}:{self.profile_sha256}".encode()
         ).hexdigest()
@@ -860,6 +871,7 @@ def _seal_provider_binding(
         "issuance_token": issuance_token,
         "decision_sha256": decision.decision_sha256,
         "target_sha": decision.target_sha,
+        "revision_scope": decision.revision_scope,
     }
     digest = hashlib.sha256(
         json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
@@ -870,6 +882,7 @@ def _seal_provider_binding(
         decision.health_eligible, decision.authentication_eligible is True,
         decision.policy_eligible, decision.privacy_eligible, decision.network_eligible,
         digest, issuance_token, decision.decision_sha256, decision.target_sha,
+        decision.revision_scope,
         eligibility_authority,
     )
     binding.validate(eligibility_authority=eligibility_authority)
@@ -1020,12 +1033,21 @@ class DocumentationEvidence:
             selected_binding.validate(now=now)
         except DocumentationError:
             return DocumentationStatus.PROVIDER_INELIGIBLE
+        expected_scope = (
+            "resolve-library"
+            if request.operation is DocumentationOperation.RESOLVE_LIBRARY
+            else "revision-bound"
+        )
         if (
             self.project_id != selected_binding.project_id
             or self.project_id != request.project_id
             or self.provider_id != selected_binding.provider_id
             or self.provider_binding_sha256 != selected_binding.binding_sha256
-            or selected_binding.target_sha != request.revision_sha
+            or selected_binding.revision_scope != expected_scope
+            or (
+                expected_scope == "revision-bound"
+                and selected_binding.target_sha != request.revision_sha
+            )
         ):
             return DocumentationStatus.PROVIDER_INELIGIBLE
         if _timestamp("provider binding decision_at", selected_binding.decision_at) > _timestamp(
@@ -1220,6 +1242,7 @@ def resolve_provider(
     required: bool,
     eligibility_authority: ProviderEligibilityAuthority | None = None,
     target_sha: str | None = None,
+    revision_scope: str = "revision-bound",
 ) -> ProviderResolution:
     try:
         profile.validate(now=now)
@@ -1234,7 +1257,8 @@ def resolve_provider(
     authority = eligibility_authority or ProviderEligibilityAuthority(ProviderIntelligenceStore())
     try:
         decision = authority.resolve_knowledge_profile(
-            profile, now=now, required_capability="documentation", target_sha=target_sha
+            profile, now=now, required_capability="documentation", target_sha=target_sha,
+            revision_scope=revision_scope,
         )
     except ProviderEligibilityError as exc:
         reason = str(exc)

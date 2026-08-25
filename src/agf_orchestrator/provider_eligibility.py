@@ -27,6 +27,7 @@ class ProviderEligibilityError(ValueError):
 
 
 _DECISION_TTL = timedelta(hours=1)
+_REVISION_SCOPES = frozenset({"revision-bound", "resolve-library"})
 _PROVIDER_KINDS = {"capability", "code-intelligence", "knowledge", "documentation"}
 _DOMAIN_KINDS = {
     "architect": {"capability", "code-intelligence"},
@@ -71,6 +72,7 @@ class ProviderEligibilityDecision:
     provider_kind: str
     capability_domain: str
     target_sha: str
+    revision_scope: str
     authorized_requirements: tuple[str, ...]
     authority_context_hash: str
     source_state_sha256: str
@@ -95,6 +97,7 @@ class ProviderEligibilityDecision:
             "provider_kind": self.provider_kind,
             "capability_domain": self.capability_domain,
             "target_sha": self.target_sha,
+            "revision_scope": self.revision_scope,
             "authorized_requirements": list(self.authorized_requirements),
             "authority_context_hash": self.authority_context_hash,
             "source_state_sha256": self.source_state_sha256,
@@ -137,6 +140,8 @@ class ProviderEligibilityDecision:
             r"[0-9a-f]{40}", self.target_sha
         ):
             raise ProviderEligibilityError("provider decision target revision is invalid")
+        if self.revision_scope not in _REVISION_SCOPES:
+            raise ProviderEligibilityError("provider decision revision scope is invalid")
         if not self.authorized_requirements or any(
             not isinstance(item, str) or not item.strip()
             for item in self.authorized_requirements
@@ -185,14 +190,24 @@ def _decision_from_state(
     provider_kind: str,
     capability_domain: str,
     target_sha: str | None,
+    revision_scope: str,
     now: str,
     required_capabilities: Iterable[str],
 ) -> ProviderEligibilityDecision:
     current = _now(now)
     try:
-        if not isinstance(target_sha, str) or not target_sha:
-            raise ProviderEligibilityError("provider decision target revision is required")
-        state.validate(now=now, target_sha=target_sha)
+        if revision_scope not in _REVISION_SCOPES:
+            raise ProviderEligibilityError("provider decision revision scope is invalid")
+        if revision_scope == "revision-bound":
+            if not isinstance(target_sha, str) or not target_sha:
+                raise ProviderEligibilityError("provider decision target revision is required")
+            state.validate(now=now, target_sha=target_sha)
+        else:
+            if provider_kind != "knowledge" or capability_domain != "documentation":
+                raise ProviderEligibilityError("revisionless scope is not supported here")
+            if target_sha is not None:
+                raise ProviderEligibilityError("revisionless decision must not receive target_sha")
+            state.validate(now=now)
     except ProviderIntelligenceError as exc:
         raise ProviderEligibilityError("owner provider intelligence is unavailable") from exc
     if _instant("provider intelligence observed_at", state.observed_at) > current:
@@ -256,6 +271,7 @@ def _decision_from_state(
         provider_kind=provider_kind,
         capability_domain=capability_domain,
         target_sha=state.target_sha,
+        revision_scope=revision_scope,
         authorized_requirements=requested,
         authority_context_hash=context_hash,
         source_state_sha256=state.state_sha256,
@@ -296,6 +312,7 @@ class ProviderEligibilityAuthority:
         now: str,
         required_capabilities: Iterable[str],
         target_sha: str | None = None,
+        revision_scope: str = "revision-bound",
         decision_domain: str | None = None,
     ) -> ProviderEligibilityDecision:
         domain = decision_domain or {
@@ -316,6 +333,7 @@ class ProviderEligibilityAuthority:
             provider_kind=provider_kind,
             capability_domain=capability_domain,
             target_sha=target_sha,
+            revision_scope=revision_scope,
             now=now,
             required_capabilities=required_capabilities,
         )
@@ -339,6 +357,7 @@ class ProviderEligibilityAuthority:
         now: str,
         required_capability: str,
         target_sha: str | None = None,
+        revision_scope: str = "revision-bound",
     ) -> ProviderEligibilityDecision:
         try:
             profile.validate(now=now)
@@ -358,6 +377,7 @@ class ProviderEligibilityAuthority:
             provider_kind="knowledge",
             capability_domain=required_capability,
             target_sha=target_sha,
+            revision_scope=revision_scope,
             decision_domain="documentation",
             now=now,
             required_capabilities=(required_capability,),
@@ -389,7 +409,8 @@ class ProviderEligibilityAuthority:
             capability_domain=decision.capability_domain,
             now=now,
             required_capabilities=required_capabilities,
-            target_sha=target_sha,
+            target_sha=(target_sha if decision.revision_scope == "revision-bound" else None),
+            revision_scope=decision.revision_scope,
             decision_domain=(
                 "documentation"
                 if decision.capability_domain == "documentation"
@@ -414,6 +435,7 @@ class ProviderEligibilityAuthority:
         provider_kind: str,
         now: str,
         target_sha: str | None = None,
+        revision_scope: str = "revision-bound",
     ):
         ordered = tuple(candidates)
         required = tuple(required_capabilities)
@@ -431,6 +453,7 @@ class ProviderEligibilityAuthority:
                     now=now,
                     required_capabilities=required,
                     target_sha=target_sha,
+                    revision_scope=revision_scope,
                 )
                 if all(
                     (

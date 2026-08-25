@@ -201,7 +201,8 @@ def _documentation_authority(profile_value, kwargs):
 
 
 def resolve_provider(profile_value, **kwargs):
-    kwargs.setdefault("target_sha", REVISION)
+    if kwargs.get("revision_scope", "revision-bound") == "revision-bound":
+        kwargs.setdefault("target_sha", REVISION)
     return _resolve_provider(
         profile_value,
         eligibility_authority=_documentation_authority(profile_value, kwargs),
@@ -214,6 +215,40 @@ DEFAULT_BINDING = resolve_provider(
     policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
 ).binding
 assert isinstance(DEFAULT_BINDING, ProviderBinding)
+
+
+def test_revisionless_library_resolution_has_explicit_non_replayable_scope():
+    result = resolve_provider(
+        profile(), project_id=PROJECT, now=NOW, available=True, authenticated=True,
+        policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
+        revision_scope="resolve-library",
+    )
+    assert result.binding is not None
+    library_binding = result.binding
+    library_request = request(
+        operation=DocumentationOperation.RESOLVE_LIBRARY,
+        repository_id=None,
+        revision_sha=None,
+        provider_binding=library_binding,
+    )
+    library_evidence = evidence(
+        operation=DocumentationOperation.RESOLVE_LIBRARY,
+        repository_id=None,
+        revision_sha=None,
+        provider_binding_sha256=library_binding.binding_sha256,
+    )
+    assert library_evidence.assess(library_request, now=NOW) is DocumentationStatus.VALID
+    retrieval_request = request(provider_binding=library_binding)
+    retrieval_evidence = evidence(
+        provider_binding_sha256=library_binding.binding_sha256,
+    )
+    assert retrieval_evidence.assess(
+        retrieval_request, now=NOW
+    ) is DocumentationStatus.PROVIDER_INELIGIBLE
+    tampered = replace(library_binding, revision_scope="revision-bound")
+    assert library_evidence.assess(
+        library_request, now=NOW, provider_binding=tampered
+    ) is DocumentationStatus.PROVIDER_INELIGIBLE
 
 
 def test_exact_version_is_valid_and_latest_major_is_rejected():
