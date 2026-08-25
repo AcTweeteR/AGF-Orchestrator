@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from dataclasses import replace
 
 import pytest
@@ -440,6 +441,33 @@ def test_provider_binding_issuance_survives_restart_and_artifact_tampering(tmp_p
         load_provider_binding(store, "session-one", issued.binding_sha256)
 
 
+def test_provider_binding_authority_store_rejects_foreign_or_unsafe_paths(tmp_path, monkeypatch):
+    authority = tmp_path / "authority"
+    monkeypatch.setenv("AGF_STATE_DIR", str(authority))
+    monkeypatch.setattr(os, "geteuid", lambda: 424242)
+    with pytest.raises(DocumentationError):
+        binding_for("knowledge-provider-foreign-owner")
+
+    monkeypatch.undo()
+    monkeypatch.setenv("AGF_STATE_DIR", str(authority))
+    authority.mkdir(exist_ok=True)
+    database = authority / "provider-binding-authority.sqlite3"
+    database.mkdir()
+    with pytest.raises(DocumentationError):
+        binding_for("knowledge-provider-database-directory")
+
+    database.rmdir()
+    database.symlink_to(tmp_path / "elsewhere.sqlite3")
+    with pytest.raises(DocumentationError):
+        binding_for("knowledge-provider-database-symlink")
+
+    database.unlink()
+    binding_for("knowledge-provider-permissions")
+    database.chmod(0o644)
+    with pytest.raises(DocumentationError):
+        binding_for("knowledge-provider-open-database")
+
+
 def test_reconciliation_requires_semantic_claim_agreement_across_providers():
     binding_a = binding_for("knowledge-provider-a")
     binding_b = binding_for("knowledge-provider-b")
@@ -515,6 +543,23 @@ def test_compound_secret_patterns_are_bounded():
     ):
         with pytest.raises(DocumentationError):
             DocumentationCitation("source", "topic", value).validate()
+    for value in (
+        '{"password":"hunter2"}',
+        '{"client_secret": "opaque"}',
+        '{"api_key":"opaque"}',
+        '{"access_token":"opaque"}',
+        '{"nested":{"refresh_token":"opaque"}}',
+        '{"password": ""}',
+        "{'private_key':'opaque'}",
+        '{&quot;password&quot;:&quot;hunter2&quot;}',
+    ):
+        with pytest.raises(DocumentationError):
+            DocumentationCitation("source", "topic", value).validate()
+    for value in (
+        'the field "password" is required',
+        'password is documented as a field name',
+    ):
+        DocumentationCitation("source", "topic", value).validate()
     for value in (
         "https://bucket.example/object?X-Amz-Signature=abc123",
         "https://bucket.example/object?region=us&X-Amz-Signature=abc123",

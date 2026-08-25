@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import sqlite3
+import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -121,6 +122,13 @@ _SECRET = re.compile(
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|"
     r"(?:sk-|ghp_|github_pat_|xox[baprs]-|AIza)[A-Za-z0-9_-]{12,}"
 )
+_QUOTED_SECRET_LABEL = re.compile(
+    r"(?i)(['\"])(?:aws[_-]?secret[_-]?access[_-]?key|"
+    r"aws[_-]?access[_-]?key[_-]?id|secret\s+access\s+key|"
+    r"password|passwd|secret|client[_ ]secret|api[_ ]key|"
+    r"access[_ ]token|refresh[_ ]token|private[_ ]key)\1\s*:\s*"
+    r"(['\"])[^'\"]*\2"
+)
 _MAX_TEXT = 4000
 _MAX_CITATIONS = 32
 _MAX_EXCERPT = 2400
@@ -135,17 +143,47 @@ _PROVIDER_BINDING_DB = "provider-binding-authority.sqlite3"
 
 def _provider_binding_store_path() -> Path:
     root = Path(os.environ.get("AGF_STATE_DIR", "~/.agf-orchestrator")).expanduser()
-    root.mkdir(parents=True, exist_ok=True)
-    if root.is_symlink() or root.stat().st_mode & 0o022:
+    try:
+        was_present = root.exists() or root.is_symlink()
+        root.mkdir(parents=True, exist_ok=True)
+        if not was_present:
+            os.chmod(root, 0o700)
+        root_stat = root.lstat()
+    except OSError as exc:
+        raise DocumentationError("provider binding authority root is unavailable") from exc
+    if (
+        not stat.S_ISDIR(root_stat.st_mode)
+        or root_stat.st_uid != os.geteuid()
+        or root_stat.st_mode & 0o077
+    ):
         raise DocumentationError("provider binding authority root is not owner-controlled")
     path = root / _PROVIDER_BINDING_DB
-    if path.exists() and path.is_symlink():
-        raise DocumentationError("provider binding authority store must not use symlinks")
+    if path.exists() or path.is_symlink():
+        try:
+            database_stat = path.lstat()
+        except OSError as exc:
+            raise DocumentationError("provider binding authority store is unavailable") from exc
+        if (
+            not stat.S_ISREG(database_stat.st_mode)
+            or database_stat.st_uid != os.geteuid()
+            or database_stat.st_mode & 0o077
+        ):
+            raise DocumentationError("provider binding authority store is not owner-controlled")
     return path
 
 
 def _record_provider_binding_issuance(token: str, binding_sha256: str) -> None:
     path = _provider_binding_store_path()
+    if not path.exists():
+        try:
+            descriptor = os.open(
+                path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600
+            )
+            os.close(descriptor)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise DocumentationError("provider binding authority store is unavailable") from exc
     connection = sqlite3.connect(path)
     try:
         os.chmod(path, 0o600)
@@ -166,6 +204,8 @@ def _record_provider_binding_issuance(token: str, binding_sha256: str) -> None:
 def _verify_provider_binding_issuance(token: str, binding_sha256: str) -> bool:
     try:
         path = _provider_binding_store_path()
+        if not path.exists():
+            return False
         connection = sqlite3.connect(path)
         try:
             row = connection.execute(
@@ -198,6 +238,8 @@ def _text(label: str, value: Any, *, limit: int = _MAX_TEXT) -> None:
     if (
         _SECRET.search(value)
         or _SECRET.search(decoded)
+        or _QUOTED_SECRET_LABEL.search(value)
+        or _QUOTED_SECRET_LABEL.search(decoded)
         or _URI_USERINFO.search(value)
         or _URI_USERINFO.search(decoded)
         or _contains_credential_query(value)
