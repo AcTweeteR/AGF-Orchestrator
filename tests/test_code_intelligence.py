@@ -2,6 +2,7 @@ import json
 from dataclasses import replace
 
 import pytest
+from provider_test_support import canonical_test_authority
 from provider_test_support import sign_state as sign_owner_state
 
 from agf_orchestrator.capability_profiles import (
@@ -26,7 +27,6 @@ from agf_orchestrator.code_intelligence import (
     seal,
 )
 from agf_orchestrator.code_intelligence import resolve_provider as _resolve_provider
-from agf_orchestrator.provider_eligibility import ProviderEligibilityAuthority
 from agf_orchestrator.provider_intelligence import (
     ProviderIntelligenceStore,
     build_state,
@@ -202,7 +202,7 @@ def eligibility_authority(tmp_path, candidates):
     store = ProviderIntelligenceStore(tmp_path)
     project_store = store.for_project(PROJECT, decision_domain="code-intelligence")
     project_store.save(sign_owner_state(value))
-    return ProviderEligibilityAuthority(store)
+    return canonical_test_authority(store)
 
 
 def test_optional_and_required_provider_unavailability_fail_closed(tmp_path):

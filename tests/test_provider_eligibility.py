@@ -2,6 +2,7 @@ import json
 from dataclasses import replace
 
 import pytest
+from provider_test_support import canonical_test_authority
 from provider_test_support import sign_state as sign_owner_state
 
 from agf_orchestrator.capability_extensions import (
@@ -128,7 +129,7 @@ def make_authority(tmp_path, value=None):
     signed = sign_owner_state(value or state())
     project_store = store.for_project(PROJECT, decision_domain="documentation")
     project_store.save(signed)
-    return ProviderEligibilityAuthority(store), project_store
+    return canonical_test_authority(store), project_store
 
 
 def test_staging_hmac_store_cannot_become_trusted_authority(tmp_path):
@@ -141,6 +142,34 @@ def test_staging_hmac_store_cannot_become_trusted_authority(tmp_path):
 
     with pytest.raises(ProviderEligibilityError, match="owner-verifying"):
         ProviderEligibilityAuthority(FakeStore())
+
+
+def test_production_authority_is_pinned_to_configured_state_root(tmp_path, monkeypatch):
+    canonical_root = tmp_path / "canonical"
+    monkeypatch.setenv("AGF_STATE_DIR", str(canonical_root))
+    canonical_store = ProviderIntelligenceStore(canonical_root)
+    canonical_store.for_project(PROJECT, decision_domain="documentation").save(
+        sign_owner_state(state())
+    )
+    authority = ProviderEligibilityAuthority(canonical_store)
+    assert authority.resolve(
+        project_id=PROJECT,
+        provider_id="knowledge-docs",
+        provider_kind="knowledge",
+        capability_domain="documentation",
+        now=NOW,
+        target_sha=TARGET,
+        required_capabilities=("documentation",),
+        decision_domain="documentation",
+    ).provider_id == "knowledge-docs"
+
+    alternate = tmp_path / "copied-old-root"
+    alternate_store = ProviderIntelligenceStore(alternate)
+    alternate_store.for_project(PROJECT, decision_domain="documentation").save(
+        sign_owner_state(state())
+    )
+    with pytest.raises(ProviderEligibilityError, match="canonical state root"):
+        ProviderEligibilityAuthority(alternate_store)
 
 
 def test_owner_verifying_authority_cannot_swap_its_store(tmp_path):
@@ -192,7 +221,7 @@ def test_owner_eligible_provider_resolves_and_survives_restart(tmp_path):
         decision_domain="documentation",
     )
     assert decision.policy_eligible and decision.network_eligible is True
-    recovered = ProviderEligibilityAuthority(project_store).verify(
+    recovered = canonical_test_authority(ProviderIntelligenceStore(tmp_path)).verify(
         decision, now=NOW, target_sha=TARGET, required_capabilities=("documentation",)
     )
     assert recovered == decision
@@ -278,7 +307,7 @@ def test_selection_loads_one_verified_snapshot_for_all_candidates(tmp_path, monk
         return original_load(store)
 
     monkeypatch.setattr(ProviderIntelligenceStore, "load", counted_load)
-    authority_value = ProviderEligibilityAuthority(store)
+    authority_value = canonical_test_authority(store)
     selected = authority_value.select(
         state().candidates, project_id=PROJECT,
         required_capabilities=("documentation",), provider_kind="knowledge",
@@ -488,7 +517,7 @@ def test_cross_project_provider_and_expired_state_fail_closed(tmp_path):
     expired_project_store.path.write_text(
         json.dumps(sign_owner_state(expired).to_dict())
     )
-    expired_authority = ProviderEligibilityAuthority(expired_store)
+    expired_authority = canonical_test_authority(expired_store)
     with pytest.raises(ProviderEligibilityError):
         expired_authority.resolve(
             project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",

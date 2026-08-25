@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -56,3 +57,18 @@ def verify_envelope(payload: object, envelope: dict[str, object]) -> None:
     Ed25519PublicKey.from_public_bytes(_PUBLIC_KEY).verify(
         base64.b64decode(envelope["signature"], validate=True), payload_bytes
     )
+
+
+def canonical_test_authority(store):
+    """Construct production wiring against an explicitly configured test root."""
+    from agf_orchestrator.provider_eligibility import ProviderEligibilityAuthority
+
+    previous = os.environ.get("AGF_STATE_DIR")
+    os.environ["AGF_STATE_DIR"] = str(store.root)
+    try:
+        return ProviderEligibilityAuthority(store)
+    finally:
+        if previous is None:
+            os.environ.pop("AGF_STATE_DIR", None)
+        else:
+            os.environ["AGF_STATE_DIR"] = previous

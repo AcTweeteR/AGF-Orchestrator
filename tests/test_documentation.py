@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from provider_test_support import canonical_test_authority
 from provider_test_support import sign_state as sign_owner_state
 
 from agf_orchestrator.capability_extensions import (
@@ -48,7 +49,6 @@ from agf_orchestrator.documentation import (
     resolve_provider as _resolve_provider,
 )
 from agf_orchestrator.provider_eligibility import (
-    ProviderEligibilityAuthority,
     canonical_knowledge_security_posture,
 )
 from agf_orchestrator.provider_intelligence import (
@@ -227,7 +227,7 @@ def _documentation_authority(profile_value, kwargs):
     store.for_project(PROJECT, decision_domain="documentation").save(
         sign_owner_state(state)
     )
-    return ProviderEligibilityAuthority(store)
+    return canonical_test_authority(store)
 
 
 def resolve_provider(profile_value, **kwargs):

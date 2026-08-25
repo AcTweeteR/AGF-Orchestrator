@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -29,6 +30,18 @@ from .provider_intelligence import (
 
 class ProviderEligibilityError(ValueError):
     """Raised when canonical provider eligibility is unavailable or invalid."""
+
+
+def _canonical_state_root() -> Path:
+    """Return the process' owner-configured AGF state root.
+
+    The root is deployment configuration, not an input to an eligibility
+    operation.  In particular, a valid owner signature on a copied state
+    does not make the copy the active AGF control plane.
+    """
+    return Path(
+        os.environ.get("AGF_STATE_DIR") or "~/.agf-orchestrator"
+    ).expanduser().resolve()
 
 
 @dataclass(frozen=True)
@@ -442,10 +455,16 @@ class ProviderEligibilityAuthority:
 
     __slots__ = ("_store_handle", "_sealed")
 
-    def __init__(self, store: Any):
+    def __init__(self, store: Any | None = None):
+        if store is None:
+            store = ProviderIntelligenceStore()
         if type(store) is not ProviderIntelligenceStore or not store.owner_verifying:
             raise ProviderEligibilityError(
                 "provider eligibility requires the canonical owner-verifying store"
+            )
+        if Path(store.root).resolve() != _canonical_state_root():
+            raise ProviderEligibilityError(
+                "provider eligibility store is not the configured canonical state root"
             )
         object.__setattr__(
             self,
