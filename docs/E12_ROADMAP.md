@@ -8,7 +8,7 @@ ADR: `docs/adr/ADR-0004-governed-capability-extensions.md`
 
 ## Objective
 
-Extend AGF-Orchestrator with reusable governed procedures, external capability and knowledge discovery, code-intelligence providers, browser validation, current technical documentation providers, session resilience, and evidence ergonomics without creating new authority sources or coupling the governor to a specific vendor.
+Extend AGF-Orchestrator with reusable governed procedures, external capability and knowledge discovery, code-intelligence providers, browser validation, current technical documentation providers, pluggable execution harnesses, session resilience, and evidence ergonomics without creating new authority sources or coupling the governor to a specific vendor.
 
 `kimi-k3-in-c` and local-model streaming/runtime work remain explicitly out of scope.
 
@@ -17,7 +17,8 @@ Extend AGF-Orchestrator with reusable governed procedures, external capability a
 - AGF remains the sole governor for task eligibility, risk, allowed paths, provider/tool selection, evidence, delivery, merge and escalation.
 - Third-party repositories are sources of ideas, procedures, adapters or optional providers; they do not become authority sources.
 - Optional integrations fail closed on missing, stale, contradictory, unauthenticated, privacy-ineligible or policy-ineligible evidence.
-- No tool, skill, MCP server, browser, code-intelligence engine or documentation service may expand `allowed_paths`, lower risk, clear a kill switch, authorize delivery/merge, satisfy `HUMAN_REQUIRED`, or fabricate evidence.
+- No tool, skill, MCP server, browser, code-intelligence engine, documentation service or execution harness may expand `allowed_paths`, lower risk, clear a kill switch, authorize delivery/merge, satisfy `HUMAN_REQUIRED`, or fabricate evidence.
+- An execution harness may execute only work already authorized by AGF; it cannot become a scheduler, policy engine, completion authority, credential authority or merge authority.
 - AGF Desktop consumes these capabilities but does not own their governance logic.
 
 ## Sources and intended use
@@ -34,6 +35,7 @@ Extend AGF-Orchestrator with reusable governed procedures, external capability a
 | `microsoft/playwright-mcp` | optional browser/real-workflow validation provider | Optional only |
 | `upstash/context7` | optional current-library/documentation knowledge provider | Optional only |
 | `obra/superpowers` | source of disciplined development workflow patterns | No |
+| `deepseek-ai/DeepSeek-Harness` | optional execution-harness provider and architecture reference | Optional only |
 
 ## Execution backlog
 
@@ -277,19 +279,46 @@ Acceptance:
 - project/revision/environment bindings survive restart;
 - pilot demonstrates measurable context-efficiency or validation coverage improvement without reducing safety gates.
 
+### E12-T17 — Pluggable execution-harness boundary and DeepSeek Harness pilot — PLANNED
+
+Source: `deepseek-ai/DeepSeek-Harness`.
+
+Objective: separate AGF's governance from the runtime that actually executes an already-authorized task, so Codex, FCC, DeepSeek Harness and future runtimes can be interchangeable execution harnesses under one policy/evidence contract.
+
+Scope:
+- define a provider-neutral `ExecutionHarnessProvider` boundary distinct from model/provider selection;
+- model harness capabilities including tools, sandboxing, sessions, replay/resume, event stream, subagents, loops and scheduling primitives;
+- bind every harness invocation to project, session, task, plan hash, allowed paths, risk decision and provider-selection evidence;
+- require harness capability/freshness/version evidence before selection;
+- expose bounded execution events back into AGF evidence without making harness-native state authoritative;
+- preserve AGF scheduler, risk, completion, delivery, merge, credential and kill-switch authority;
+- compare Codex/FCC execution behavior with a disposable DeepSeek Harness adapter/pilot;
+- treat DeepSeek Harness developer-preview/API drift as an explicit compatibility risk and fail closed on incompatible or missing capabilities;
+- no requirement that DeepSeek Harness be installed for AGF core operation.
+
+Acceptance:
+- the harness cannot create work, widen scope, change risk, alter policy, authorize external mutation, merge/delivery or declare completion;
+- session/replay state is subordinate to AGF lineage and cannot resume against a mismatched project/revision/task;
+- subagents and harness-native loops remain bounded by AGF task budget, finite-progress rules and kill switch;
+- sandbox/tool access cannot exceed AGF's effective allowed paths and external-action policy;
+- incompatible harness/API versions become `UNAVAILABLE`/`UNKNOWN`, never silently fall back to weaker governance;
+- a disposable pilot proves that the same governed task can be represented through at least two harness implementations without changing AGF authority semantics;
+- no DeepSeek-specific types leak into the core provider-neutral contract.
+
 ## Priority
 
 Recommended execution order for the remaining work:
 
 1. E12-T10 — session resilience/workspace trust/evidence ergonomics.
-2. E12-T11 — Serena code-intelligence provider.
-3. E12-T14 — Context7 documentation provider.
-4. E12-T13 — Playwright browser validation.
-5. E12-T12 — `wshobson/agents` governed catalog adapter.
-6. E12-T15 — Superpowers pattern review.
-7. E12-T16 — combined disposable pilot.
+2. E12-T17 — execution-harness boundary, because it clarifies the layer used by Codex/FCC and future runtimes.
+3. E12-T11 — Serena code-intelligence provider.
+4. E12-T14 — Context7 documentation provider.
+5. E12-T13 — Playwright browser validation.
+6. E12-T12 — `wshobson/agents` governed catalog adapter.
+7. E12-T15 — Superpowers pattern review.
+8. E12-T16 — combined disposable pilot, extended to exercise the selected execution harness.
 
-This ordering first strengthens correctness and trust boundaries, then repository/documentation understanding, then real-workflow validation, then expands procedure supply.
+This ordering first strengthens correctness and trust boundaries, then formalizes the execution layer, then repository/documentation understanding, real-workflow validation and procedure supply.
 
 ## Definition of Done
 
@@ -300,7 +329,4 @@ E12 is complete only when:
 - independent review and Compliance pass under the active AGF policy;
 - CRITICAL boundaries remain `HUMAN_REQUIRED` where policy requires;
 - no new authority source, parallel policy engine, scheduler, credential store, merge path or audit-truth store has been introduced;
-- disposable end-to-end canaries prove fail-closed behavior across procedures, providers, code intelligence, documentation and browser validation.
-
-
-
+- disposable end-to-end canaries prove fail-closed behavior across procedures, providers, execution harnesses, code intelligence, documentation and browser validation.
