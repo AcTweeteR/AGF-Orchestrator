@@ -992,7 +992,14 @@ class DocumentationEvidence:
             if claim.assertion_key in claim_keys:
                 raise DocumentationError("claim assertion keys must be unique")
             claim_keys.add(claim.assertion_key)
-        _timestamp("observed_at", self.observed_at)
+        observed_at = _timestamp("observed_at", self.observed_at)
+        dependency_observed_at = _timestamp(
+            "dependency observed_at", self.dependency.observed_at
+        )
+        if dependency_observed_at > observed_at:
+            raise DocumentationError(
+                "dependency observation cannot be newer than documentation retrieval"
+            )
         if not isinstance(self.freshness, DocumentationFreshness):
             raise DocumentationError("freshness is invalid")
         if not isinstance(self.status, DocumentationStatus):

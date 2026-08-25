@@ -351,9 +351,12 @@ def test_project_repository_revision_topic_and_stale_bindings():
         freshness=DocumentationFreshness.STALE, status=DocumentationStatus.STALE
     )
     assert stale.assess(request(), now=NOW) is DocumentationStatus.STALE
-    old = evidence(observed_at="2026-08-24T00:00:00Z")
+    old_dependency = dependency(observed_at="2026-08-24T00:00:00Z")
+    old = evidence(
+        observed_at="2026-08-24T00:00:00Z", dependency=old_dependency
+    )
     assert (
-        old.assess(request(max_age_seconds=60), now=NOW)
+        old.assess(request(dependency=old_dependency, max_age_seconds=60), now=NOW)
         is DocumentationStatus.PROVIDER_INELIGIBLE
     )
 
@@ -376,6 +379,20 @@ def test_dependency_evidence_has_the_same_freshness_bound():
     )
     item = evidence(dependency=old_dependency.dependency)
     assert item.assess(old_dependency, now=NOW) is DocumentationStatus.STALE
+
+
+def test_dependency_observation_cannot_follow_documentation_retrieval():
+    newer_dependency = dependency(observed_at="2026-08-24T12:00:01Z")
+    with pytest.raises(DocumentationError, match="dependency observation"):
+        evidence(dependency=newer_dependency)
+
+
+def test_dependency_and_documentation_equal_or_ordered_timestamps_are_valid():
+    for observed_at in ("2026-08-24T12:00:00Z", "2026-08-24T11:59:59Z"):
+        dep = dependency(observed_at=observed_at)
+        assert evidence(dependency=dep).assess(
+            request(dependency=dep), now=NOW
+        ) is DocumentationStatus.VALID
 
 
 def test_conflicting_sources_and_provider_responses_fail_closed():
