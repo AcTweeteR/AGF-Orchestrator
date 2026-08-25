@@ -22,9 +22,9 @@ from agf_orchestrator.code_intelligence import (
     evidence_from_dict,
     load_evidence,
     persist_evidence,
-    resolve_provider,
     seal,
 )
+from agf_orchestrator.code_intelligence import resolve_provider as _resolve_provider
 from agf_orchestrator.provider_eligibility import ProviderEligibilityAuthority
 from agf_orchestrator.provider_intelligence import (
     ProviderIntelligenceStore,
@@ -38,6 +38,11 @@ REPOSITORY = "github.com/example/repository"
 REVISION = "a" * 40
 OTHER_REVISION = "b" * 40
 NOW = "2026-08-24T12:00:00Z"
+
+
+def resolve_provider(candidates, **kwargs):
+    kwargs.setdefault("target_sha", REVISION)
+    return _resolve_provider(candidates, **kwargs)
 
 
 def request(**changes):

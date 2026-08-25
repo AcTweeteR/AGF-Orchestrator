@@ -355,7 +355,7 @@ class ProviderResolution:
 
 def resolve_provider(
     candidates: tuple[CapabilityCandidate, ...], *, project_id: str,
-    required: bool, now: str, gates: SelectionGates,
+    required: bool, now: str, gates: SelectionGates, target_sha: str | None = None,
     eligibility_authority: ProviderEligibilityAuthority | None = None,
 ) -> ProviderResolution:
     if eligibility_authority is None:
@@ -371,6 +371,7 @@ def resolve_provider(
             required_capabilities=("code-intelligence",),
             provider_kind="code-intelligence",
             now=now,
+            target_sha=target_sha,
         )
         return ProviderResolution(IntelligenceStatus.VALID, selection, "eligible")
     except (ProviderEligibilityError, ValueError, TypeError) as exc:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Iterable
@@ -69,6 +70,7 @@ class ProviderEligibilityDecision:
     provider_id: str
     provider_kind: str
     capability_domain: str
+    target_sha: str
     authorized_requirements: tuple[str, ...]
     authority_context_hash: str
     source_state_sha256: str
@@ -92,6 +94,7 @@ class ProviderEligibilityDecision:
             "provider_id": self.provider_id,
             "provider_kind": self.provider_kind,
             "capability_domain": self.capability_domain,
+            "target_sha": self.target_sha,
             "authorized_requirements": list(self.authorized_requirements),
             "authority_context_hash": self.authority_context_hash,
             "source_state_sha256": self.source_state_sha256,
@@ -130,6 +133,10 @@ class ProviderEligibilityDecision:
                 raise ProviderEligibilityError(f"{label} is invalid")
         if not self.capability_domain or len(self.capability_domain) > 128:
             raise ProviderEligibilityError("provider decision capability domain is invalid")
+        if not isinstance(self.target_sha, str) or not re.fullmatch(
+            r"[0-9a-f]{40}", self.target_sha
+        ):
+            raise ProviderEligibilityError("provider decision target revision is invalid")
         if not self.authorized_requirements or any(
             not isinstance(item, str) or not item.strip()
             for item in self.authorized_requirements
@@ -177,12 +184,15 @@ def _decision_from_state(
     provider_id: str,
     provider_kind: str,
     capability_domain: str,
+    target_sha: str | None,
     now: str,
     required_capabilities: Iterable[str],
 ) -> ProviderEligibilityDecision:
     current = _now(now)
     try:
-        state.validate(now=now)
+        if not isinstance(target_sha, str) or not target_sha:
+            raise ProviderEligibilityError("provider decision target revision is required")
+        state.validate(now=now, target_sha=target_sha)
     except ProviderIntelligenceError as exc:
         raise ProviderEligibilityError("owner provider intelligence is unavailable") from exc
     if _instant("provider intelligence observed_at", state.observed_at) > current:
@@ -245,6 +255,7 @@ def _decision_from_state(
         provider_id=provider_id,
         provider_kind=provider_kind,
         capability_domain=capability_domain,
+        target_sha=state.target_sha,
         authorized_requirements=requested,
         authority_context_hash=context_hash,
         source_state_sha256=state.state_sha256,
@@ -284,6 +295,7 @@ class ProviderEligibilityAuthority:
         capability_domain: str,
         now: str,
         required_capabilities: Iterable[str],
+        target_sha: str | None = None,
         decision_domain: str | None = None,
     ) -> ProviderEligibilityDecision:
         domain = decision_domain or {
@@ -303,6 +315,7 @@ class ProviderEligibilityAuthority:
             provider_id=provider_id,
             provider_kind=provider_kind,
             capability_domain=capability_domain,
+            target_sha=target_sha,
             now=now,
             required_capabilities=required_capabilities,
         )
@@ -325,6 +338,7 @@ class ProviderEligibilityAuthority:
         *,
         now: str,
         required_capability: str,
+        target_sha: str | None = None,
     ) -> ProviderEligibilityDecision:
         try:
             profile.validate(now=now)
@@ -343,13 +357,17 @@ class ProviderEligibilityAuthority:
             provider_id=profile.knowledge_provider_id,
             provider_kind="knowledge",
             capability_domain=required_capability,
+            target_sha=target_sha,
             decision_domain="documentation",
             now=now,
             required_capabilities=(required_capability,),
         )
         if required_network and decision.network_eligible is not True:
             raise ProviderEligibilityError("network eligibility is unavailable")
-        if profile.requires_authenticated_session and decision.authentication_eligible is not True:
+        if (
+            (profile.requires_credentials or profile.requires_authenticated_session)
+            and decision.authentication_eligible is not True
+        ):
             raise ProviderEligibilityError("authentication eligibility is unavailable")
         if profile.privacy_review_required and not decision.privacy_eligible:
             raise ProviderEligibilityError("privacy eligibility is denied")
@@ -361,6 +379,7 @@ class ProviderEligibilityAuthority:
         *,
         now: str,
         required_capabilities: Iterable[str],
+        target_sha: str | None = None,
     ) -> ProviderEligibilityDecision:
         decision.validate(now=now)
         expected = self.resolve(
@@ -370,6 +389,7 @@ class ProviderEligibilityAuthority:
             capability_domain=decision.capability_domain,
             now=now,
             required_capabilities=required_capabilities,
+            target_sha=target_sha,
             decision_domain=(
                 "documentation"
                 if decision.capability_domain == "documentation"
@@ -393,6 +413,7 @@ class ProviderEligibilityAuthority:
         required_capabilities: Iterable[str],
         provider_kind: str,
         now: str,
+        target_sha: str | None = None,
     ):
         ordered = tuple(candidates)
         required = tuple(required_capabilities)
@@ -409,6 +430,7 @@ class ProviderEligibilityAuthority:
                     capability_domain=required[0],
                     now=now,
                     required_capabilities=required,
+                    target_sha=target_sha,
                 )
                 if all(
                     (

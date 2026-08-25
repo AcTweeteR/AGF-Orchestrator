@@ -731,6 +731,7 @@ class ProviderBinding:
     binding_sha256: str
     issuance_token: str = ""
     decision_sha256: str = ""
+    target_sha: str = ""
     # Runtime-only injection; persisted bindings always re-resolve canonical state.
     authority: Any = field(default=None, compare=False, repr=False)
 
@@ -749,6 +750,7 @@ class ProviderBinding:
             "binding_sha256": self.binding_sha256,
             "issuance_token": self.issuance_token,
             "decision_sha256": self.decision_sha256,
+            "target_sha": self.target_sha,
         }
 
     def validate(
@@ -765,6 +767,8 @@ class ProviderBinding:
         if not isinstance(self.issuance_token, str) or len(self.issuance_token) < 32:
             raise DocumentationError("provider binding issuance is missing")
         _sha("provider binding decision_sha256", self.decision_sha256, _SHA256)
+        if not re.fullmatch(r"[0-9a-f]{40}", self.target_sha):
+            raise DocumentationError("provider binding target revision is invalid")
         decision = _timestamp("provider binding decision_at", self.decision_at)
         if now is not None and decision > _timestamp("provider binding now", now):
             raise DocumentationError("provider binding is future-dated")
@@ -785,6 +789,7 @@ class ProviderBinding:
                 capability_domain="documentation",
                 now=now or self.decision_at,
                 required_capabilities=("documentation",),
+                target_sha=self.target_sha,
                 decision_domain="documentation",
             )
         except (ProviderEligibilityError, OSError, ValueError) as exc:
@@ -800,6 +805,8 @@ class ProviderBinding:
             raise DocumentationError("provider binding decision differs from authority")
         if self.decision_at != decision.decision_at:
             raise DocumentationError("provider binding decision time differs from authority")
+        if self.target_sha != decision.target_sha:
+            raise DocumentationError("provider binding target revision differs from authority")
         expected_token = hashlib.sha256(
             f"agf-provider-binding-v1:{decision.decision_sha256}:{self.profile_sha256}".encode()
         ).hexdigest()
@@ -852,6 +859,7 @@ def _seal_provider_binding(
         "binding_sha256": "",
         "issuance_token": issuance_token,
         "decision_sha256": decision.decision_sha256,
+        "target_sha": decision.target_sha,
     }
     digest = hashlib.sha256(
         json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
@@ -861,7 +869,8 @@ def _seal_provider_binding(
         now, binding_expires_at,
         decision.health_eligible, decision.authentication_eligible is True,
         decision.policy_eligible, decision.privacy_eligible, decision.network_eligible,
-        digest, issuance_token, decision.decision_sha256, eligibility_authority,
+        digest, issuance_token, decision.decision_sha256, decision.target_sha,
+        eligibility_authority,
     )
     binding.validate(eligibility_authority=eligibility_authority)
     return binding
@@ -1016,6 +1025,7 @@ class DocumentationEvidence:
             or self.project_id != request.project_id
             or self.provider_id != selected_binding.provider_id
             or self.provider_binding_sha256 != selected_binding.binding_sha256
+            or selected_binding.target_sha != request.revision_sha
         ):
             return DocumentationStatus.PROVIDER_INELIGIBLE
         if _timestamp("provider binding decision_at", selected_binding.decision_at) > _timestamp(
@@ -1209,6 +1219,7 @@ def resolve_provider(
     network_allowed: bool | None,
     required: bool,
     eligibility_authority: ProviderEligibilityAuthority | None = None,
+    target_sha: str | None = None,
 ) -> ProviderResolution:
     try:
         profile.validate(now=now)
@@ -1223,7 +1234,7 @@ def resolve_provider(
     authority = eligibility_authority or ProviderEligibilityAuthority(ProviderIntelligenceStore())
     try:
         decision = authority.resolve_knowledge_profile(
-            profile, now=now, required_capability="documentation"
+            profile, now=now, required_capability="documentation", target_sha=target_sha
         )
     except ProviderEligibilityError as exc:
         reason = str(exc)

@@ -109,11 +109,13 @@ def make_authority(tmp_path, value=None):
     return ProviderEligibilityAuthority(store), project_store
 
 
-def knowledge_profile(*, project_id=PROJECT, network_required=True, auth_required=True):
+def knowledge_profile(
+    *, project_id=PROJECT, network_required=True, auth_required=True, credentials=False
+):
     return seal_knowledge_profile(
         KnowledgeProviderProfile(
             "1.0", "knowledge-docs", project_id, 1, KnowledgeTransport.STDIO,
-            ("documentation",), False, auth_required, network_required, False,
+            ("documentation",), credentials, auth_required, network_required, False,
             PrivacyClassification.EXTERNAL_PRIVATE, True, KnowledgeMutability.READ_ONLY,
             IntegrationStability.OFFICIAL, "owner profile fixture", NOW, EXPIRES, "",
         )
@@ -124,21 +126,39 @@ def test_owner_eligible_provider_resolves_and_survives_restart(tmp_path):
     authority_value, project_store = make_authority(tmp_path)
     decision = authority_value.resolve(
         project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
-        capability_domain="documentation", now=NOW, required_capabilities=("documentation",),
+        capability_domain="documentation", now=NOW, target_sha=TARGET,
+        required_capabilities=("documentation",),
         decision_domain="documentation",
     )
     assert decision.policy_eligible and decision.network_eligible is True
     recovered = ProviderEligibilityAuthority(project_store).verify(
-        decision, now=NOW, required_capabilities=("documentation",)
+        decision, now=NOW, target_sha=TARGET, required_capabilities=("documentation",)
     )
     assert recovered == decision
+
+
+def test_target_revision_is_required_and_exactly_bound(tmp_path):
+    authority_value, _ = make_authority(tmp_path)
+    with pytest.raises(ProviderEligibilityError):
+        authority_value.resolve(
+            project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
+            capability_domain="documentation", now=NOW, target_sha="b" * 40,
+            required_capabilities=("documentation",), decision_domain="documentation",
+        )
+    with pytest.raises(ProviderEligibilityError):
+        authority_value.resolve(
+            project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
+            capability_domain="documentation", now=NOW,
+            required_capabilities=("documentation",), decision_domain="documentation",
+        )
 
 
 def test_fabricated_decision_self_hash_is_not_authority(tmp_path):
     authority_value, _ = make_authority(tmp_path)
     decision = authority_value.resolve(
         project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
-            capability_domain="documentation", now=NOW, required_capabilities=("documentation",),
+            capability_domain="documentation", now=NOW, target_sha=TARGET,
+            required_capabilities=("documentation",),
             decision_domain="documentation",
     )
     forged = replace(decision, policy_eligible=False, decision_sha256="0" * 64)
@@ -146,7 +166,9 @@ def test_fabricated_decision_self_hash_is_not_authority(tmp_path):
         json.dumps(forged._unsigned(), sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest())
     with pytest.raises(ProviderEligibilityError):
-        authority_value.verify(forged, now=NOW, required_capabilities=("documentation",))
+        authority_value.verify(
+            forged, now=NOW, target_sha=TARGET, required_capabilities=("documentation",)
+        )
 
 
 def test_policy_privacy_health_budget_and_empirical_denials_fail_closed(tmp_path):
@@ -161,21 +183,49 @@ def test_policy_privacy_health_budget_and_empirical_denials_fail_closed(tmp_path
             authority_value.resolve(
                 project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
                 capability_domain="documentation", now=NOW,
-                required_capabilities=("documentation",),
+                target_sha=TARGET, required_capabilities=("documentation",),
             )
 
 
 def test_knowledge_profile_requires_owner_network_and_authentication(tmp_path):
     authority_value, _ = make_authority(tmp_path)
     assert authority_value.resolve_knowledge_profile(
-        knowledge_profile(), now=NOW, required_capability="documentation"
+        knowledge_profile(), now=NOW, target_sha=TARGET, required_capability="documentation"
     ).provider_id == "knowledge-docs"
     no_network = make_authority(tmp_path / "no-network", state(
         provider_gate_evidence=(("authentication_eligible", True),)
     ))[0]
     with pytest.raises(ProviderEligibilityError):
         no_network.resolve_knowledge_profile(
-            knowledge_profile(), now=NOW, required_capability="documentation"
+            knowledge_profile(), now=NOW, target_sha=TARGET, required_capability="documentation"
+        )
+
+
+def test_credentials_require_owner_authentication_eligibility(tmp_path):
+    authority_value, _ = make_authority(tmp_path)
+    assert authority_value.resolve_knowledge_profile(
+        knowledge_profile(credentials=True), now=NOW, target_sha=TARGET,
+        required_capability="documentation",
+    ).provider_id == "knowledge-docs"
+    no_auth = make_authority(
+        tmp_path / "no-auth",
+        state(provider_gate_evidence=(("network_eligible", True),)),
+    )[0]
+    with pytest.raises(ProviderEligibilityError):
+        no_auth.resolve_knowledge_profile(
+            knowledge_profile(credentials=True), now=NOW, target_sha=TARGET,
+            required_capability="documentation",
+        )
+    denied = make_authority(
+        tmp_path / "denied-auth",
+        state(provider_gate_evidence=(
+            ("network_eligible", True), ("authentication_eligible", False)
+        )),
+    )[0]
+    with pytest.raises(ProviderEligibilityError):
+        denied.resolve_knowledge_profile(
+            knowledge_profile(credentials=True), now=NOW, target_sha=TARGET,
+            required_capability="documentation",
         )
 
 
@@ -184,7 +234,8 @@ def test_cross_project_provider_and_expired_state_fail_closed(tmp_path):
     with pytest.raises(ProviderEligibilityError):
         authority_value.resolve(
             project_id=PROJECT, provider_id="knowledge-other", provider_kind="knowledge",
-            capability_domain="documentation", now=NOW, required_capabilities=("documentation",),
+            capability_domain="documentation", now=NOW, target_sha=TARGET,
+            required_capabilities=("documentation",),
         )
     expired = state(observed="2020-01-01T00:00:00Z", expires="2020-01-02T00:00:00Z")
     expired_store = ProviderIntelligenceStore(tmp_path / "expired", signing_key=KEY, staging=True)
@@ -197,7 +248,8 @@ def test_cross_project_provider_and_expired_state_fail_closed(tmp_path):
     with pytest.raises(ProviderEligibilityError):
         expired_authority.resolve(
             project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
-            capability_domain="documentation", now=NOW, required_capabilities=("documentation",),
+            capability_domain="documentation", now=NOW, target_sha=TARGET,
+            required_capabilities=("documentation",),
         )
 
 
@@ -206,7 +258,8 @@ def test_provider_kind_cannot_cross_replay_owner_domain(tmp_path):
     with pytest.raises(ProviderEligibilityError):
         authority_value.resolve(
             project_id=PROJECT, provider_id="knowledge-docs", provider_kind="code-intelligence",
-            capability_domain="documentation", now=NOW, required_capabilities=("documentation",),
+            capability_domain="documentation", now=NOW, target_sha=TARGET,
+            required_capabilities=("documentation",),
         )
 
 
@@ -216,13 +269,14 @@ def test_requirements_are_owner_scoped_and_duplicates_fail_closed(tmp_path):
         authority_value.resolve(
             project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
             capability_domain="code-intelligence", now=NOW,
-            required_capabilities=("code-intelligence",), decision_domain="documentation",
+            target_sha=TARGET, required_capabilities=("code-intelligence",),
+            decision_domain="documentation",
         )
     with pytest.raises(ProviderEligibilityError):
         authority_value.resolve(
             project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
             capability_domain="documentation", now=NOW,
-            required_capabilities=("documentation", "documentation"),
+            target_sha=TARGET, required_capabilities=("documentation", "documentation"),
             decision_domain="documentation",
         )
 
@@ -233,7 +287,8 @@ def test_future_state_and_tampered_persisted_state_fail_closed(tmp_path):
     with pytest.raises(ProviderEligibilityError):
         future_authority.resolve(
             project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
-            capability_domain="documentation", now=NOW, required_capabilities=("documentation",),
+            capability_domain="documentation", now=NOW, target_sha=TARGET,
+            required_capabilities=("documentation",),
         )
     tampered_authority, project_store = make_authority(tmp_path / "tampered")
     payload = json.loads(project_store.path.read_text())
@@ -242,5 +297,6 @@ def test_future_state_and_tampered_persisted_state_fail_closed(tmp_path):
     with pytest.raises(ProviderEligibilityError):
         tampered_authority.resolve(
             project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
-            capability_domain="documentation", now=NOW, required_capabilities=("documentation",),
+            capability_domain="documentation", now=NOW, target_sha=TARGET,
+            required_capabilities=("documentation",),
         )

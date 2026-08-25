@@ -201,6 +201,7 @@ def _documentation_authority(profile_value, kwargs):
 
 
 def resolve_provider(profile_value, **kwargs):
+    kwargs.setdefault("target_sha", REVISION)
     return _resolve_provider(
         profile_value,
         eligibility_authority=_documentation_authority(profile_value, kwargs),
