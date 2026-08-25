@@ -68,6 +68,15 @@ class CapabilitySelector:
 
     diagnostic_only_provider_ids = frozenset({"provider-qwen", "qwen3.5:9b-q4_K_M"})
 
+    @staticmethod
+    def order_candidates(
+        candidates: Iterable[CapabilityCandidate],
+    ) -> tuple[CapabilityCandidate, ...]:
+        return tuple(sorted(
+            tuple(candidates),
+            key=lambda item: (item.priority, item.profile.provider_id, item.profile.profile_id),
+        ))
+
     def select(
         self,
         candidates: Iterable[CapabilityCandidate],
@@ -81,10 +90,7 @@ class CapabilitySelector:
         required = tuple(sorted(set(required_capabilities)))
         if not required:
             raise CapabilitySelectionError("required_capabilities must not be empty")
-        ordered = sorted(
-            tuple(candidates),
-            key=lambda item: (item.priority, item.profile.provider_id, item.profile.profile_id),
-        )
+        ordered = self.order_candidates(candidates)
         considered: list[str] = []
         rejected: list[str] = []
         for index, candidate in enumerate(ordered):

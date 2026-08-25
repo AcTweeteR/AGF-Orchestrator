@@ -5,15 +5,10 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-import os
 import re
-import secrets
-import sqlite3
-import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import parse_qsl, urlsplit
 
@@ -24,7 +19,8 @@ from .capability_extensions import (
     CapabilityExtensionError,
     KnowledgeProviderProfile,
 )
-from .mcp_profiles import knowledge_provider_eligibility
+from .provider_eligibility import ProviderEligibilityAuthority, ProviderEligibilityError
+from .provider_intelligence import ProviderIntelligenceStore
 from .remote_identity import RemoteIdentityError, canonical_remote_identity
 from .session_store import SessionStore, SessionStoreError
 
@@ -138,87 +134,6 @@ _CLOCK_SKEW_SECONDS = 0
 _MAX_VERSION_LENGTH = 256
 _MAX_CITATION_REFS = 8
 _PROVIDER_BINDING_TTL_SECONDS = 3600
-_PROVIDER_BINDING_DB = "provider-binding-authority.sqlite3"
-
-
-def _provider_binding_store_path() -> Path:
-    root = Path(os.environ.get("AGF_STATE_DIR", "~/.agf-orchestrator")).expanduser()
-    try:
-        was_present = root.exists() or root.is_symlink()
-        root.mkdir(parents=True, exist_ok=True)
-        if not was_present:
-            os.chmod(root, 0o700)
-        root_stat = root.lstat()
-    except OSError as exc:
-        raise DocumentationError("provider binding authority root is unavailable") from exc
-    if (
-        not stat.S_ISDIR(root_stat.st_mode)
-        or root_stat.st_uid != os.geteuid()
-        or root_stat.st_mode & 0o077
-    ):
-        raise DocumentationError("provider binding authority root is not owner-controlled")
-    path = root / _PROVIDER_BINDING_DB
-    if path.exists() or path.is_symlink():
-        try:
-            database_stat = path.lstat()
-        except OSError as exc:
-            raise DocumentationError("provider binding authority store is unavailable") from exc
-        if (
-            not stat.S_ISREG(database_stat.st_mode)
-            or database_stat.st_uid != os.geteuid()
-            or database_stat.st_mode & 0o077
-        ):
-            raise DocumentationError("provider binding authority store is not owner-controlled")
-    return path
-
-
-def _record_provider_binding_issuance(token: str, binding_sha256: str) -> None:
-    path = _provider_binding_store_path()
-    if not path.exists():
-        try:
-            descriptor = os.open(
-                path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600
-            )
-            os.close(descriptor)
-        except FileExistsError:
-            pass
-        except OSError as exc:
-            raise DocumentationError("provider binding authority store is unavailable") from exc
-    connection = sqlite3.connect(path)
-    try:
-        os.chmod(path, 0o600)
-        connection.execute(
-            "CREATE TABLE IF NOT EXISTS provider_binding_issuance "
-            "(issuance_token TEXT PRIMARY KEY, binding_sha256 TEXT NOT NULL)"
-        )
-        connection.execute(
-            "INSERT OR IGNORE INTO provider_binding_issuance "
-            "(issuance_token, binding_sha256) VALUES (?, ?)",
-            (token, binding_sha256),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-
-def _verify_provider_binding_issuance(token: str, binding_sha256: str) -> bool:
-    try:
-        path = _provider_binding_store_path()
-        if not path.exists():
-            return False
-        connection = sqlite3.connect(path)
-        try:
-            row = connection.execute(
-                "SELECT binding_sha256 FROM provider_binding_issuance "
-                "WHERE issuance_token = ?", (token,)
-            ).fetchone()
-        finally:
-            connection.close()
-    except (DocumentationError, OSError, sqlite3.Error):
-        return False
-    return row is not None and row[0] == binding_sha256
-
-
 def _contains_credential_query(value: str) -> bool:
     for candidate_text in (value, html.unescape(value)):
         for candidate in _URI_CANDIDATE.findall(candidate_text):
@@ -815,6 +730,9 @@ class ProviderBinding:
     network_allowed: bool | None
     binding_sha256: str
     issuance_token: str = ""
+    decision_sha256: str = ""
+    # Runtime-only injection; persisted bindings always re-resolve canonical state.
+    authority: Any = field(default=None, compare=False, repr=False)
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -830,9 +748,15 @@ class ProviderBinding:
             "network_allowed": self.network_allowed,
             "binding_sha256": self.binding_sha256,
             "issuance_token": self.issuance_token,
+            "decision_sha256": self.decision_sha256,
         }
 
-    def validate(self, *, now: str | None = None) -> None:
+    def validate(
+        self,
+        *,
+        now: str | None = None,
+        eligibility_authority: ProviderEligibilityAuthority | None = None,
+    ) -> None:
         if not _ID.fullmatch(self.provider_id):
             raise DocumentationError("provider binding provider_id is invalid")
         if not _ID.fullmatch(self.project_id) or not self.project_id.startswith("project-"):
@@ -840,6 +764,7 @@ class ProviderBinding:
         _sha("provider binding profile_sha256", self.profile_sha256, _SHA256)
         if not isinstance(self.issuance_token, str) or len(self.issuance_token) < 32:
             raise DocumentationError("provider binding issuance is missing")
+        _sha("provider binding decision_sha256", self.decision_sha256, _SHA256)
         decision = _timestamp("provider binding decision_at", self.decision_at)
         if now is not None and decision > _timestamp("provider binding now", now):
             raise DocumentationError("provider binding is future-dated")
@@ -849,37 +774,60 @@ class ProviderBinding:
                 raise DocumentationError("provider binding expiry is invalid")
             if now is not None and _timestamp("provider binding now", now) >= expiry:
                 raise DocumentationError("provider binding has expired")
-        for label, value in (
-            ("available", self.available),
-            ("authenticated", self.authenticated),
-            ("policy_authorized", self.policy_authorized),
+        try:
+            authority = eligibility_authority or self.authority or ProviderEligibilityAuthority(
+                ProviderIntelligenceStore()
+            )
+            decision = authority.resolve(
+                project_id=self.project_id,
+                provider_id=self.provider_id,
+                provider_kind="knowledge",
+                capability_domain="documentation",
+                now=now or self.decision_at,
+                required_capabilities=("documentation",),
+                decision_domain="documentation",
+            )
+        except (ProviderEligibilityError, OSError, ValueError) as exc:
+            raise DocumentationError("provider binding lacks canonical eligibility") from exc
+        expected_observations = {
+            "available": decision.health_eligible,
+            "authenticated": decision.authentication_eligible is True,
+            "policy_authorized": decision.policy_eligible,
+            "privacy_eligible": decision.privacy_eligible,
+            "network_allowed": decision.network_eligible,
+        }
+        if self.decision_sha256 != decision.decision_sha256:
+            raise DocumentationError("provider binding decision differs from authority")
+        if self.decision_at != decision.decision_at:
+            raise DocumentationError("provider binding decision time differs from authority")
+        expected_token = hashlib.sha256(
+            f"agf-provider-binding-v1:{decision.decision_sha256}:{self.profile_sha256}".encode()
+        ).hexdigest()
+        if self.issuance_token != expected_token:
+            raise DocumentationError("provider binding issuance artifact is invalid")
+        if any(
+            getattr(self, label) != value
+            for label, value in expected_observations.items()
+            if value is not None
         ):
-            if value is not True:
-                raise DocumentationError(f"provider binding {label} is not eligible")
+            raise DocumentationError("provider binding observations differ from authority")
         unsigned = {**self.to_dict(), "binding_sha256": ""}
         expected = hashlib.sha256(
             json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         if self.binding_sha256 != expected:
             raise DocumentationError("provider binding hash does not match content")
-        if not _verify_provider_binding_issuance(
-            self.issuance_token, self.binding_sha256
-        ):
-            raise DocumentationError("provider binding was not issued by AGF eligibility")
 
 
 def _seal_provider_binding(
     profile: KnowledgeProviderProfile,
     *,
-    now: str,
-    available: bool,
-    authenticated: bool,
-    policy_authorized: bool,
-    privacy_eligible: bool | None,
-    network_allowed: bool | None,
+    decision: Any,
+    eligibility_authority: ProviderEligibilityAuthority | None = None,
 ) -> ProviderBinding:
-    decision = _timestamp("provider binding decision_at", now)
-    ttl_expires_at = decision + timedelta(seconds=_PROVIDER_BINDING_TTL_SECONDS)
+    now = decision.decision_at
+    decision_at = _timestamp("provider binding decision_at", now)
+    ttl_expires_at = decision_at + timedelta(seconds=_PROVIDER_BINDING_TTL_SECONDS)
     if profile.expires_at is None:
         effective_expiry = ttl_expires_at
     else:
@@ -887,20 +835,23 @@ def _seal_provider_binding(
             ttl_expires_at, _timestamp("provider profile expires_at", profile.expires_at)
         )
     binding_expires_at = effective_expiry.strftime("%Y-%m-%dT%H:%M:%SZ")
-    issuance_token = secrets.token_urlsafe(32)
+    issuance_token = hashlib.sha256(
+        f"agf-provider-binding-v1:{decision.decision_sha256}:{profile.profile_sha256}".encode()
+    ).hexdigest()
     unsigned = {
         "provider_id": profile.knowledge_provider_id,
         "project_id": profile.project_id,
         "profile_sha256": profile.profile_sha256,
         "decision_at": now,
         "expires_at": binding_expires_at,
-        "available": available,
-        "authenticated": authenticated,
-        "policy_authorized": policy_authorized,
-        "privacy_eligible": privacy_eligible,
-        "network_allowed": network_allowed,
+        "available": decision.health_eligible,
+        "authenticated": decision.authentication_eligible is True,
+        "policy_authorized": decision.policy_eligible,
+        "privacy_eligible": decision.privacy_eligible,
+        "network_allowed": decision.network_eligible,
         "binding_sha256": "",
         "issuance_token": issuance_token,
+        "decision_sha256": decision.decision_sha256,
     }
     digest = hashlib.sha256(
         json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
@@ -908,11 +859,11 @@ def _seal_provider_binding(
     binding = ProviderBinding(
         profile.knowledge_provider_id, profile.project_id, profile.profile_sha256,
         now, binding_expires_at,
-        available, authenticated, policy_authorized, privacy_eligible, network_allowed,
-        digest, issuance_token,
+        decision.health_eligible, decision.authentication_eligible is True,
+        decision.policy_eligible, decision.privacy_eligible, decision.network_eligible,
+        digest, issuance_token, decision.decision_sha256, eligibility_authority,
     )
-    _record_provider_binding_issuance(issuance_token, digest)
-    binding.validate()
+    binding.validate(eligibility_authority=eligibility_authority)
     return binding
 
 
@@ -1196,7 +1147,11 @@ def persist_provider_binding(
 
 
 def load_provider_binding(
-    store: SessionStore, session_id: str, binding_sha256: str
+    store: SessionStore,
+    session_id: str,
+    binding_sha256: str,
+    *,
+    eligibility_authority: ProviderEligibilityAuthority | None = None,
 ) -> ProviderBinding:
     _sha("provider binding digest", binding_sha256, _SHA256)
     path = (
@@ -1209,7 +1164,7 @@ def load_provider_binding(
         path = store.ensure_safe_path(path)
         payload = json.loads(path.read_text(encoding="utf-8"))
         binding = ProviderBinding(**payload)
-        binding.validate()
+        binding.validate(eligibility_authority=eligibility_authority)
         if binding.binding_sha256 != binding_sha256:
             raise DocumentationError("provider binding artifact digest mismatch")
         return binding
@@ -1253,6 +1208,7 @@ def resolve_provider(
     privacy_eligible: bool | None,
     network_allowed: bool | None,
     required: bool,
+    eligibility_authority: ProviderEligibilityAuthority | None = None,
 ) -> ProviderResolution:
     try:
         profile.validate(now=now)
@@ -1264,35 +1220,24 @@ def resolve_provider(
         return ProviderResolution(
             DocumentationStatus.PROVIDER_INELIGIBLE, "documentation capability is unsupported"
         )
-    if profile.network_required and network_allowed is not True:
-        return ProviderResolution(DocumentationStatus.NETWORK_BLOCKED, "network is not eligible")
-    if profile.privacy_review_required and privacy_eligible is not True:
-        return ProviderResolution(DocumentationStatus.PRIVACY_BLOCKED, "privacy is not eligible")
-    eligibility = knowledge_provider_eligibility(
-        profile,
-        now=now,
-        available=available,
-        authenticated=authenticated,
-        policy_authorized=policy_authorized,
-        privacy_eligible=privacy_eligible,
-    )
-    if not eligibility.eligible:
-        reason = eligibility.reason
-        if available is not True:
-            return ProviderResolution(DocumentationStatus.UNAVAILABLE, reason)
+    authority = eligibility_authority or ProviderEligibilityAuthority(ProviderIntelligenceStore())
+    try:
+        decision = authority.resolve_knowledge_profile(
+            profile, now=now, required_capability="documentation"
+        )
+    except ProviderEligibilityError as exc:
+        reason = str(exc)
+        if "network" in reason:
+            return ProviderResolution(DocumentationStatus.NETWORK_BLOCKED, reason)
+        if "privacy" in reason:
+            return ProviderResolution(DocumentationStatus.PRIVACY_BLOCKED, reason)
         return ProviderResolution(DocumentationStatus.PROVIDER_INELIGIBLE, reason)
     reason = "eligible" if required else "optional-eligible"
     return ProviderResolution(
         DocumentationStatus.VALID,
         reason,
         _seal_provider_binding(
-            profile,
-            now=now,
-            available=available is True,
-            authenticated=authenticated is True,
-            policy_authorized=policy_authorized is True,
-            privacy_eligible=privacy_eligible,
-            network_allowed=network_allowed,
+            profile, decision=decision, eligibility_authority=authority
         ),
     )
 

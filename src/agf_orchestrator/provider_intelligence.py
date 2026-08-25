@@ -38,6 +38,9 @@ ARCHITECT_REQUIREMENTS = (
     "reasoning",
     "context-capacity",
 )
+SUPPORTED_DECISION_DOMAINS = frozenset(
+    {"architect", "code-intelligence", "knowledge", "documentation"}
+)
 APPROVED_PROVIDER_INTERFACES = frozenset({"codex", "openhands"})
 ARCHITECT_GATE_NAMES = (
     "policy_eligible",
@@ -220,6 +223,10 @@ class ProviderIntelligenceState:
             raise ProviderIntelligenceError("provider requirements are invalid")
         if self.decision_domain == "architect" and self.requirements != ARCHITECT_REQUIREMENTS:
             raise ProviderIntelligenceError("Architect requirements are not canonical")
+        if self.decision_domain != "architect" and tuple(sorted(self.requirements)) != (
+            self.requirements
+        ):
+            raise ProviderIntelligenceError("provider requirements are not canonicalized")
         if self.requirements_hash != _hash(list(self.requirements)):
             raise ProviderIntelligenceError("Architect requirements hash is invalid")
         if self.policy_generation < 1:
@@ -529,15 +536,26 @@ class ProviderIntelligenceStore:
         self.staging = staging
         self.path = root / "capability-intelligence"
         self.expected_project_id: str | None = None
+        self.expected_decision_domain: str | None = None
 
-    def for_project(self, project_id: str) -> "ProviderIntelligenceStore":
+    def for_project(
+        self, project_id: str, decision_domain: str = "architect"
+    ) -> "ProviderIntelligenceStore":
         if not isinstance(project_id, str) or not re.fullmatch(r"project-[0-9a-f]{16}", project_id):
             raise ProviderIntelligenceError("provider project identity is invalid")
+        if not isinstance(decision_domain, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9-]{0,79}", decision_domain
+        ):
+            raise ProviderIntelligenceError("provider decision domain is invalid")
+        if decision_domain not in SUPPORTED_DECISION_DOMAINS:
+            raise ProviderIntelligenceError("provider decision domain is not registered")
         store = ProviderIntelligenceStore(
             self.root, signing_key=self.signing_key, staging=self.staging
         )
-        store.path = self.root / "capability-intelligence" / project_id / "architect.json"
+        filename = "architect.json" if decision_domain == "architect" else f"{decision_domain}.json"
+        store.path = self.root / "capability-intelligence" / project_id / filename
         store.expected_project_id = project_id
+        store.expected_decision_domain = decision_domain
         return store
 
     def _ensure_safe_path(self) -> None:
@@ -572,6 +590,11 @@ class ProviderIntelligenceStore:
         state = state_from_dict(payload)
         if self.expected_project_id is not None and state.project_id != self.expected_project_id:
             raise ProviderIntelligenceError("provider intelligence project binding differs")
+        if (
+            self.expected_decision_domain is not None
+            and state.decision_domain != self.expected_decision_domain
+        ):
+            raise ProviderIntelligenceError("provider intelligence decision domain differs")
         now = (
             None
             if allow_expired
@@ -598,6 +621,11 @@ class ProviderIntelligenceStore:
     def save(self, state: ProviderIntelligenceState) -> None:
         if self.expected_project_id is not None and state.project_id != self.expected_project_id:
             raise ProviderIntelligenceError("provider intelligence project binding differs")
+        if (
+            self.expected_decision_domain is not None
+            and state.decision_domain != self.expected_decision_domain
+        ):
+            raise ProviderIntelligenceError("provider intelligence decision domain differs")
         now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         state.validate(now=now)
         self._ensure_safe_path()

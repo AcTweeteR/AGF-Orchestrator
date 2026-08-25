@@ -1,7 +1,9 @@
 import hashlib
 import json
 import os
+import tempfile
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +15,14 @@ from agf_orchestrator.capability_extensions import (
     PrivacyClassification,
 )
 from agf_orchestrator.capability_extensions import seal as seal_profile
+from agf_orchestrator.capability_profiles import (
+    CapabilityObservation,
+    CapabilityProfile,
+    CapabilityStatus,
+    capability_profile_hash,
+    sha256_text,
+)
+from agf_orchestrator.capability_selection import CapabilityCandidate, SelectionGates
 from agf_orchestrator.documentation import (
     DependencyVersionEvidence,
     DocumentationCitation,
@@ -30,13 +40,21 @@ from agf_orchestrator.documentation import (
     load_provider_binding,
     persist_evidence,
     reconcile_evidence,
-    resolve_provider,
     seal,
     seal_claim,
 )
+from agf_orchestrator.documentation import (
+    resolve_provider as _resolve_provider,
+)
+from agf_orchestrator.provider_eligibility import ProviderEligibilityAuthority
+from agf_orchestrator.provider_intelligence import (
+    ProviderIntelligenceStore,
+    build_state,
+    sign_state,
+)
 from agf_orchestrator.session_store import SessionStore
 
-PROJECT = "project-demo"
+PROJECT = "project-efc8e8ef7be7050b"
 REPOSITORY = "github.com/example/repository"
 REVISION = "a" * 40
 OTHER_REVISION = "b" * 40
@@ -99,6 +117,94 @@ def profile(
             IntegrationStability.OFFICIAL, "fixture documentation profile", NOW,
             expires_at, "",
         )
+    )
+
+
+_DOCUMENTATION_STATE_ROOT = Path(
+    tempfile.mkdtemp(prefix="agf-doc-authority-global-")
+).resolve()
+os.environ["AGF_STATE_DIR"] = str(_DOCUMENTATION_STATE_ROOT)
+_DOCUMENTATION_PROVIDER_IDS = (
+    "knowledge-docs", "knowledge-provider-a", "knowledge-provider-b",
+    "knowledge-provider-database-directory", "knowledge-provider-database-symlink",
+    "knowledge-provider-durable", "knowledge-provider-foreign-owner",
+    "knowledge-provider-issued", "knowledge-provider-open-database",
+    "knowledge-provider-permissions", "knowledge-tampered",
+)
+
+
+def _documentation_authority(profile_value, kwargs):
+    source = "owner documentation provider registry fixture"
+    capability_profile = CapabilityProfile(
+        "1.0", f"profile-{profile_value.knowledge_provider_id}", PROJECT,
+        profile_value.knowledge_provider_id, 1, source, sha256_text(source), NOW,
+        "2030-08-25T12:00:00Z",
+        (CapabilityObservation("documentation", CapabilityStatus.SUPPORTED, "owner"),), "",
+    )
+    candidate_profiles = []
+    for provider_id in _DOCUMENTATION_PROVIDER_IDS:
+        candidate_profile = replace(
+            capability_profile,
+            provider_id=provider_id,
+            profile_id=f"profile-{provider_id}",
+            profile_sha256="",
+        )
+        candidate_profiles.append(
+            replace(candidate_profile, profile_sha256=capability_profile_hash(candidate_profile))
+        )
+    policy = kwargs.get("policy_authorized", True)
+    privacy = kwargs.get("privacy_eligible", True)
+    available = kwargs.get("available", True)
+    authenticated = kwargs.get("authenticated", True)
+    network = kwargs.get("network_allowed", True)
+    gates = SelectionGates(policy, privacy, True, True, available, True)
+    gate_evidence = (
+        ("policy_eligible", "active-policy:merge-policy-adr-0003:" + "a" * 64),
+        ("privacy_eligible", f"codex-safe-environment-v1;read-only-canary;{privacy}"),
+        ("independence_eligible", "architect-advisory;reviewer-separate-stage;True"),
+        ("budget_eligible", "bounded-timeout-seconds:90;True"),
+        ("health_eligible", f"invocation-verified:{available}"),
+        ("empirical_evidence_eligible", "deterministic-canary-sha256:" + "b" * 64),
+    )
+    state = build_state(
+        project_id=PROJECT, target_sha=REVISION,
+        constitution_id="constitution-agf-v1", constitution_record_hash="c" * 64,
+        observed_at=kwargs.get("now", NOW), expires_at="2030-08-25T12:00:00Z",
+        candidates=tuple(CapabilityCandidate(item, priority=0) for item in candidate_profiles),
+        provider_interfaces=tuple(
+            (item.provider_id, "documentation") for item in candidate_profiles
+        ),
+        gates=gates, gate_evidence=gate_evidence, policy_generation=2,
+        requirements=("documentation",), decision_domain="documentation",
+        provider_gate_evidence=(
+            ("network_eligible", network),
+            ("authentication_eligible", authenticated),
+        ),
+    )
+    has_caller_denial = any(
+        kwargs.get(name) is False
+        for name in (
+            "available", "authenticated", "policy_authorized",
+            "privacy_eligible", "network_allowed",
+        )
+    )
+    root = str(Path(tempfile.mkdtemp(prefix="agf-doc-authority-")).resolve()) if (
+        has_caller_denial or kwargs.get("now", NOW) != NOW
+    ) else str(_DOCUMENTATION_STATE_ROOT)
+    store = ProviderIntelligenceStore(
+        root, signing_key=b"test-owner-key-which-is-long-enough-123456", staging=True
+    )
+    store.for_project(PROJECT, decision_domain="documentation").save(
+        sign_state(state, store.signing_key, staging=True)
+    )
+    return ProviderEligibilityAuthority(store)
+
+
+def resolve_provider(profile_value, **kwargs):
+    return _resolve_provider(
+        profile_value,
+        eligibility_authority=_documentation_authority(profile_value, kwargs),
+        **kwargs,
     )
 
 
@@ -283,7 +389,7 @@ def test_provider_required_optional_network_privacy_and_capability_gates():
     assert resolve_provider(profile(), required=False, **kwargs).status is DocumentationStatus.VALID
     assert (
         resolve_provider(profile(), required=True, **{**kwargs, "available": False}).status
-        is DocumentationStatus.UNAVAILABLE
+        is DocumentationStatus.PROVIDER_INELIGIBLE
     )
     assert (
         resolve_provider(
@@ -299,7 +405,7 @@ def test_provider_required_optional_network_privacy_and_capability_gates():
             required=True,
             **{**kwargs, "privacy_eligible": False},
         ).status
-        is DocumentationStatus.PRIVACY_BLOCKED
+        is DocumentationStatus.PROVIDER_INELIGIBLE
     )
     assert (
         resolve_provider(profile(capabilities=("citations",)), required=True, **kwargs).status
@@ -415,9 +521,10 @@ def test_provider_binding_issuance_is_not_persisted_in_documentation_evidence():
 
 
 def test_provider_binding_issuance_survives_restart_and_artifact_tampering(tmp_path, monkeypatch):
-    monkeypatch.setenv("AGF_STATE_DIR", str(tmp_path / "authority"))
+    monkeypatch.setenv("AGF_STATE_DIR", str(_DOCUMENTATION_STATE_ROOT))
     issued = binding_for("knowledge-provider-durable")
-    reloaded = ProviderBinding(**issued.to_dict())
+    authority = _documentation_authority(profile(provider_id=issued.provider_id), {})
+    reloaded = replace(ProviderBinding(**issued.to_dict()), authority=authority)
     reloaded.validate(now=NOW)
     store = SessionStore(tmp_path / "session-state")
     item = evidence(
@@ -425,7 +532,10 @@ def test_provider_binding_issuance_survives_restart_and_artifact_tampering(tmp_p
         provider_binding_sha256=issued.binding_sha256,
     )
     persist_evidence(store, "session-one", item, provider_binding=issued)
-    loaded = load_provider_binding(store, "session-one", issued.binding_sha256)
+    loaded = load_provider_binding(
+        store, "session-one", issued.binding_sha256, eligibility_authority=authority
+    )
+    loaded = replace(loaded, authority=authority)
     assert item.assess(request(provider_binding=loaded), now=NOW) is DocumentationStatus.VALID
     path = (
         store.artifacts_dir
@@ -438,34 +548,17 @@ def test_provider_binding_issuance_survives_restart_and_artifact_tampering(tmp_p
         )
     )
     with pytest.raises(DocumentationError):
-        load_provider_binding(store, "session-one", issued.binding_sha256)
+        load_provider_binding(
+            store, "session-one", issued.binding_sha256, eligibility_authority=authority
+        )
 
 
-def test_provider_binding_authority_store_rejects_foreign_or_unsafe_paths(tmp_path, monkeypatch):
-    authority = tmp_path / "authority"
-    monkeypatch.setenv("AGF_STATE_DIR", str(authority))
-    monkeypatch.setattr(os, "geteuid", lambda: 424242)
+def test_provider_binding_requires_durable_canonical_state(tmp_path, monkeypatch):
+    issued = binding_for("knowledge-provider-foreign-owner")
+    monkeypatch.setenv("AGF_STATE_DIR", str(tmp_path / "missing-authority"))
+    reloaded = ProviderBinding(**issued.to_dict())
     with pytest.raises(DocumentationError):
-        binding_for("knowledge-provider-foreign-owner")
-
-    monkeypatch.undo()
-    monkeypatch.setenv("AGF_STATE_DIR", str(authority))
-    authority.mkdir(exist_ok=True)
-    database = authority / "provider-binding-authority.sqlite3"
-    database.mkdir()
-    with pytest.raises(DocumentationError):
-        binding_for("knowledge-provider-database-directory")
-
-    database.rmdir()
-    database.symlink_to(tmp_path / "elsewhere.sqlite3")
-    with pytest.raises(DocumentationError):
-        binding_for("knowledge-provider-database-symlink")
-
-    database.unlink()
-    binding_for("knowledge-provider-permissions")
-    database.chmod(0o644)
-    with pytest.raises(DocumentationError):
-        binding_for("knowledge-provider-open-database")
+        reloaded.validate(now=NOW)
 
 
 def test_reconciliation_requires_semantic_claim_agreement_across_providers():

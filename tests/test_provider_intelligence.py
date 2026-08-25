@@ -72,6 +72,33 @@ def test_state_is_durable_and_restarts_with_verified_hash(tmp_path):
     store.save(value)
 
 
+def test_owner_state_is_separate_per_decision_domain(tmp_path):
+    root = ProviderIntelligenceStore(tmp_path, signing_key=TEST_KEY, staging=True)
+    architect = root.for_project(PROJECT, decision_domain="architect")
+    documentation = root.for_project(PROJECT, decision_domain="documentation")
+    architect_value = sign_state(state(), TEST_KEY, staging=True)
+    documentation_value = sign_state(
+        state(
+            decision_domain="documentation",
+            requirements=("documentation",),
+            provider_interfaces=(("provider-codex", "documentation"),),
+        ),
+        TEST_KEY,
+        staging=True,
+    )
+    architect.save(architect_value)
+    documentation.save(documentation_value)
+    assert architect.load().decision_domain == "architect"
+    assert documentation.load().decision_domain == "documentation"
+    assert architect.path != documentation.path
+
+
+def test_unknown_decision_domain_is_rejected(tmp_path):
+    store = ProviderIntelligenceStore(tmp_path, signing_key=TEST_KEY, staging=True)
+    with pytest.raises(ProviderIntelligenceError):
+        store.for_project(PROJECT, decision_domain="unknown-domain")
+
+
 def test_tampered_profile_or_state_hash_fails_closed(tmp_path):
     value = state()
     payload = value.to_dict()

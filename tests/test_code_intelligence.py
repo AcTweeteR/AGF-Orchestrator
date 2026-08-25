@@ -181,7 +181,7 @@ def eligibility_authority(tmp_path, candidates):
     store = ProviderIntelligenceStore(
         tmp_path, signing_key=b"test-owner-key-which-is-long-enough-123456", staging=True
     )
-    project_store = store.for_project(PROJECT)
+    project_store = store.for_project(PROJECT, decision_domain="code-intelligence")
     project_store.save(sign_state(value, store.signing_key, staging=True))
     return ProviderEligibilityAuthority(store)
 
@@ -246,3 +246,18 @@ def test_fallback_is_existing_selector_policy_and_never_changes_scope(tmp_path):
     # Caller-supplied fallback flags are observations only; the owner state
     # remains authoritative and permits the configured fallback.
     assert forbidden.status is IntelligenceStatus.VALID
+
+
+def test_fallback_uses_selector_priority_order_not_input_order(tmp_path):
+    low_priority = provider_candidate(provider_id="provider-low", priority=0)
+    high_priority = provider_candidate(provider_id="provider-high", priority=1)
+    authority = eligibility_authority(tmp_path, (low_priority, high_priority))
+    result = resolve_provider(
+        (high_priority, low_priority), project_id=PROJECT, required=True, now=NOW,
+        gates=SelectionGates(True, True, True, True, True, True, allow_fallback=False),
+        eligibility_authority=authority,
+    )
+    assert result.status is IntelligenceStatus.VALID
+    assert result.selection is not None
+    assert result.selection.provider_id == "provider-low"
+    assert result.selection.fallback_used is False

@@ -92,7 +92,7 @@ def state(
         gate_evidence=gate_evidence,
         policy_generation=2,
         requirements=("documentation",),
-        decision_domain="knowledge",
+        decision_domain="documentation",
         provider_gate_evidence=provider_gate_evidence or (
             ("network_eligible", True),
             ("authentication_eligible", True),
@@ -104,7 +104,7 @@ def state(
 def make_authority(tmp_path, value=None):
     store = ProviderIntelligenceStore(tmp_path, signing_key=KEY, staging=True)
     signed = sign_state(value or state(), KEY, staging=True)
-    project_store = store.for_project(PROJECT)
+    project_store = store.for_project(PROJECT, decision_domain="documentation")
     project_store.save(signed)
     return ProviderEligibilityAuthority(store), project_store
 
@@ -125,6 +125,7 @@ def test_owner_eligible_provider_resolves_and_survives_restart(tmp_path):
     decision = authority_value.resolve(
         project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
         capability_domain="documentation", now=NOW, required_capabilities=("documentation",),
+        decision_domain="documentation",
     )
     assert decision.policy_eligible and decision.network_eligible is True
     recovered = ProviderEligibilityAuthority(project_store).verify(
@@ -137,7 +138,8 @@ def test_fabricated_decision_self_hash_is_not_authority(tmp_path):
     authority_value, _ = make_authority(tmp_path)
     decision = authority_value.resolve(
         project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
-        capability_domain="documentation", now=NOW, required_capabilities=("documentation",),
+            capability_domain="documentation", now=NOW, required_capabilities=("documentation",),
+            decision_domain="documentation",
     )
     forged = replace(decision, policy_eligible=False, decision_sha256="0" * 64)
     forged = replace(forged, decision_sha256=__import__("hashlib").sha256(
@@ -186,7 +188,7 @@ def test_cross_project_provider_and_expired_state_fail_closed(tmp_path):
         )
     expired = state(observed="2020-01-01T00:00:00Z", expires="2020-01-02T00:00:00Z")
     expired_store = ProviderIntelligenceStore(tmp_path / "expired", signing_key=KEY, staging=True)
-    expired_project_store = expired_store.for_project(PROJECT)
+    expired_project_store = expired_store.for_project(PROJECT, decision_domain="documentation")
     expired_project_store.path.parent.mkdir(parents=True)
     expired_project_store.path.write_text(
         json.dumps(sign_state(expired, KEY, staging=True).to_dict())
@@ -205,6 +207,23 @@ def test_provider_kind_cannot_cross_replay_owner_domain(tmp_path):
         authority_value.resolve(
             project_id=PROJECT, provider_id="knowledge-docs", provider_kind="code-intelligence",
             capability_domain="documentation", now=NOW, required_capabilities=("documentation",),
+        )
+
+
+def test_requirements_are_owner_scoped_and_duplicates_fail_closed(tmp_path):
+    authority_value, _ = make_authority(tmp_path)
+    with pytest.raises(ProviderEligibilityError):
+        authority_value.resolve(
+            project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
+            capability_domain="code-intelligence", now=NOW,
+            required_capabilities=("code-intelligence",), decision_domain="documentation",
+        )
+    with pytest.raises(ProviderEligibilityError):
+        authority_value.resolve(
+            project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
+            capability_domain="documentation", now=NOW,
+            required_capabilities=("documentation", "documentation"),
+            decision_domain="documentation",
         )
 
 
