@@ -184,6 +184,23 @@ def _documentation_authority(profile_value, kwargs):
             ("network_eligible", network),
             ("authentication_eligible", authenticated),
         ),
+        provider_gate_evidence_by_candidate=tuple(
+            (
+                item.provider_id,
+                item.profile_sha256,
+                (
+                    ("policy_eligible", policy),
+                    ("privacy_eligible", privacy),
+                    ("network_eligible", network),
+                    ("authentication_eligible", authenticated),
+                    ("health_eligible", available),
+                    ("budget_eligible", True),
+                    ("empirical_evidence_eligible", True),
+                    ("independence_eligible", True),
+                ),
+            )
+            for item in candidate_profiles
+        ),
         provider_security_posture=tuple(
             (item.provider_id, canonical_knowledge_security_posture(profile_value))
             for item in candidate_profiles

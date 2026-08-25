@@ -47,14 +47,22 @@ GATE_EVIDENCE = (
 )
 
 
-def candidate(provider_id="knowledge-docs", *, docs=True, priority=0):
+def candidate(
+    provider_id="knowledge-docs", *, docs=True, priority=0,
+    capabilities=("documentation",),
+):
     source = "owner provider registry fixture"
-    capabilities = (CapabilityObservation("documentation", CapabilityStatus.SUPPORTED, "owner"),)
+    capability_observations = tuple(
+        CapabilityObservation(name, CapabilityStatus.SUPPORTED, "owner")
+        for name in capabilities
+    )
     if not docs:
-        capabilities = (CapabilityObservation("documentation", CapabilityStatus.UNKNOWN, None),)
+        capability_observations = (
+            CapabilityObservation("documentation", CapabilityStatus.UNKNOWN, None),
+        )
     profile = CapabilityProfile(
         "1.0", f"profile-{provider_id}", PROJECT, provider_id, 1,
-        source, sha256_text(source), NOW, EXPIRES, capabilities, "",
+        source, sha256_text(source), NOW, EXPIRES, capability_observations, "",
     )
     return CapabilityCandidate(
         replace(profile, profile_sha256=capability_profile_hash(profile)), priority
@@ -63,7 +71,8 @@ def candidate(provider_id="knowledge-docs", *, docs=True, priority=0):
 
 def state(
     provider_id="knowledge-docs", *, observed=NOW, expires=EXPIRES, gates=None,
-    provider_gate_evidence=None, security_profile=None, **kwargs
+    provider_gate_evidence=None, security_profile=None, candidates=None,
+    provider_gate_evidence_by_candidate=(), requirements=("documentation",), **kwargs
 ):
     active_gates = gates or SelectionGates(True, True, True, True, True, True)
     gate_evidence = (
@@ -80,6 +89,7 @@ def state(
         ("health_eligible", f"invocation-verified:{active_gates.health_eligible}"),
         GATE_EVIDENCE[5],
     )
+    selected_candidates = candidates or (candidate(provider_id),)
     return build_state(
         project_id=PROJECT,
         target_sha=TARGET,
@@ -87,24 +97,28 @@ def state(
         constitution_record_hash="c" * 64,
         observed_at=observed,
         expires_at=expires,
-        candidates=(candidate(provider_id),),
-        provider_interfaces=((provider_id, "knowledge"),),
+        candidates=selected_candidates,
+        provider_interfaces=tuple(
+            (item.profile.provider_id, "knowledge") for item in selected_candidates
+        ),
         gates=active_gates,
         gate_evidence=gate_evidence,
         policy_generation=2,
         signing_key_id="test-owner-ed25519",
-        requirements=("documentation",),
+        requirements=requirements,
         decision_domain="documentation",
         provider_gate_evidence=provider_gate_evidence or (
             ("network_eligible", True),
             ("authentication_eligible", True),
         ),
-        provider_security_posture=(
+        provider_security_posture=tuple(
             (
-                provider_id,
+                item.profile.provider_id,
                 canonical_knowledge_security_posture(security_profile or knowledge_profile()),
-            ),
+            )
+            for item in selected_candidates
         ),
+        provider_gate_evidence_by_candidate=provider_gate_evidence_by_candidate,
         **kwargs,
     )
 
@@ -195,6 +209,61 @@ def test_decision_contains_explicit_snapshot_domain_and_candidate_identity(tmp_p
     assert decision.candidate_profile_sha256 == state().candidates[0].profile.profile_sha256
     assert decision.candidate_priority == 0
     assert decision.source_state_sha256
+
+
+def test_provider_scoped_authentication_cannot_be_shared_across_candidates(tmp_path):
+    first = candidate("knowledge-a", priority=0)
+    second = candidate("knowledge-b", priority=1)
+    scoped = (
+        (
+            first.profile.provider_id, first.profile.profile_sha256,
+            (
+                ("policy_eligible", True), ("privacy_eligible", True),
+                ("network_eligible", True), ("authentication_eligible", True),
+                ("health_eligible", True), ("budget_eligible", True),
+                ("empirical_evidence_eligible", True), ("independence_eligible", True),
+            ),
+        ),
+        (
+            second.profile.provider_id, second.profile.profile_sha256,
+            (
+                ("policy_eligible", True), ("privacy_eligible", True),
+                ("network_eligible", True), ("authentication_eligible", False),
+                ("health_eligible", True), ("budget_eligible", True),
+                ("empirical_evidence_eligible", True), ("independence_eligible", True),
+            ),
+        ),
+    )
+    authority_value, _ = make_authority(
+        tmp_path,
+        state(candidates=(first, second), provider_gate_evidence_by_candidate=scoped),
+    )
+    first_decision = authority_value.resolve(
+        project_id=PROJECT, provider_id="knowledge-a", provider_kind="knowledge",
+        capability_domain="documentation", now=NOW, target_sha=TARGET,
+        required_capabilities=("documentation",), decision_domain="documentation",
+    )
+    assert first_decision.authentication_eligible is True
+    with pytest.raises(ProviderEligibilityError):
+        authority_value.resolve(
+            project_id=PROJECT, provider_id="knowledge-b", provider_kind="knowledge",
+            capability_domain="documentation", now=NOW, target_sha=TARGET,
+            required_capabilities=("documentation",), decision_domain="documentation",
+        )
+
+
+def test_revisionless_selection_uses_documentation_domain_for_requirement_permutations(tmp_path):
+    selected = candidate(capabilities=("documentation", "citations"))
+    value = state(
+        candidates=(selected,), requirements=("citations", "documentation"),
+    )
+    authority_value, _ = make_authority(tmp_path, value)
+    for required in (("documentation", "citations"), ("citations", "documentation")):
+        result = authority_value.select(
+            (selected,), project_id=PROJECT, required_capabilities=required,
+            provider_kind="knowledge", now=NOW, revision_scope="resolve-library",
+        )
+        assert result.provider_id == selected.profile.provider_id
 
 
 def test_selection_loads_one_verified_snapshot_for_all_candidates(tmp_path, monkeypatch):

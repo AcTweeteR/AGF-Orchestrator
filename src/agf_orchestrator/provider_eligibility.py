@@ -315,11 +315,40 @@ def _decision_from_state(
             candidate.profile.require_supported(capability)
     except (CapabilityProfileError, ValueError) as exc:
         raise ProviderEligibilityError("provider capability is not owner-eligible") from exc
-    gates = state.gates
+    scoped_gate_records = {
+        (provider, profile_sha): dict(facts)
+        for provider, profile_sha, facts in state.provider_gate_evidence_by_candidate
+    }
+    scoped_facts = scoped_gate_records.get(
+        (candidate.profile.provider_id, candidate.profile.profile_sha256)
+    )
+    if scoped_facts is not None:
+        required_gate_names = {
+            "policy_eligible", "privacy_eligible", "health_eligible", "budget_eligible",
+            "empirical_evidence_eligible", "independence_eligible",
+        }
+        if not required_gate_names.issubset(scoped_facts):
+            raise ProviderEligibilityError("provider-scoped gate evidence is incomplete")
+        policy = scoped_facts["policy_eligible"]
+        privacy = scoped_facts["privacy_eligible"]
+        health = scoped_facts["health_eligible"]
+        budget = scoped_facts["budget_eligible"]
+        empirical = scoped_facts["empirical_evidence_eligible"]
+        independence = scoped_facts["independence_eligible"]
+        network = scoped_facts.get("network_eligible")
+        authentication = scoped_facts.get("authentication_eligible")
+    else:
+        gates = state.gates
+        policy = gates.policy_eligible is True
+        privacy = gates.privacy_eligible is True
+        health = gates.health_eligible is True
+        budget = gates.budget_eligible is True
+        empirical = gates.empirical_evidence_eligible is True
+        independence = gates.independence_eligible is True
+        extra = dict(state.provider_gate_evidence)
+        network = extra.get("network_eligible")
+        authentication = extra.get("authentication_eligible")
     evidence = dict(state.gate_evidence)
-    extra = dict(state.provider_gate_evidence)
-    network = extra.get("network_eligible")
-    authentication = extra.get("authentication_eligible")
     if network is not None and not isinstance(network, bool):
         raise ProviderEligibilityError("owner network eligibility is invalid")
     if authentication is not None and not isinstance(authentication, bool):
@@ -343,7 +372,7 @@ def _decision_from_state(
             raise ProviderEligibilityError("network eligibility is unavailable")
         if (requires_credentials or requires_session) and authentication is not True:
             raise ProviderEligibilityError("authentication eligibility is unavailable")
-        if privacy_review_required and gates.privacy_eligible is not True:
+        if privacy_review_required and privacy is not True:
             raise ProviderEligibilityError("privacy eligibility is unavailable")
     context_hash = _hash(
         {
@@ -374,15 +403,15 @@ def _decision_from_state(
         authority_context_hash=context_hash,
         source_state_sha256=state.state_sha256,
         policy_generation=state.policy_generation,
-        policy_eligible=gates.policy_eligible is True,
-        privacy_eligible=gates.privacy_eligible is True,
+        policy_eligible=policy,
+        privacy_eligible=privacy,
         network_eligible=network,
         authentication_eligible=authentication,
-        health_eligible=gates.health_eligible is True,
-        budget_eligible=gates.budget_eligible is True,
-        empirical_evidence_eligible=gates.empirical_evidence_eligible is True,
-        independence_eligible=gates.independence_eligible is True,
-        fallback_eligible=gates.allow_fallback is True,
+        health_eligible=health,
+        budget_eligible=budget,
+        empirical_evidence_eligible=empirical,
+        independence_eligible=independence,
+        fallback_eligible=state.gates.allow_fallback is True,
         decision_at=decision_at,
         expires_at=expiry,
         decision_sha256="0" * 64,
@@ -624,7 +653,9 @@ class ProviderEligibilityAuthority:
                     owner_state,
                     provider_id=candidate.profile.provider_id,
                     provider_kind=provider_kind,
-                    capability_domain=required[0],
+                    capability_domain=(
+                        "documentation" if revision_scope == "resolve-library" else required[0]
+                    ),
                     now=now,
                     required_capabilities=required,
                     target_sha=target_sha,

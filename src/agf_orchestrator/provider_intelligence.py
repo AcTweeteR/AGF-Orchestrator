@@ -148,6 +148,9 @@ class ProviderIntelligenceState:
     provider_gate_evidence: tuple[tuple[str, bool], ...] = ()
     decision_domain: str = "architect"
     provider_security_posture: tuple[tuple[str, str], ...] = ()
+    provider_gate_evidence_by_candidate: tuple[
+        tuple[str, str, tuple[tuple[str, bool], ...]], ...
+    ] = ()
 
     def _unsigned(self) -> dict[str, Any]:
         payload = {
@@ -191,6 +194,11 @@ class ProviderIntelligenceState:
         if self.provider_security_posture:
             payload["provider_security_posture"] = [
                 list(item) for item in self.provider_security_posture
+            ]
+        if self.provider_gate_evidence_by_candidate:
+            payload["provider_gate_evidence_by_candidate"] = [
+                [provider_id, profile_sha256, [list(item) for item in gates]]
+                for provider_id, profile_sha256, gates in self.provider_gate_evidence_by_candidate
             ]
         return payload
 
@@ -245,6 +253,30 @@ class ProviderIntelligenceState:
             self.provider_gate_evidence
         ):
             raise ProviderIntelligenceError("provider gate evidence is invalid")
+        candidate_keys = {
+            (candidate.profile.provider_id, candidate.profile.profile_sha256)
+            for candidate in self.candidates
+        }
+        scoped_keys = set()
+        for provider_id, profile_sha256, facts in self.provider_gate_evidence_by_candidate:
+            key = (provider_id, profile_sha256)
+            if key in scoped_keys or key not in candidate_keys:
+                raise ProviderIntelligenceError("provider-scoped gate identity is invalid")
+            scoped_keys.add(key)
+            if not facts or len({name for name, _ in facts}) != len(facts) or any(
+                name not in {
+                    "policy_eligible", "privacy_eligible", "network_eligible",
+                    "authentication_eligible", "health_eligible", "budget_eligible",
+                    "empirical_evidence_eligible", "independence_eligible",
+                } or not isinstance(value, bool)
+                for name, value in facts
+            ):
+                raise ProviderIntelligenceError("provider-scoped gate evidence is invalid")
+        if self.decision_domain != "architect" and len(self.candidates) > 1:
+            if scoped_keys != candidate_keys:
+                raise ProviderIntelligenceError(
+                    "provider-scoped gate evidence is required for multiple candidates"
+                )
         if any(
             not isinstance(provider_id, str)
             or not provider_id
@@ -279,6 +311,12 @@ class ProviderIntelligenceState:
         if self.provider_security_posture:
             evidence_bundle["provider_security_posture"] = [
                 list(item) for item in self.provider_security_posture
+            ]
+        if self.provider_gate_evidence_by_candidate:
+            evidence_bundle["provider_gate_evidence_by_candidate"] = [
+                [provider_id, profile_sha256, [list(fact) for fact in facts]]
+                for provider_id, profile_sha256, facts
+                in self.provider_gate_evidence_by_candidate
             ]
         if self.decision_domain != "architect":
             evidence_bundle["decision_domain"] = self.decision_domain
@@ -416,7 +454,10 @@ def state_from_dict(payload: dict[str, Any]) -> ProviderIntelligenceState:
         "signing_key_id",
         "signature",
     }
-    optional = {"provider_gate_evidence", "decision_domain", "provider_security_posture"}
+    optional = {
+        "provider_gate_evidence", "decision_domain", "provider_security_posture",
+        "provider_gate_evidence_by_candidate",
+    }
     if not set(payload).issubset(required | optional) or not required.issubset(payload):
         raise ProviderIntelligenceError("provider intelligence state schema is invalid")
     try:
@@ -452,6 +493,12 @@ def state_from_dict(payload: dict[str, Any]) -> ProviderIntelligenceState:
             tuple(tuple(item) for item in payload.get("provider_gate_evidence", ())),
             payload.get("decision_domain", "architect"),
             tuple(tuple(item) for item in payload.get("provider_security_posture", ())),
+            tuple(
+                (
+                    item[0], item[1], tuple(tuple(fact) for fact in item[2])
+                )
+                for item in payload.get("provider_gate_evidence_by_candidate", ())
+            ),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ProviderIntelligenceError("provider intelligence state schema is invalid") from exc
@@ -478,6 +525,9 @@ def build_state(
     requirements: tuple[str, ...] | None = None,
     decision_domain: str = "architect",
     provider_security_posture: tuple[tuple[str, str], ...] = (),
+    provider_gate_evidence_by_candidate: tuple[
+        tuple[str, str, tuple[tuple[str, bool], ...]], ...
+    ] = (),
 ) -> ProviderIntelligenceState:
     requirements = tuple(requirements or ARCHITECT_REQUIREMENTS)
     requirements_hash = _hash(list(requirements))
@@ -506,6 +556,11 @@ def build_state(
         evidence_bundle["provider_security_posture"] = [
             list(item) for item in provider_security_posture
         ]
+    if provider_gate_evidence_by_candidate:
+        evidence_bundle["provider_gate_evidence_by_candidate"] = [
+            [provider_id, profile_sha256, [list(item) for item in facts]]
+            for provider_id, profile_sha256, facts in provider_gate_evidence_by_candidate
+        ]
     if decision_domain != "architect":
         evidence_bundle["decision_domain"] = decision_domain
     evidence_bundle_hash = _hash(evidence_bundle)
@@ -532,6 +587,7 @@ def build_state(
         provider_gate_evidence,
         decision_domain,
         provider_security_posture,
+        provider_gate_evidence_by_candidate,
     )
     return ProviderIntelligenceState(
         **{**unsigned.__dict__, "state_sha256": _hash(unsigned._unsigned())}

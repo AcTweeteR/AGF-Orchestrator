@@ -183,6 +183,21 @@ def eligibility_authority(tmp_path, candidates):
         gate_evidence=gate_evidence, policy_generation=2,
         signing_key_id="test-owner-ed25519",
         requirements=("code-intelligence",), decision_domain="code-intelligence",
+        provider_gate_evidence_by_candidate=tuple(
+            (
+                item.profile.provider_id,
+                item.profile.profile_sha256,
+                (
+                    ("policy_eligible", True),
+                    ("privacy_eligible", True),
+                    ("health_eligible", True),
+                    ("budget_eligible", True),
+                    ("empirical_evidence_eligible", True),
+                    ("independence_eligible", True),
+                ),
+            )
+            for item in candidates
+        ),
     )
     store = ProviderIntelligenceStore(tmp_path)
     project_store = store.for_project(PROJECT, decision_domain="code-intelligence")
