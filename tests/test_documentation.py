@@ -26,6 +26,7 @@ from agf_orchestrator.documentation import (
     evidence_from_dict,
     latest_is_unsafe_for_project,
     load_evidence,
+    load_provider_binding,
     persist_evidence,
     reconcile_evidence,
     resolve_provider,
@@ -410,6 +411,33 @@ def test_provider_binding_requires_authenticated_agf_issuance():
 def test_provider_binding_issuance_is_not_persisted_in_documentation_evidence():
     payload = evidence().to_dict()
     assert "issuance_token" not in payload
+
+
+def test_provider_binding_issuance_survives_restart_and_artifact_tampering(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGF_STATE_DIR", str(tmp_path / "authority"))
+    issued = binding_for("knowledge-provider-durable")
+    reloaded = ProviderBinding(**issued.to_dict())
+    reloaded.validate(now=NOW)
+    store = SessionStore(tmp_path / "session-state")
+    item = evidence(
+        provider_id=issued.provider_id,
+        provider_binding_sha256=issued.binding_sha256,
+    )
+    persist_evidence(store, "session-one", item, provider_binding=issued)
+    loaded = load_provider_binding(store, "session-one", issued.binding_sha256)
+    assert item.assess(request(provider_binding=loaded), now=NOW) is DocumentationStatus.VALID
+    path = (
+        store.artifacts_dir
+        / "session-one"
+        / f"provider-binding-{issued.binding_sha256}.json"
+    )
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            issued.provider_id, "knowledge-tampered"
+        )
+    )
+    with pytest.raises(DocumentationError):
+        load_provider_binding(store, "session-one", issued.binding_sha256)
 
 
 def test_reconciliation_requires_semantic_claim_agreement_across_providers():

@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import os
 import re
 import secrets
+import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import parse_qsl, urlsplit
 
@@ -127,7 +130,53 @@ _CLOCK_SKEW_SECONDS = 0
 _MAX_VERSION_LENGTH = 256
 _MAX_CITATION_REFS = 8
 _PROVIDER_BINDING_TTL_SECONDS = 3600
-_ISSUED_PROVIDER_BINDINGS: dict[str, str] = {}
+_PROVIDER_BINDING_DB = "provider-binding-authority.sqlite3"
+
+
+def _provider_binding_store_path() -> Path:
+    root = Path(os.environ.get("AGF_STATE_DIR", "~/.agf-orchestrator")).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    if root.is_symlink() or root.stat().st_mode & 0o022:
+        raise DocumentationError("provider binding authority root is not owner-controlled")
+    path = root / _PROVIDER_BINDING_DB
+    if path.exists() and path.is_symlink():
+        raise DocumentationError("provider binding authority store must not use symlinks")
+    return path
+
+
+def _record_provider_binding_issuance(token: str, binding_sha256: str) -> None:
+    path = _provider_binding_store_path()
+    connection = sqlite3.connect(path)
+    try:
+        os.chmod(path, 0o600)
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS provider_binding_issuance "
+            "(issuance_token TEXT PRIMARY KEY, binding_sha256 TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO provider_binding_issuance "
+            "(issuance_token, binding_sha256) VALUES (?, ?)",
+            (token, binding_sha256),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _verify_provider_binding_issuance(token: str, binding_sha256: str) -> bool:
+    try:
+        path = _provider_binding_store_path()
+        connection = sqlite3.connect(path)
+        try:
+            row = connection.execute(
+                "SELECT binding_sha256 FROM provider_binding_issuance "
+                "WHERE issuance_token = ?", (token,)
+            ).fetchone()
+        finally:
+            connection.close()
+    except (DocumentationError, OSError, sqlite3.Error):
+        return False
+    return row is not None and row[0] == binding_sha256
 
 
 def _contains_credential_query(value: str) -> bool:
@@ -771,7 +820,9 @@ class ProviderBinding:
         ).hexdigest()
         if self.binding_sha256 != expected:
             raise DocumentationError("provider binding hash does not match content")
-        if _ISSUED_PROVIDER_BINDINGS.get(self.issuance_token) != self.binding_sha256:
+        if not _verify_provider_binding_issuance(
+            self.issuance_token, self.binding_sha256
+        ):
             raise DocumentationError("provider binding was not issued by AGF eligibility")
 
 
@@ -818,7 +869,7 @@ def _seal_provider_binding(
         available, authenticated, policy_authorized, privacy_eligible, network_allowed,
         digest, issuance_token,
     )
-    _ISSUED_PROVIDER_BINDINGS[issuance_token] = digest
+    _record_provider_binding_issuance(issuance_token, digest)
     binding.validate()
     return binding
 
@@ -1071,14 +1122,57 @@ def evidence_from_dict(payload: dict[str, Any]) -> DocumentationEvidence:
 
 
 def persist_evidence(
-    store: SessionStore, session_id: str, evidence: DocumentationEvidence
+    store: SessionStore,
+    session_id: str,
+    evidence: DocumentationEvidence,
+    *,
+    provider_binding: ProviderBinding | None = None,
 ) -> tuple[str, str]:
     evidence.validate()
+    if provider_binding is not None:
+        provider_binding.validate()
+        if provider_binding.binding_sha256 != evidence.provider_binding_sha256:
+            raise DocumentationError("persisted provider binding does not match evidence")
+        persist_provider_binding(store, session_id, provider_binding)
     return store.write_artifact(
         session_id,
         f"documentation-{evidence.evidence_id}.json",
         json.dumps(evidence.to_dict(), sort_keys=True, separators=(",", ":")) + "\n",
     )
+
+
+def persist_provider_binding(
+    store: SessionStore, session_id: str, binding: ProviderBinding
+) -> tuple[str, str]:
+    """Persist the binding separately; evidence contains only its digest."""
+    binding.validate()
+    return store.write_artifact(
+        session_id,
+        f"provider-binding-{binding.binding_sha256}.json",
+        json.dumps(binding.to_dict(), sort_keys=True, separators=(",", ":")) + "\n",
+    )
+
+
+def load_provider_binding(
+    store: SessionStore, session_id: str, binding_sha256: str
+) -> ProviderBinding:
+    _sha("provider binding digest", binding_sha256, _SHA256)
+    path = (
+        store._path(session_id).parent.parent
+        / "artifacts"
+        / session_id
+        / f"provider-binding-{binding_sha256}.json"
+    )
+    try:
+        path = store.ensure_safe_path(path)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        binding = ProviderBinding(**payload)
+        binding.validate()
+        if binding.binding_sha256 != binding_sha256:
+            raise DocumentationError("provider binding artifact digest mismatch")
+        return binding
+    except (OSError, SessionStoreError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise DocumentationError("provider binding is unavailable") from exc
 
 
 def load_evidence(
