@@ -379,6 +379,18 @@ def resolve_provider(
             now=now,
             target_sha=target_sha,
         )
+        runtime_denials = tuple(
+            name for name in (
+                "policy_eligible", "privacy_eligible", "health_eligible",
+                "budget_eligible", "empirical_evidence_eligible", "independence_eligible",
+            ) if getattr(gates, name) is False
+        )
+        if runtime_denials:
+            return ProviderResolution(
+                IntelligenceStatus.UNAVAILABLE,
+                None,
+                "runtime constraints deny: " + ",".join(runtime_denials),
+            )
         return ProviderResolution(IntelligenceStatus.VALID, selection, "eligible")
     except (ProviderEligibilityError, ValueError, TypeError) as exc:
         if "required capability is not supported" in str(exc):

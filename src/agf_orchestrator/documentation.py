@@ -1242,6 +1242,31 @@ class ProviderResolution:
     binding: ProviderBinding | None = None
 
 
+@dataclass(frozen=True)
+class ProviderRuntimeConstraints:
+    """Invocation-local denials; never an eligibility authority or persisted."""
+
+    available: bool | None
+    authenticated: bool | None
+    policy_authorized: bool | None
+    privacy_eligible: bool | None
+    network_allowed: bool | None
+
+    def denial_reason(self, profile: KnowledgeProviderProfile) -> str | None:
+        if self.available is False:
+            return "provider is unavailable at invocation time"
+        if self.policy_authorized is False:
+            return "provider is not authorized for this invocation"
+        if profile.requires_credentials or profile.requires_authenticated_session:
+            if self.authenticated is False:
+                return "provider authentication is unavailable at invocation time"
+        if profile.network_required and self.network_allowed is False:
+            return "provider network access is unavailable at invocation time"
+        if profile.privacy_review_required and self.privacy_eligible is False:
+            return "provider privacy eligibility is unavailable at invocation time"
+        return None
+
+
 def resolve_provider(
     profile: KnowledgeProviderProfile,
     *,
@@ -1280,6 +1305,17 @@ def resolve_provider(
         if "privacy" in reason:
             return ProviderResolution(DocumentationStatus.PRIVACY_BLOCKED, reason)
         return ProviderResolution(DocumentationStatus.PROVIDER_INELIGIBLE, reason)
+    runtime = ProviderRuntimeConstraints(
+        available, authenticated, policy_authorized, privacy_eligible, network_allowed
+    )
+    if (runtime_reason := runtime.denial_reason(profile)) is not None:
+        if "network" in runtime_reason:
+            status = DocumentationStatus.NETWORK_BLOCKED
+        elif "privacy" in runtime_reason:
+            status = DocumentationStatus.PRIVACY_BLOCKED
+        else:
+            status = DocumentationStatus.PROVIDER_INELIGIBLE
+        return ProviderResolution(status, runtime_reason)
     reason = "eligible" if required else "optional-eligible"
     return ProviderResolution(
         DocumentationStatus.VALID,

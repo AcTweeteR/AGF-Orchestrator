@@ -244,6 +244,25 @@ def test_code_intelligence_rejects_duck_typed_authority():
     assert "canonical provider eligibility" in result.reason
 
 
+def test_runtime_gate_denials_only_restrict_canonical_selection(tmp_path):
+    candidate = provider_candidate()
+    authority = eligibility_authority(tmp_path, (candidate,))
+    allowed = resolve_provider(
+        (candidate,), project_id=PROJECT, required=True, now=NOW,
+        gates=SelectionGates(True, True, True, True, True, True),
+        eligibility_authority=authority,
+    )
+    assert allowed.status is IntelligenceStatus.VALID
+    denied = resolve_provider(
+        (candidate,), project_id=PROJECT, required=True, now=NOW,
+        gates=SelectionGates(False, True, True, True, True, True),
+        eligibility_authority=authority,
+    )
+    assert denied.status is IntelligenceStatus.UNAVAILABLE
+    # A true runtime gate remains non-authoritative; owner state is still
+    # required, as demonstrated by the canonical authority path above.
+
+
 def test_fallback_is_existing_selector_policy_and_never_changes_scope(tmp_path):
     gates = SelectionGates(True, True, True, True, True, True, allow_fallback=True)
     first = provider_candidate("project-other", "provider-first", 0)

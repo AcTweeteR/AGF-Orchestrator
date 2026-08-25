@@ -196,11 +196,16 @@ def _documentation_authority(profile_value, kwargs):
             "privacy_eligible", "network_allowed",
         )
     )
-    root = str(Path(tempfile.mkdtemp(prefix="agf-doc-authority-")).resolve()) if (
-        has_caller_denial
-        or kwargs.get("now", NOW) != NOW
-        or profile_value.capabilities != ("documentation",)
-    ) else str(_DOCUMENTATION_STATE_ROOT)
+    generated_root = str(Path(tempfile.mkdtemp(prefix="agf-doc-authority-")).resolve())
+    root = kwargs.get("state_root") or (
+        generated_root
+        if (
+            has_caller_denial
+            or kwargs.get("now", NOW) != NOW
+            or profile_value.capabilities != ("documentation",)
+        )
+        else str(_DOCUMENTATION_STATE_ROOT)
+    )
     store = ProviderIntelligenceStore(root)
     store.for_project(PROJECT, decision_domain="documentation").save(
         sign_owner_state(state)
@@ -468,6 +473,64 @@ def test_provider_required_optional_network_privacy_and_capability_gates():
         resolve_provider(profile(capabilities=("citations",)), required=True, **kwargs).status
         is DocumentationStatus.PROVIDER_INELIGIBLE
     )
+
+
+def test_runtime_denials_restrict_owner_authorization_without_granting_it(tmp_path):
+    owner_authority = _documentation_authority(profile(), {"state_root": str(tmp_path / "offline")})
+    base = dict(
+        project_id=PROJECT, now=NOW, available=True, authenticated=True,
+        policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
+        eligibility_authority=owner_authority, target_sha=REVISION,
+    )
+    for flag, expected in (
+        ("available", DocumentationStatus.PROVIDER_INELIGIBLE),
+        ("policy_authorized", DocumentationStatus.PROVIDER_INELIGIBLE),
+    ):
+        constrained = {**base, flag: False}
+        assert _resolve_provider(profile(), **constrained).status is expected
+
+    network_authority = _documentation_authority(
+        profile(network_required=True), {"state_root": str(tmp_path / "network")}
+    )
+    network_result = _resolve_provider(
+        profile(network_required=True), **{**base, "eligibility_authority": network_authority,
+                                          "network_allowed": False}
+    )
+    assert network_result.status is DocumentationStatus.NETWORK_BLOCKED
+
+    privacy_authority = _documentation_authority(
+        profile(privacy_review_required=True), {"state_root": str(tmp_path / "privacy")}
+    )
+    privacy_result = _resolve_provider(
+        profile(privacy_review_required=True),
+        **{**base, "eligibility_authority": privacy_authority, "privacy_eligible": False},
+    )
+    assert privacy_result.status is DocumentationStatus.PRIVACY_BLOCKED
+
+    offline_result = _resolve_provider(
+        profile(), **{**base, "network_allowed": False}
+    )
+    assert offline_result.status is DocumentationStatus.VALID
+
+
+def test_runtime_authentication_denial_applies_only_to_credentialed_profiles(tmp_path):
+    base = dict(
+        project_id=PROJECT, now=NOW, available=True, authenticated=False,
+        policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
+    )
+    offline = resolve_provider(profile(), **base)
+    assert offline.status is DocumentationStatus.VALID
+
+    credentialed = profile()
+    credentialed = replace(credentialed, requires_credentials=True)
+    credentialed = seal_profile(credentialed)
+    authority = _documentation_authority(
+        credentialed, {"state_root": str(tmp_path / "credentialed")}
+    )
+    result = _resolve_provider(
+        credentialed, **{**base, "eligibility_authority": authority, "target_sha": REVISION}
+    )
+    assert result.status is DocumentationStatus.PROVIDER_INELIGIBLE
 
 
 def binding_for(provider_id):
