@@ -363,12 +363,32 @@ def _decision_from_state(
 class ProviderEligibilityAuthority:
     """Resolve and re-verify decisions from the existing owner state store."""
 
+    __slots__ = ("_store", "_sealed")
+
     def __init__(self, store: Any):
         if type(store) is not ProviderIntelligenceStore or not store.owner_verifying:
             raise ProviderEligibilityError(
                 "provider eligibility requires the canonical owner-verifying store"
             )
-        self.store = store
+        object.__setattr__(self, "_store", store)
+        object.__setattr__(self, "_sealed", True)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError("provider eligibility authority is immutable")
+        object.__setattr__(self, name, value)
+
+    @property
+    def store(self) -> ProviderIntelligenceStore:
+        return self._store
+
+    def _verified_store(self) -> ProviderIntelligenceStore:
+        store = self._store
+        if type(store) is not ProviderIntelligenceStore or not store.owner_verifying:
+            raise ProviderEligibilityError(
+                "provider eligibility store is no longer owner-verifying"
+            )
+        return store
 
     def resolve(
         self,
@@ -392,7 +412,9 @@ class ProviderEligibilityAuthority:
         if domain is None:
             raise ProviderEligibilityError("provider decision domain is invalid")
         try:
-            state = self.store.for_project(project_id, decision_domain=domain).load()
+            state = self._verified_store().for_project(
+                project_id, decision_domain=domain
+            ).load()
         except (ProviderIntelligenceError, OSError, TypeError, ValueError) as exc:
             raise ProviderEligibilityError("owner provider intelligence is unavailable") from exc
         decision = _decision_from_state(
@@ -535,7 +557,7 @@ class ProviderEligibilityAuthority:
             if domain is None:
                 raise ProviderEligibilityError("provider decision domain is invalid")
         try:
-            owner_state = self.store.for_project(
+            owner_state = self._verified_store().for_project(
                 project_id, decision_domain=domain
             ).load()
         except (ProviderIntelligenceError, OSError, TypeError, ValueError) as exc:

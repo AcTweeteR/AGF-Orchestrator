@@ -129,6 +129,12 @@ def test_staging_hmac_store_cannot_become_trusted_authority(tmp_path):
         ProviderEligibilityAuthority(FakeStore())
 
 
+def test_owner_verifying_authority_cannot_swap_its_store(tmp_path):
+    authority_value, _ = make_authority(tmp_path)
+    with pytest.raises(AttributeError, match="immutable"):
+        authority_value.store = ProviderIntelligenceStore(tmp_path / "replacement")
+
+
 def knowledge_profile(
     *, project_id=PROJECT, network_required=True, auth_required=True, credentials=False
 ):
