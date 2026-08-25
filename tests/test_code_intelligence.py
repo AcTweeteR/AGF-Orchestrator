@@ -156,7 +156,7 @@ def provider_candidate(
     source = "fixture provider profile"
     profile = CapabilityProfile(
         "1.0", "profile-code-intelligence", project_id, provider_id, 1,
-        source, sha256_text(source), NOW, "2026-08-25T12:00:00Z",
+        source, sha256_text(source), NOW, "2030-08-25T12:00:00Z",
         (CapabilityObservation("code-intelligence", capability_status, "1"),), "",
     )
     return CapabilityCandidate(

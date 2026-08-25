@@ -112,6 +112,9 @@ class ProviderEligibilityDecision:
     provider_id: str
     provider_kind: str
     capability_domain: str
+    source_decision_domain: str
+    candidate_profile_sha256: str
+    candidate_priority: int
     target_sha: str
     revision_scope: str
     security_posture_sha256: str
@@ -138,6 +141,9 @@ class ProviderEligibilityDecision:
             "provider_id": self.provider_id,
             "provider_kind": self.provider_kind,
             "capability_domain": self.capability_domain,
+            "source_decision_domain": self.source_decision_domain,
+            "candidate_profile_sha256": self.candidate_profile_sha256,
+            "candidate_priority": self.candidate_priority,
             "target_sha": self.target_sha,
             "revision_scope": self.revision_scope,
             "security_posture_sha256": self.security_posture_sha256,
@@ -179,6 +185,14 @@ class ProviderEligibilityDecision:
                 raise ProviderEligibilityError(f"{label} is invalid")
         if not self.capability_domain or len(self.capability_domain) > 128:
             raise ProviderEligibilityError("provider decision capability domain is invalid")
+        if self.source_decision_domain not in _DOMAIN_KINDS:
+            raise ProviderEligibilityError("provider decision source domain is invalid")
+        if self.provider_kind not in _DOMAIN_KINDS[self.source_decision_domain]:
+            raise ProviderEligibilityError("provider decision source domain mismatch")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.candidate_profile_sha256):
+            raise ProviderEligibilityError("provider decision candidate profile is invalid")
+        if not isinstance(self.candidate_priority, int) or self.candidate_priority < 0:
+            raise ProviderEligibilityError("provider decision candidate priority is invalid")
         if not isinstance(self.target_sha, str) or not re.fullmatch(
             r"[0-9a-f]{40}", self.target_sha
         ):
@@ -350,6 +364,9 @@ def _decision_from_state(
         provider_id=provider_id,
         provider_kind=provider_kind,
         capability_domain=capability_domain,
+        source_decision_domain=state.decision_domain,
+        candidate_profile_sha256=candidate.profile.profile_sha256,
+        candidate_priority=candidate.priority,
         target_sha=state.target_sha,
         revision_scope=revision_scope,
         security_posture_sha256=posture_hash,
@@ -375,6 +392,20 @@ def _decision_from_state(
     )
     decision.validate(now=now)
     return decision
+
+
+def _require_owner_eligible(decision: ProviderEligibilityDecision) -> None:
+    if not all(
+        (
+            decision.policy_eligible,
+            decision.privacy_eligible,
+            decision.health_eligible,
+            decision.budget_eligible,
+            decision.empirical_evidence_eligible,
+            decision.independence_eligible,
+        )
+    ):
+        raise ProviderEligibilityError("provider is not owner-eligible")
 
 
 class ProviderEligibilityAuthority:
@@ -448,17 +479,7 @@ class ProviderEligibilityAuthority:
             now=now,
             required_capabilities=required_capabilities,
         )
-        if not all(
-            (
-                decision.policy_eligible,
-                decision.privacy_eligible,
-                decision.health_eligible,
-                decision.budget_eligible,
-                decision.empirical_evidence_eligible,
-                decision.independence_eligible,
-            )
-        ):
-            raise ProviderEligibilityError("provider is not owner-eligible")
+        _require_owner_eligible(decision)
         return decision
 
     def resolve_knowledge_profile(
@@ -556,6 +577,11 @@ class ProviderEligibilityAuthority:
         required = tuple(required_capabilities)
         if not required:
             raise ProviderEligibilityError("required capabilities are missing")
+        if len(set(required)) != len(required) or any(
+            not isinstance(item, str) or not item.strip() for item in required
+        ):
+            raise ProviderEligibilityError("required capabilities are invalid")
+        required = tuple(sorted(required))
 
         # Candidate identity, priority, and ordering are part of the
         # owner-authenticated ProviderIntelligenceState. The caller's
@@ -577,6 +603,8 @@ class ProviderEligibilityAuthority:
             }.get(provider_kind)
             if domain is None:
                 raise ProviderEligibilityError("provider decision domain is invalid")
+            if provider_kind == "knowledge" and "documentation" in required:
+                domain = "documentation"
         owner_state = self._load_state(project_id, domain)
         try:
             if revision_scope == "revision-bound":
@@ -599,8 +627,8 @@ class ProviderEligibilityAuthority:
         fallback_allowed = True
         for candidate in owner_candidates:
             try:
-                decision = self.resolve(
-                    project_id=project_id,
+                decision = _decision_from_state(
+                    owner_state,
                     provider_id=candidate.profile.provider_id,
                     provider_kind=provider_kind,
                     capability_domain=required[0],
@@ -608,21 +636,11 @@ class ProviderEligibilityAuthority:
                     required_capabilities=required,
                     target_sha=target_sha,
                     revision_scope=revision_scope,
-                    decision_domain=domain,
                 )
-                if all(
-                    (
-                        decision.policy_eligible,
-                        decision.privacy_eligible,
-                        decision.health_eligible,
-                        decision.budget_eligible,
-                        decision.empirical_evidence_eligible,
-                        decision.independence_eligible,
-                    )
-                ):
-                    eligible.append(candidate)
-                    fallback_allowed = fallback_allowed and decision.fallback_eligible
-            except ProviderEligibilityError:
+                _require_owner_eligible(decision)
+                eligible.append(candidate)
+                fallback_allowed = fallback_allowed and decision.fallback_eligible
+            except (ProviderEligibilityError, ProviderIntelligenceError):
                 continue
         selected = CapabilitySelector().select(
             eligible,
