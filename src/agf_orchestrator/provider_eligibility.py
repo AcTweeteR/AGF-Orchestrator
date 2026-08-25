@@ -511,20 +511,21 @@ class ProviderEligibilityAuthority:
         # candidates are observations only: accepting them here would let a
         # caller add, omit, or reorder a provider and thereby change primary
         # versus fallback semantics.
-        domain = {
-            "code-intelligence": "code-intelligence",
-            "knowledge": "knowledge",
-            "documentation": "documentation",
-            "capability": "architect",
-        }.get(provider_kind)
-        if domain is None:
-            raise ProviderEligibilityError("provider decision domain is invalid")
-        if revision_scope == "resolve-library" and (
-            provider_kind != "knowledge" or domain != "documentation"
-        ):
-            raise ProviderEligibilityError(
-                "revisionless selection is limited to knowledge documentation"
-            )
+        if revision_scope == "resolve-library":
+            if provider_kind != "knowledge":
+                raise ProviderEligibilityError(
+                    "revisionless selection is limited to knowledge documentation"
+                )
+            domain = "documentation"
+        else:
+            domain = {
+                "code-intelligence": "code-intelligence",
+                "knowledge": "knowledge",
+                "documentation": "documentation",
+                "capability": "architect",
+            }.get(provider_kind)
+            if domain is None:
+                raise ProviderEligibilityError("provider decision domain is invalid")
         try:
             owner_state = self.store.for_project(
                 project_id, decision_domain=domain
@@ -563,6 +564,7 @@ class ProviderEligibilityAuthority:
                     required_capabilities=required,
                     target_sha=target_sha,
                     revision_scope=revision_scope,
+                    decision_domain=domain,
                 )
                 if all(
                     (

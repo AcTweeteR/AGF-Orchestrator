@@ -251,6 +251,20 @@ def test_generic_resolution_enforces_owner_security_posture(tmp_path):
         )
 
 
+def test_revisionless_selection_uses_documentation_domain(tmp_path):
+    authority_value, _ = make_authority(tmp_path)
+    selected = authority_value.select(
+        (),
+        project_id=PROJECT,
+        required_capabilities=("documentation",),
+        provider_kind="knowledge",
+        now=NOW,
+        revision_scope="resolve-library",
+    )
+    assert selected.provider_id == "knowledge-docs"
+    assert selected.fallback_used is False
+
+
 def test_credentials_require_owner_authentication_eligibility(tmp_path):
     authority_value, _ = make_authority(
         tmp_path, state(security_profile=knowledge_profile(credentials=True))
