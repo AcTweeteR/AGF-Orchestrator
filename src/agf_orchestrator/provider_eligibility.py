@@ -19,7 +19,11 @@ from typing import Any, Iterable
 from .capability_extensions import CapabilityExtensionError, KnowledgeProviderProfile
 from .capability_profiles import CapabilityProfileError
 from .capability_selection import CapabilityCandidate, CapabilitySelector, SelectionGates
-from .provider_intelligence import ProviderIntelligenceError, ProviderIntelligenceState
+from .provider_intelligence import (
+    ProviderIntelligenceError,
+    ProviderIntelligenceState,
+    ProviderIntelligenceStore,
+)
 
 
 class ProviderEligibilityError(ValueError):
@@ -360,6 +364,10 @@ class ProviderEligibilityAuthority:
     """Resolve and re-verify decisions from the existing owner state store."""
 
     def __init__(self, store: Any):
+        if type(store) is not ProviderIntelligenceStore or not store.owner_verifying:
+            raise ProviderEligibilityError(
+                "provider eligibility requires the canonical owner-verifying store"
+            )
         self.store = store
 
     def resolve(

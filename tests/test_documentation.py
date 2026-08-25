@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from provider_test_support import sign_state as sign_owner_state
 
 from agf_orchestrator.capability_extensions import (
     IntegrationStability,
@@ -53,7 +54,6 @@ from agf_orchestrator.provider_eligibility import (
 from agf_orchestrator.provider_intelligence import (
     ProviderIntelligenceStore,
     build_state,
-    sign_state,
 )
 from agf_orchestrator.session_store import SessionStore
 
@@ -178,6 +178,7 @@ def _documentation_authority(profile_value, kwargs):
             (item.provider_id, "documentation") for item in candidate_profiles
         ),
         gates=gates, gate_evidence=gate_evidence, policy_generation=2,
+        signing_key_id="test-owner-ed25519",
         requirements=("documentation",), decision_domain="documentation",
         provider_gate_evidence=(
             ("network_eligible", network),
@@ -200,11 +201,9 @@ def _documentation_authority(profile_value, kwargs):
         or kwargs.get("now", NOW) != NOW
         or profile_value.capabilities != ("documentation",)
     ) else str(_DOCUMENTATION_STATE_ROOT)
-    store = ProviderIntelligenceStore(
-        root, signing_key=b"test-owner-key-which-is-long-enough-123456", staging=True
-    )
+    store = ProviderIntelligenceStore(root)
     store.for_project(PROJECT, decision_domain="documentation").save(
-        sign_state(state, store.signing_key, staging=True)
+        sign_owner_state(state)
     )
     return ProviderEligibilityAuthority(store)
 

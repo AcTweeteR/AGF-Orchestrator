@@ -2,6 +2,7 @@ import json
 from dataclasses import replace
 
 import pytest
+from provider_test_support import sign_state as sign_owner_state
 
 from agf_orchestrator.capability_profiles import (
     CapabilityObservation,
@@ -29,7 +30,6 @@ from agf_orchestrator.provider_eligibility import ProviderEligibilityAuthority
 from agf_orchestrator.provider_intelligence import (
     ProviderIntelligenceStore,
     build_state,
-    sign_state,
 )
 from agf_orchestrator.session_store import SessionStore
 
@@ -181,13 +181,12 @@ def eligibility_authority(tmp_path, candidates):
         provider_interfaces=tuple((item.profile.provider_id, "code") for item in candidates),
         gates=SelectionGates(True, True, True, True, True, True),
         gate_evidence=gate_evidence, policy_generation=2,
+        signing_key_id="test-owner-ed25519",
         requirements=("code-intelligence",), decision_domain="code-intelligence",
     )
-    store = ProviderIntelligenceStore(
-        tmp_path, signing_key=b"test-owner-key-which-is-long-enough-123456", staging=True
-    )
+    store = ProviderIntelligenceStore(tmp_path)
     project_store = store.for_project(PROJECT, decision_domain="code-intelligence")
-    project_store.save(sign_state(value, store.signing_key, staging=True))
+    project_store.save(sign_owner_state(value))
     return ProviderEligibilityAuthority(store)
 
 

@@ -560,9 +560,22 @@ class ProviderIntelligenceStore:
             )
         self.signing_key = signing_key
         self.staging = staging
+        self._verification_mode = (
+            "staging-hmac" if staging or signing_key is not None else "owner-envelope"
+        )
         self.path = root / "capability-intelligence"
         self.expected_project_id: str | None = None
         self.expected_decision_domain: str | None = None
+
+    @property
+    def owner_verifying(self) -> bool:
+        """Whether this concrete store uses AGF's pinned owner envelope."""
+        return (
+            type(self) is ProviderIntelligenceStore
+            and self._verification_mode == "owner-envelope"
+            and self.signing_key is None
+            and self.staging is False
+        )
 
     def for_project(
         self, project_id: str, decision_domain: str = "architect"

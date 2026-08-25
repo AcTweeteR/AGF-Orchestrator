@@ -2,6 +2,7 @@ import json
 from dataclasses import replace
 
 import pytest
+from provider_test_support import sign_state as sign_owner_state
 
 from agf_orchestrator.capability_extensions import (
     IntegrationStability,
@@ -29,7 +30,6 @@ from agf_orchestrator.provider_eligibility import (
 from agf_orchestrator.provider_intelligence import (
     ProviderIntelligenceStore,
     build_state,
-    sign_state,
 )
 
 PROJECT = "project-efc8e8ef7be7050b"
@@ -92,6 +92,7 @@ def state(
         gates=active_gates,
         gate_evidence=gate_evidence,
         policy_generation=2,
+        signing_key_id="test-owner-ed25519",
         requirements=("documentation",),
         decision_domain="documentation",
         provider_gate_evidence=provider_gate_evidence or (
@@ -109,11 +110,23 @@ def state(
 
 
 def make_authority(tmp_path, value=None):
-    store = ProviderIntelligenceStore(tmp_path, signing_key=KEY, staging=True)
-    signed = sign_state(value or state(), KEY, staging=True)
+    store = ProviderIntelligenceStore(tmp_path)
+    signed = sign_owner_state(value or state())
     project_store = store.for_project(PROJECT, decision_domain="documentation")
     project_store.save(signed)
     return ProviderEligibilityAuthority(store), project_store
+
+
+def test_staging_hmac_store_cannot_become_trusted_authority(tmp_path):
+    staging = ProviderIntelligenceStore(tmp_path, signing_key=KEY, staging=True)
+    with pytest.raises(ProviderEligibilityError, match="owner-verifying"):
+        ProviderEligibilityAuthority(staging)
+
+    class FakeStore:
+        owner_verifying = True
+
+    with pytest.raises(ProviderEligibilityError, match="owner-verifying"):
+        ProviderEligibilityAuthority(FakeStore())
 
 
 def knowledge_profile(
@@ -316,11 +329,11 @@ def test_cross_project_provider_and_expired_state_fail_closed(tmp_path):
             required_capabilities=("documentation",),
         )
     expired = state(observed="2020-01-01T00:00:00Z", expires="2020-01-02T00:00:00Z")
-    expired_store = ProviderIntelligenceStore(tmp_path / "expired", signing_key=KEY, staging=True)
+    expired_store = ProviderIntelligenceStore(tmp_path / "expired")
     expired_project_store = expired_store.for_project(PROJECT, decision_domain="documentation")
     expired_project_store.path.parent.mkdir(parents=True)
     expired_project_store.path.write_text(
-        json.dumps(sign_state(expired, KEY, staging=True).to_dict())
+        json.dumps(sign_owner_state(expired).to_dict())
     )
     expired_authority = ProviderEligibilityAuthority(expired_store)
     with pytest.raises(ProviderEligibilityError):
