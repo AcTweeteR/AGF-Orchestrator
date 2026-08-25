@@ -580,7 +580,7 @@ def test_provider_binding_issuance_survives_restart_and_artifact_tampering(tmp_p
     loaded = load_provider_binding(
         store, "session-one", issued.binding_sha256, eligibility_authority=authority
     )
-    loaded = replace(loaded, authority=authority)
+    assert loaded.authority is authority
     assert item.assess(request(provider_binding=loaded), now=NOW) is DocumentationStatus.VALID
     path = (
         store.artifacts_dir

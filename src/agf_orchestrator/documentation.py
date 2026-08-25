@@ -6,7 +6,7 @@ import hashlib
 import html
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol
@@ -1199,7 +1199,10 @@ def load_provider_binding(
         binding.validate(eligibility_authority=eligibility_authority)
         if binding.binding_sha256 != binding_sha256:
             raise DocumentationError("provider binding artifact digest mismatch")
-        return binding
+        # Preserve the verified authority for subsequent assess() calls. A
+        # binding loaded from a non-default owner state must not silently
+        # fall back to the process default authority after deserialization.
+        return replace(binding, authority=eligibility_authority)
     except (OSError, SessionStoreError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise DocumentationError("provider binding is unavailable") from exc
 
