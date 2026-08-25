@@ -230,6 +230,20 @@ def test_caller_gates_cannot_authorize_without_canonical_authority():
     assert "canonical provider eligibility" in result.reason
 
 
+def test_code_intelligence_rejects_duck_typed_authority():
+    class ForgedAuthority:
+        def select(self, *_args, **_kwargs):
+            raise AssertionError("forged authority was invoked")
+
+    result = resolve_provider(
+        (provider_candidate(),), project_id=PROJECT, required=True, now=NOW,
+        gates=SelectionGates(True, True, True, True, True, True),
+        eligibility_authority=ForgedAuthority(),
+    )
+    assert result.status is IntelligenceStatus.UNAVAILABLE
+    assert "canonical provider eligibility" in result.reason
+
+
 def test_fallback_is_existing_selector_policy_and_never_changes_scope(tmp_path):
     gates = SelectionGates(True, True, True, True, True, True, allow_fallback=True)
     first = provider_candidate("project-other", "provider-first", 0)

@@ -56,6 +56,17 @@ class DocumentationFreshness(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+def _canonical_authority(
+    authority: ProviderEligibilityAuthority | None,
+) -> ProviderEligibilityAuthority:
+    """Accept only the sealed canonical authority at this trust boundary."""
+    if authority is None:
+        return ProviderEligibilityAuthority(ProviderIntelligenceStore())
+    if type(authority) is not ProviderEligibilityAuthority:
+        raise DocumentationError("canonical provider eligibility authority is required")
+    return authority
+
+
 class DocumentationOperation(StrEnum):
     RESOLVE_LIBRARY = "RESOLVE_LIBRARY"
     RETRIEVE_VERSIONED = "RETRIEVE_VERSIONED"
@@ -787,9 +798,7 @@ class ProviderBinding:
             if now is not None and _timestamp("provider binding now", now) >= expiry:
                 raise DocumentationError("provider binding has expired")
         try:
-            authority = eligibility_authority or self.authority or ProviderEligibilityAuthority(
-                ProviderIntelligenceStore()
-            )
+            authority = _canonical_authority(eligibility_authority or self.authority)
             decision = authority.resolve(
                 project_id=self.project_id,
                 provider_id=self.provider_id,
@@ -843,6 +852,7 @@ def _seal_provider_binding(
     decision: Any,
     eligibility_authority: ProviderEligibilityAuthority | None = None,
 ) -> ProviderBinding:
+    authority = _canonical_authority(eligibility_authority)
     now = decision.decision_at
     decision_at = _timestamp("provider binding decision_at", now)
     ttl_expires_at = decision_at + timedelta(seconds=_PROVIDER_BINDING_TTL_SECONDS)
@@ -883,9 +893,9 @@ def _seal_provider_binding(
         decision.policy_eligible, decision.privacy_eligible, decision.network_eligible,
         digest, issuance_token, decision.decision_sha256, decision.target_sha,
         decision.revision_scope,
-        eligibility_authority,
+        authority,
     )
-    binding.validate(eligibility_authority=eligibility_authority)
+    binding.validate(eligibility_authority=authority)
     return binding
 
 
@@ -1257,7 +1267,7 @@ def resolve_provider(
         return ProviderResolution(
             DocumentationStatus.PROVIDER_INELIGIBLE, "documentation capability is unsupported"
         )
-    authority = eligibility_authority or ProviderEligibilityAuthority(ProviderIntelligenceStore())
+    authority = _canonical_authority(eligibility_authority)
     try:
         decision = authority.resolve_knowledge_profile(
             profile, now=now, required_capability="documentation", target_sha=target_sha,

@@ -218,6 +218,19 @@ def resolve_provider(profile_value, **kwargs):
     )
 
 
+def test_documentation_rejects_duck_typed_authority():
+    class ForgedAuthority:
+        def resolve_knowledge_profile(self, *_args, **_kwargs):
+            raise AssertionError("forged authority was invoked")
+
+    with pytest.raises(DocumentationError, match="canonical provider eligibility"):
+        _resolve_provider(
+            profile(), project_id=PROJECT, now=NOW, available=True, authenticated=True,
+            policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
+            eligibility_authority=ForgedAuthority(), target_sha=REVISION,
+        )
+
+
 DEFAULT_BINDING = resolve_provider(
     profile(), project_id=PROJECT, now=NOW, available=True, authenticated=True,
     policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,

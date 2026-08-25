@@ -364,6 +364,12 @@ def resolve_provider(
             None,
             "canonical provider eligibility is required",
         )
+    if type(eligibility_authority) is not ProviderEligibilityAuthority:
+        return ProviderResolution(
+            IntelligenceStatus.UNAVAILABLE,
+            None,
+            "canonical provider eligibility is required",
+        )
     try:
         selection = eligibility_authority.select(
             candidates,
