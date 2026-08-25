@@ -142,9 +142,11 @@ class ProviderIntelligenceState:
     signing_key_id: str
     signature: Any
     state_sha256: str
+    provider_gate_evidence: tuple[tuple[str, bool], ...] = ()
+    decision_domain: str = "architect"
 
     def _unsigned(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "algorithm_version": self.algorithm_version,
             "project_id": self.project_id,
@@ -178,12 +180,29 @@ class ProviderIntelligenceState:
             "evidence_bundle_hash": self.evidence_bundle_hash,
             "signing_key_id": self.signing_key_id,
         }
+        if self.provider_gate_evidence:
+            payload["provider_gate_evidence"] = [list(item) for item in self.provider_gate_evidence]
+        if self.decision_domain != "architect":
+            payload["decision_domain"] = self.decision_domain
+        return payload
 
     def to_dict(self) -> dict[str, Any]:
         return {**self._unsigned(), "signature": self.signature, "state_sha256": self.state_sha256}
 
     def validate(self, *, now: str | None = None, target_sha: str | None = None) -> None:
-        if self.schema_version != "1.0" or self.algorithm_version != "architect-gates-v1":
+        if (
+            self.schema_version != "1.0"
+            or not isinstance(self.decision_domain, str)
+            or not self.decision_domain.strip()
+            or len(self.decision_domain) > 80
+        ):
+            raise ProviderIntelligenceError("provider intelligence schema/version is invalid")
+        expected_algorithm = (
+            "architect-gates-v1"
+            if self.decision_domain == "architect"
+            else "provider-eligibility-v1"
+        )
+        if self.algorithm_version != expected_algorithm:
             raise ProviderIntelligenceError("provider intelligence schema/version is invalid")
         if (
             not self.project_id.startswith("project-")
@@ -194,12 +213,26 @@ class ProviderIntelligenceState:
             raise ProviderIntelligenceError("provider intelligence binding is invalid")
         if target_sha is not None and self.target_sha != target_sha:
             raise ProviderIntelligenceError("provider intelligence target SHA is stale")
-        if self.requirements != ARCHITECT_REQUIREMENTS:
+        if not self.requirements or any(
+            not isinstance(item, str) or not item.strip() or len(item) > 128
+            for item in self.requirements
+        ) or len(set(self.requirements)) != len(self.requirements):
+            raise ProviderIntelligenceError("provider requirements are invalid")
+        if self.decision_domain == "architect" and self.requirements != ARCHITECT_REQUIREMENTS:
             raise ProviderIntelligenceError("Architect requirements are not canonical")
         if self.requirements_hash != _hash(list(self.requirements)):
             raise ProviderIntelligenceError("Architect requirements hash is invalid")
         if self.policy_generation < 1:
             raise ProviderIntelligenceError("policy generation is invalid")
+        if any(
+            not isinstance(name, str)
+            or name not in {"network_eligible", "authentication_eligible"}
+            or not isinstance(value, bool)
+            for name, value in self.provider_gate_evidence
+        ) or len({name for name, _ in self.provider_gate_evidence}) != len(
+            self.provider_gate_evidence
+        ):
+            raise ProviderIntelligenceError("provider gate evidence is invalid")
         if self.state_sha256 != _hash(self._unsigned()):
             raise ProviderIntelligenceError("provider intelligence state hash is invalid")
         observed_at = _utc_timestamp(self.observed_at)
@@ -208,8 +241,7 @@ class ProviderIntelligenceState:
             raise ProviderIntelligenceError("provider intelligence expiry is invalid")
         if now is not None and _utc_timestamp(now) >= expires_at:
             raise ProviderIntelligenceError("provider intelligence evidence is stale")
-        if self.evidence_bundle_hash != _hash(
-            {
+        evidence_bundle = {
                 "requirements_hash": self.requirements_hash,
                 "candidates": [candidate.profile.profile_sha256 for candidate in self.candidates],
                 "provider_interfaces": [list(item) for item in self.provider_interfaces],
@@ -217,8 +249,14 @@ class ProviderIntelligenceState:
                 "gates": self.to_dict()["gates"],
                 "policy_generation": self.policy_generation,
                 "target_sha": self.target_sha,
-            }
-        ):
+        }
+        if self.provider_gate_evidence:
+            evidence_bundle["provider_gate_evidence"] = [
+                list(item) for item in self.provider_gate_evidence
+            ]
+        if self.decision_domain != "architect":
+            evidence_bundle["decision_domain"] = self.decision_domain
+        if self.evidence_bundle_hash != _hash(evidence_bundle):
             raise ProviderIntelligenceError("provider evidence bundle hash is invalid")
         if not self.signing_key_id or not isinstance(self.signature, (str, dict)):
             raise ProviderIntelligenceError("provider intelligence signature metadata is invalid")
@@ -242,11 +280,16 @@ class ProviderIntelligenceState:
             raise ProviderIntelligenceError("provider interface binding is invalid")
         if len(interface_ids) != len(set(interface_ids)):
             raise ProviderIntelligenceError("provider interface bindings are duplicated")
-        if any(
+        if self.decision_domain == "architect" and any(
             interface not in APPROVED_PROVIDER_INTERFACES
             for _, interface in self.provider_interfaces
         ):
             raise ProviderIntelligenceError("provider interface is not approved")
+        if self.decision_domain != "architect" and any(
+            not isinstance(interface, str) or not interface.strip() or len(interface) > 80
+            for _, interface in self.provider_interfaces
+        ):
+            raise ProviderIntelligenceError("provider interface is invalid")
         if set(interface_ids) != candidate_ids:
             raise ProviderIntelligenceError("provider interface bindings are incomplete")
         gate_evidence = dict(self.gate_evidence)
@@ -347,7 +390,8 @@ def state_from_dict(payload: dict[str, Any]) -> ProviderIntelligenceState:
         "signing_key_id",
         "signature",
     }
-    if set(payload) != required:
+    optional = {"provider_gate_evidence", "decision_domain"}
+    if not set(payload).issubset(required | optional) or not required.issubset(payload):
         raise ProviderIntelligenceError("provider intelligence state schema is invalid")
     try:
         candidates = tuple(
@@ -379,6 +423,8 @@ def state_from_dict(payload: dict[str, Any]) -> ProviderIntelligenceState:
             payload["signing_key_id"],
             payload["signature"],
             payload["state_sha256"],
+            tuple(tuple(item) for item in payload.get("provider_gate_evidence", ())),
+            payload.get("decision_domain", "architect"),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ProviderIntelligenceError("provider intelligence state schema is invalid") from exc
@@ -401,11 +447,13 @@ def build_state(
     policy_generation: int,
     signing_key_id: str = "owner-key-1",
     signature: str = "0" * 64,
+    provider_gate_evidence: tuple[tuple[str, bool], ...] = (),
+    requirements: tuple[str, ...] | None = None,
+    decision_domain: str = "architect",
 ) -> ProviderIntelligenceState:
-    requirements = ARCHITECT_REQUIREMENTS
+    requirements = tuple(requirements or ARCHITECT_REQUIREMENTS)
     requirements_hash = _hash(list(requirements))
-    evidence_bundle_hash = _hash(
-        {
+    evidence_bundle = {
             "requirements_hash": requirements_hash,
             "candidates": [candidate.profile.profile_sha256 for candidate in candidates],
             "provider_interfaces": [list(item) for item in provider_interfaces],
@@ -421,11 +469,17 @@ def build_state(
             },
             "policy_generation": policy_generation,
             "target_sha": target_sha,
-        }
-    )
+    }
+    if provider_gate_evidence:
+        evidence_bundle["provider_gate_evidence"] = [
+            list(item) for item in provider_gate_evidence
+        ]
+    if decision_domain != "architect":
+        evidence_bundle["decision_domain"] = decision_domain
+    evidence_bundle_hash = _hash(evidence_bundle)
     unsigned = ProviderIntelligenceState(
         "1.0",
-        "architect-gates-v1",
+        "architect-gates-v1" if decision_domain == "architect" else "provider-eligibility-v1",
         project_id,
         constitution_id,
         constitution_record_hash,
@@ -443,6 +497,8 @@ def build_state(
         signing_key_id,
         signature,
         "0" * 64,
+        provider_gate_evidence,
+        decision_domain,
     )
     return ProviderIntelligenceState(
         **{**unsigned.__dict__, "state_sha256": _hash(unsigned._unsigned())}

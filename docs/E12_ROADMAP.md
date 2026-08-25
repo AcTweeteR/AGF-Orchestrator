@@ -230,6 +230,28 @@ Acceptance:
 - failed/partial workflows produce failure/UNKNOWN, never inferred success;
 - evidence is replayable enough to identify URL/step/assertion/revision without storing secrets.
 
+### E12-T14-PRE — Canonical provider-eligibility authority boundary — Executing
+
+Objective: provide one provider-neutral, owner-governed eligibility decision
+boundary reusable by capabilities, code intelligence and knowledge providers.
+
+Current implementation: `ProviderEligibilityAuthority` is a verified
+projection of the existing owner-authenticated `provider_intelligence`
+component. It reloads and verifies the source state on every resolve/verify,
+binds project/provider/domain/requirements and applies a bounded decision TTL.
+It does not add a store, key, policy engine or independent authority source.
+
+Acceptance:
+- caller profiles, booleans and self-hashes cannot authorize a provider;
+- project/provider/domain, policy/privacy/health/budget/empirical and optional
+  network/authentication gates are bound to owner-verified state;
+- persisted decisions survive restart only through re-verification of the
+  owner-controlled source state;
+- Architect/T11 remains compatible while `CapabilitySelector` stays
+  deterministic selection logic rather than an authority source;
+- knowledge-provider profiles can consume the same boundary without an
+  Architect-specific runtime dependency.
+
 ### E12-T14 — Context7 current-documentation provider — Executing
 
 Source: `upstash/context7`.

@@ -17,10 +17,10 @@ from typing import Any, Protocol
 
 from .capability_selection import (
     CapabilityCandidate,
-    CapabilitySelector,
     SelectionGates,
     SelectionResult,
 )
+from .provider_eligibility import ProviderEligibilityAuthority, ProviderEligibilityError
 from .remote_identity import RemoteIdentityError, canonical_remote_identity
 from .session_store import SessionStore, SessionStoreError
 
@@ -356,14 +356,24 @@ class ProviderResolution:
 def resolve_provider(
     candidates: tuple[CapabilityCandidate, ...], *, project_id: str,
     required: bool, now: str, gates: SelectionGates,
+    eligibility_authority: ProviderEligibilityAuthority | None = None,
 ) -> ProviderResolution:
+    if eligibility_authority is None:
+        return ProviderResolution(
+            IntelligenceStatus.UNAVAILABLE,
+            None,
+            "canonical provider eligibility is required",
+        )
     try:
-        selection = CapabilitySelector().select(
-            candidates, project_id=project_id, required_capabilities=("code-intelligence",),
-            now=now, gates=gates,
+        selection = eligibility_authority.select(
+            candidates,
+            project_id=project_id,
+            required_capabilities=("code-intelligence",),
+            provider_kind="code-intelligence",
+            now=now,
         )
         return ProviderResolution(IntelligenceStatus.VALID, selection, "eligible")
-    except (ValueError, TypeError) as exc:
+    except (ProviderEligibilityError, ValueError, TypeError) as exc:
         if "required capability is not supported" in str(exc):
             return ProviderResolution(IntelligenceStatus.UNSUPPORTED_CAPABILITY, None, str(exc))
         if required:

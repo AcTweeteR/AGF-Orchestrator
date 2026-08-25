@@ -25,9 +25,15 @@ from agf_orchestrator.code_intelligence import (
     resolve_provider,
     seal,
 )
+from agf_orchestrator.provider_eligibility import ProviderEligibilityAuthority
+from agf_orchestrator.provider_intelligence import (
+    ProviderIntelligenceStore,
+    build_state,
+    sign_state,
+)
 from agf_orchestrator.session_store import SessionStore
 
-PROJECT = "project-demo"
+PROJECT = "project-efc8e8ef7be7050b"
 REPOSITORY = "github.com/example/repository"
 REVISION = "a" * 40
 OTHER_REVISION = "b" * 40
@@ -153,40 +159,90 @@ def provider_candidate(
     )
 
 
-def test_optional_and_required_provider_unavailability_fail_closed():
+def eligibility_authority(tmp_path, candidates):
+    gate_evidence = (
+        ("policy_eligible", "active-policy:merge-policy-adr-0003:" + "a" * 64),
+        ("privacy_eligible", "codex-safe-environment-v1;read-only-canary;True"),
+        ("independence_eligible", "architect-advisory;reviewer-separate-stage;True"),
+        ("budget_eligible", "bounded-timeout-seconds:90;True"),
+        ("health_eligible", "invocation-verified:True"),
+        ("empirical_evidence_eligible", "deterministic-canary-sha256:" + "b" * 64),
+    )
+    value = build_state(
+        project_id=PROJECT, target_sha=REVISION,
+        constitution_id="constitution-agf-v1", constitution_record_hash="c" * 64,
+        observed_at=NOW, expires_at="2030-08-25T12:00:00Z",
+        candidates=tuple(candidates),
+        provider_interfaces=tuple((item.profile.provider_id, "code") for item in candidates),
+        gates=SelectionGates(True, True, True, True, True, True),
+        gate_evidence=gate_evidence, policy_generation=2,
+        requirements=("code-intelligence",), decision_domain="code-intelligence",
+    )
+    store = ProviderIntelligenceStore(
+        tmp_path, signing_key=b"test-owner-key-which-is-long-enough-123456", staging=True
+    )
+    project_store = store.for_project(PROJECT)
+    project_store.save(sign_state(value, store.signing_key, staging=True))
+    return ProviderEligibilityAuthority(store)
+
+
+def test_optional_and_required_provider_unavailability_fail_closed(tmp_path):
     gates = SelectionGates(True, True, True, True, True, True)
-    optional = resolve_provider((), project_id=PROJECT, required=False, now=NOW, gates=gates)
-    required = resolve_provider((), project_id=PROJECT, required=True, now=NOW, gates=gates)
+    authority = eligibility_authority(tmp_path, ())
+    optional = resolve_provider((), project_id=PROJECT, required=False, now=NOW, gates=gates,
+                               eligibility_authority=authority)
+    required = resolve_provider((), project_id=PROJECT, required=True, now=NOW, gates=gates,
+                                eligibility_authority=authority)
     assert optional.status is IntelligenceStatus.UNAVAILABLE
     assert required.status is IntelligenceStatus.UNAVAILABLE
+    selected_candidate = provider_candidate()
     selected = resolve_provider(
-        (provider_candidate(),), project_id=PROJECT, required=True, now=NOW, gates=gates
+        (selected_candidate,), project_id=PROJECT, required=True, now=NOW, gates=gates,
+        eligibility_authority=eligibility_authority(tmp_path / "selected", (selected_candidate,)),
     )
     assert selected.status is IntelligenceStatus.VALID
     wrong_project = resolve_provider(
         (provider_candidate("project-other"),), project_id=PROJECT,
-        required=True, now=NOW, gates=gates,
+        required=True, now=NOW, gates=gates, eligibility_authority=authority,
     )
     assert wrong_project.status is IntelligenceStatus.UNAVAILABLE
+    unsupported_candidate = provider_candidate(capability_status=CapabilityStatus.UNSUPPORTED)
     unsupported = resolve_provider(
-        (provider_candidate(capability_status=CapabilityStatus.UNSUPPORTED),),
+        (unsupported_candidate,),
         project_id=PROJECT, required=True, now=NOW,
-        gates=gates,
+        gates=gates, eligibility_authority=eligibility_authority(
+            tmp_path / "unsupported", (unsupported_candidate,)
+        ),
     )
-    assert unsupported.status is IntelligenceStatus.UNSUPPORTED_CAPABILITY
+    assert unsupported.status is IntelligenceStatus.UNAVAILABLE
 
 
-def test_fallback_is_existing_selector_policy_and_never_changes_scope():
+def test_caller_gates_cannot_authorize_without_canonical_authority():
+    result = resolve_provider(
+        (provider_candidate(),), project_id=PROJECT, required=True, now=NOW,
+        gates=SelectionGates(True, True, True, True, True, True),
+    )
+    assert result.status is IntelligenceStatus.UNAVAILABLE
+    assert "canonical provider eligibility" in result.reason
+
+
+def test_fallback_is_existing_selector_policy_and_never_changes_scope(tmp_path):
     gates = SelectionGates(True, True, True, True, True, True, allow_fallback=True)
+    first = provider_candidate("project-other", "provider-first", 0)
+    second = provider_candidate(priority=1)
     fallback = resolve_provider(
-        (provider_candidate("project-other", "provider-first", 0), provider_candidate(priority=1)),
+        (first, second),
         project_id=PROJECT, required=True, now=NOW, gates=gates,
+        eligibility_authority=eligibility_authority(tmp_path, (second,)),
     )
     assert fallback.status is IntelligenceStatus.VALID
     assert fallback.selection is not None and fallback.selection.fallback_used is True
     forbidden = resolve_provider(
-        (provider_candidate("project-other", "provider-first", 0), provider_candidate(priority=1)),
+        (first, second),
         project_id=PROJECT, required=True, now=NOW,
         gates=replace(gates, allow_fallback=False),
+        eligibility_authority=eligibility_authority(tmp_path / "forbidden", (second,)),
     )
-    assert forbidden.status is IntelligenceStatus.UNAVAILABLE
+    # Caller-supplied fallback flags are observations only; the owner state
+    # remains authoritative and permits the configured fallback.
+    assert forbidden.status is IntelligenceStatus.VALID
