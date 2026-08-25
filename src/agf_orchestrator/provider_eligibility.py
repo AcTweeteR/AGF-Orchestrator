@@ -248,11 +248,15 @@ def _decision_from_state(
     posture_payload = dict(state.provider_security_posture).get(provider_id)
     if provider_kind in {"knowledge", "documentation"} and posture_payload is None:
         raise ProviderEligibilityError("owner provider security posture is unavailable")
+    posture: dict[str, Any] = {}
     if posture_payload is None:
         posture_hash = _hash({})
     else:
         try:
-            posture_hash = _hash(json.loads(posture_payload))
+            posture = json.loads(posture_payload)
+            if not isinstance(posture, dict):
+                raise ProviderEligibilityError("owner provider security posture is invalid")
+            posture_hash = _hash(posture)
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ProviderEligibilityError("owner provider security posture is invalid") from exc
     requested = tuple(required_capabilities)
@@ -285,6 +289,27 @@ def _decision_from_state(
         raise ProviderEligibilityError("owner network eligibility is invalid")
     if authentication is not None and not isinstance(authentication, bool):
         raise ProviderEligibilityError("owner authentication eligibility is invalid")
+    if provider_kind in {"knowledge", "documentation"}:
+        required_network = posture.get("network_required")
+        requires_credentials = posture.get("requires_credentials")
+        requires_session = posture.get("requires_authenticated_session")
+        privacy_review_required = posture.get("privacy_review_required")
+        if not all(
+            isinstance(value, bool)
+            for value in (
+                required_network,
+                requires_credentials,
+                requires_session,
+                privacy_review_required,
+            )
+        ):
+            raise ProviderEligibilityError("owner provider security posture is incomplete")
+        if required_network and network is not True:
+            raise ProviderEligibilityError("network eligibility is unavailable")
+        if (requires_credentials or requires_session) and authentication is not True:
+            raise ProviderEligibilityError("authentication eligibility is unavailable")
+        if privacy_review_required and gates.privacy_eligible is not True:
+            raise ProviderEligibilityError("privacy eligibility is unavailable")
     context_hash = _hash(
         {
             "project_id": state.project_id,

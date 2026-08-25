@@ -208,6 +208,49 @@ def test_knowledge_profile_requires_owner_network_and_authentication(tmp_path):
         )
 
 
+def test_generic_resolution_enforces_owner_security_posture(tmp_path):
+    denied_network = make_authority(
+        tmp_path / "network",
+        state(provider_gate_evidence=(
+            ("network_eligible", False),
+            ("authentication_eligible", True),
+        )),
+    )[0]
+    with pytest.raises(ProviderEligibilityError, match="network"):
+        denied_network.resolve(
+            project_id=PROJECT,
+            provider_id="knowledge-docs",
+            provider_kind="knowledge",
+            capability_domain="documentation",
+            now=NOW,
+            target_sha=TARGET,
+            required_capabilities=("documentation",),
+            decision_domain="documentation",
+        )
+
+    denied_auth = make_authority(
+        tmp_path / "auth",
+        state(
+            provider_gate_evidence=(
+                ("network_eligible", True),
+                ("authentication_eligible", False),
+            ),
+            security_profile=knowledge_profile(credentials=True),
+        ),
+    )[0]
+    with pytest.raises(ProviderEligibilityError, match="authentication"):
+        denied_auth.resolve(
+            project_id=PROJECT,
+            provider_id="knowledge-docs",
+            provider_kind="knowledge",
+            capability_domain="documentation",
+            now=NOW,
+            target_sha=TARGET,
+            required_capabilities=("documentation",),
+            decision_domain="documentation",
+        )
+
+
 def test_credentials_require_owner_authentication_eligibility(tmp_path):
     authority_value, _ = make_authority(
         tmp_path, state(security_profile=knowledge_profile(credentials=True))

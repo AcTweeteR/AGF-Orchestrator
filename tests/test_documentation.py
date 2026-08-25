@@ -450,7 +450,7 @@ def test_provider_required_optional_network_privacy_and_capability_gates():
             required=True,
             **{**kwargs, "privacy_eligible": False},
         ).status
-        is DocumentationStatus.PROVIDER_INELIGIBLE
+        is DocumentationStatus.PRIVACY_BLOCKED
     )
     assert (
         resolve_provider(profile(capabilities=("citations",)), required=True, **kwargs).status
