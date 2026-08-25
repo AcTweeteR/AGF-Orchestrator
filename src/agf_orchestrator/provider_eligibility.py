@@ -14,6 +14,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Iterable
 
 from .capability_extensions import CapabilityExtensionError, KnowledgeProviderProfile
@@ -28,6 +29,22 @@ from .provider_intelligence import (
 
 class ProviderEligibilityError(ValueError):
     """Raised when canonical provider eligibility is unavailable or invalid."""
+
+
+@dataclass(frozen=True)
+class _OwnerStoreHandle:
+    """Immutable capture of the canonical owner-store load primitives."""
+
+    root: Path
+    for_project_fn: Any
+    load_fn: Any
+
+    def load(self, project_id: str, decision_domain: str) -> ProviderIntelligenceState:
+        fresh_store = ProviderIntelligenceStore(self.root)
+        scoped_store = self.for_project_fn(
+            fresh_store, project_id, decision_domain=decision_domain
+        )
+        return self.load_fn(scoped_store)
 
 
 _DECISION_TTL = timedelta(hours=1)
@@ -363,14 +380,22 @@ def _decision_from_state(
 class ProviderEligibilityAuthority:
     """Resolve and re-verify decisions from the existing owner state store."""
 
-    __slots__ = ("_store", "_sealed")
+    __slots__ = ("_store_handle", "_sealed")
 
     def __init__(self, store: Any):
         if type(store) is not ProviderIntelligenceStore or not store.owner_verifying:
             raise ProviderEligibilityError(
                 "provider eligibility requires the canonical owner-verifying store"
             )
-        object.__setattr__(self, "_store", store)
+        object.__setattr__(
+            self,
+            "_store_handle",
+            _OwnerStoreHandle(
+                Path(store.root).resolve(),
+                ProviderIntelligenceStore.for_project,
+                ProviderIntelligenceStore.load,
+            ),
+        )
         object.__setattr__(self, "_sealed", True)
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -379,16 +404,17 @@ class ProviderEligibilityAuthority:
         object.__setattr__(self, name, value)
 
     @property
-    def store(self) -> ProviderIntelligenceStore:
-        return self._store
+    def store(self) -> _OwnerStoreHandle:
+        """Expose only the immutable canonical handle, never the mutable store."""
+        return self._store_handle
 
-    def _verified_store(self) -> ProviderIntelligenceStore:
-        store = self._store
-        if type(store) is not ProviderIntelligenceStore or not store.owner_verifying:
+    def _load_state(self, project_id: str, decision_domain: str) -> ProviderIntelligenceState:
+        try:
+            return self._store_handle.load(project_id, decision_domain)
+        except (ProviderIntelligenceError, OSError, TypeError, ValueError) as exc:
             raise ProviderEligibilityError(
-                "provider eligibility store is no longer owner-verifying"
-            )
-        return store
+                "owner provider intelligence is unavailable"
+            ) from exc
 
     def resolve(
         self,
@@ -411,12 +437,7 @@ class ProviderEligibilityAuthority:
         }.get(provider_kind)
         if domain is None:
             raise ProviderEligibilityError("provider decision domain is invalid")
-        try:
-            state = self._verified_store().for_project(
-                project_id, decision_domain=domain
-            ).load()
-        except (ProviderIntelligenceError, OSError, TypeError, ValueError) as exc:
-            raise ProviderEligibilityError("owner provider intelligence is unavailable") from exc
+        state = self._load_state(project_id, domain)
         decision = _decision_from_state(
             state,
             provider_id=provider_id,
@@ -556,14 +577,7 @@ class ProviderEligibilityAuthority:
             }.get(provider_kind)
             if domain is None:
                 raise ProviderEligibilityError("provider decision domain is invalid")
-        try:
-            owner_state = self._verified_store().for_project(
-                project_id, decision_domain=domain
-            ).load()
-        except (ProviderIntelligenceError, OSError, TypeError, ValueError) as exc:
-            raise ProviderEligibilityError(
-                "owner provider intelligence is unavailable"
-            ) from exc
+        owner_state = self._load_state(project_id, domain)
         try:
             if revision_scope == "revision-bound":
                 if target_sha is None:

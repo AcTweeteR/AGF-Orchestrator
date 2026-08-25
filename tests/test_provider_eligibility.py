@@ -135,6 +135,27 @@ def test_owner_verifying_authority_cannot_swap_its_store(tmp_path):
         authority_value.store = ProviderIntelligenceStore(tmp_path / "replacement")
 
 
+def test_authority_ignores_mutation_of_accepted_store_instance(tmp_path):
+    authority_value, project_store = make_authority(tmp_path)
+    accepted_store = ProviderIntelligenceStore(tmp_path)
+
+    def forged_loader(*_args, **_kwargs):
+        raise AssertionError("caller-controlled store loader was invoked")
+
+    accepted_store.for_project = forged_loader
+    accepted_store.load = forged_loader
+    accepted_store.root = tmp_path / "attacker-controlled-root"
+
+    decision = authority_value.resolve(
+        project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
+        capability_domain="documentation", now=NOW, target_sha=TARGET,
+        required_capabilities=("documentation",), decision_domain="documentation",
+    )
+    assert decision.provider_id == "knowledge-docs"
+    assert authority_value.store.root == tmp_path.resolve()
+    assert project_store.path.exists()
+
+
 def knowledge_profile(
     *, project_id=PROJECT, network_required=True, auth_required=True, credentials=False
 ):
