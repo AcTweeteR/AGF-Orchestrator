@@ -230,7 +230,7 @@ Acceptance:
 - failed/partial workflows produce failure/UNKNOWN, never inferred success;
 - evidence is replayable enough to identify URL/step/assertion/revision without storing secrets.
 
-### E12-T14 — Context7 current-documentation provider — PLANNED
+### E12-T14 — Context7 current-documentation provider — Executing
 
 Source: `upstash/context7`.
 
@@ -249,6 +249,15 @@ Acceptance:
 - unavailable or ambiguous docs degrade to UNKNOWN/fallback rather than fabricated API knowledge;
 - technical claims used for implementation/review remain attributable to retrieved documentation;
 - Context7 has no authority over dependency upgrades or code changes.
+
+Current implementation evidence:
+- provider-neutral `DocumentationProvider` evidence binds registry/package identity, declared/locked/resolved/runtime dependency sources, requested/returned topic, documentation version, normalized claims, source, citations, project/repository/revision and hash;
+- version compatibility is assessed separately from freshness, with latest-versus-project-version mismatch failing closed;
+- bounded citations, excerpt secret-safety, deterministic hashes, persistence, tamper/replay checks and claim-level contradictory-source reconciliation are covered by deterministic fixtures;
+- future-dated observations, stale dependency evidence, prerelease ordering, caret ranges below 1.0 and build-identity mismatches fail closed;
+- retrieval reconciliation requires request/time-bound assessment, repository/revision binding and order-independent normalized claims;
+- unsupported constraint shapes and terminal provider statuses fail closed without being relabeled as version ambiguity;
+- existing `KnowledgeProviderProfile`, network/privacy classification and knowledge-provider eligibility are reused; no Context7 runtime dependency is introduced.
 
 ### E12-T15 — Superpowers workflow-pattern review and procedure extraction — PLANNED
 
