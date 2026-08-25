@@ -510,7 +510,9 @@ class ProviderEligibilityAuthority:
             capability_domain=required_capability,
             target_sha=target_sha,
             revision_scope=revision_scope,
-            decision_domain="documentation",
+            decision_domain=(
+                "documentation" if required_capability == "documentation" else "knowledge"
+            ),
             now=now,
             required_capabilities=(required_capability,),
         )
@@ -548,16 +550,7 @@ class ProviderEligibilityAuthority:
             required_capabilities=required_capabilities,
             target_sha=(target_sha if decision.revision_scope == "revision-bound" else None),
             revision_scope=decision.revision_scope,
-            decision_domain=(
-                "documentation"
-                if decision.capability_domain == "documentation"
-                else {
-                    "code-intelligence": "code-intelligence",
-                    "knowledge": "knowledge",
-                    "documentation": "documentation",
-                    "capability": "architect",
-                }.get(decision.provider_kind)
-            ),
+            decision_domain=decision.source_decision_domain,
         )
         if expected != decision:
             raise ProviderEligibilityError("provider eligibility decision differs from authority")
