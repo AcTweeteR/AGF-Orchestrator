@@ -938,16 +938,18 @@ class ProviderBinding:
             if not self.has_authenticated_issuance():
                 raise DocumentationError("provider binding issuance attestation is missing")
             try:
-                runtime_items = tuple(
-                    (item[0], item[1])
-                    for item in self.runtime_constraints
-                    if isinstance(item, (tuple, list)) and len(item) == 2
-                )
+                raw_runtime_items = tuple(self.runtime_constraints)
             except (TypeError, ValueError) as exc:
                 raise DocumentationError(
                     "provider binding runtime constraints are invalid"
                 ) from exc
-            if len(runtime_items) != 5 or tuple(sorted(runtime_items)) != runtime_items or {
+            if len(raw_runtime_items) != 5 or any(
+                not isinstance(item, (tuple, list)) or len(item) != 2
+                for item in raw_runtime_items
+            ):
+                raise DocumentationError("provider binding runtime constraints are invalid")
+            runtime_items = tuple((item[0], item[1]) for item in raw_runtime_items)
+            if tuple(sorted(runtime_items)) != runtime_items or {
                 name for name, _ in runtime_items
             } != {
                 "available", "authenticated", "policy_authorized",
@@ -1054,6 +1056,8 @@ class ProviderBinding:
                 if any(not isinstance(posture.get(name), bool) for name in posture_fields):
                     raise DocumentationError("provider binding historical posture is invalid")
                 required = {
+                    "available": True,
+                    "policy_authorized": True,
                     "authenticated": bool(
                         posture.get("requires_credentials")
                         or posture.get("requires_authenticated_session")

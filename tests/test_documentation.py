@@ -893,6 +893,42 @@ def test_authenticated_n1_v3_binding_rejects_none_for_required_gate():
         old.validate(now=NOW, eligibility_authority=issued.authority)
 
 
+@pytest.mark.parametrize("gate", ["available", "policy_authorized"])
+def test_versionless_n1_binding_never_downgrades_mandatory_gates(gate):
+    issued = binding_for("knowledge-provider-issued")
+    old = _historical_v3_binding(
+        issued,
+        profile_sha256=profile(provider_id="knowledge-provider-issued").profile_sha256,
+        runtime_constraints=tuple(
+            (name, None if name == gate else value)
+            for name, value in issued.runtime_constraints
+        ),
+    )
+    with pytest.raises(DocumentationError, match="historical runtime authorization"):
+        old.validate(now=NOW, eligibility_authority=issued.authority)
+
+
+def test_versionless_n1_binding_missing_runtime_gate_is_malformed():
+    issued = binding_for("knowledge-provider-issued")
+    old = replace(issued, attestation_version=None, runtime_constraints=())
+    old = replace(old, issuance_attestation=sign_binding_subject(old._attestation_subject()))
+    unsigned = {**old.to_dict(), "binding_sha256": ""}
+    old = replace(
+        old,
+        binding_sha256=hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    )
+    with pytest.raises(DocumentationError, match="runtime constraints are invalid"):
+        old.validate(now=NOW, eligibility_authority=issued.authority)
+
+
+def test_current_v3_issuance_has_explicit_representation_marker():
+    issued = binding_for("knowledge-provider-issued")
+    assert issued.attestation_version == "3.1"
+    assert issued.to_dict()["attestation_version"] == "3.1"
+
+
 def test_legacy_provider_binding_compatibility_is_bounded_by_artifact_ttl():
     issued = binding_for("knowledge-docs")
     payload = issued.to_dict()
