@@ -831,6 +831,7 @@ class ProviderBinding:
                 target_sha=(self.target_sha if self.revision_scope == "revision-bound" else None),
                 revision_scope=self.revision_scope,
                 decision_domain="documentation",
+                _issued_at=self.decision_at,
             )
         except (ProviderEligibilityError, OSError, ValueError) as exc:
             raise DocumentationError("provider binding lacks canonical eligibility") from exc
@@ -878,11 +879,13 @@ def _seal_provider_binding(
     now = decision.decision_at
     decision_at = _timestamp("provider binding decision_at", now)
     ttl_expires_at = decision_at + timedelta(seconds=_PROVIDER_BINDING_TTL_SECONDS)
-    if profile.expires_at is None:
-        effective_expiry = ttl_expires_at
-    else:
+    effective_expiry = min(
+        ttl_expires_at,
+        _timestamp("provider decision expires_at", decision.expires_at),
+    )
+    if profile.expires_at is not None:
         effective_expiry = min(
-            ttl_expires_at, _timestamp("provider profile expires_at", profile.expires_at)
+            effective_expiry, _timestamp("provider profile expires_at", profile.expires_at)
         )
     binding_expires_at = effective_expiry.strftime("%Y-%m-%dT%H:%M:%SZ")
     issuance_token = hashlib.sha256(

@@ -138,6 +138,8 @@ class ProviderEligibilityDecision:
     authorized_requirements: tuple[str, ...]
     authority_context_hash: str
     source_state_sha256: str
+    source_observed_at: str
+    source_expires_at: str
     policy_generation: int
     policy_eligible: bool
     privacy_eligible: bool
@@ -167,6 +169,8 @@ class ProviderEligibilityDecision:
             "authorized_requirements": list(self.authorized_requirements),
             "authority_context_hash": self.authority_context_hash,
             "source_state_sha256": self.source_state_sha256,
+            "source_observed_at": self.source_observed_at,
+            "source_expires_at": self.source_expires_at,
             "policy_generation": self.policy_generation,
             "policy_eligible": self.policy_eligible,
             "privacy_eligible": self.privacy_eligible,
@@ -218,6 +222,11 @@ class ProviderEligibilityDecision:
             raise ProviderEligibilityError("provider decision revision scope is invalid")
         if not re.fullmatch(r"[0-9a-f]{64}", self.security_posture_sha256):
             raise ProviderEligibilityError("provider decision security posture is invalid")
+        source_observed = _instant("source observed_at", self.source_observed_at)
+        source_expires = _instant("source expires_at", self.source_expires_at)
+        issued = _instant("provider decision_at", self.decision_at)
+        if source_expires <= source_observed or source_observed > issued:
+            raise ProviderEligibilityError("provider decision source lifetime is invalid")
         if not self.authorized_requirements or any(
             not isinstance(item, str) or not item.strip()
             for item in self.authorized_requirements
@@ -245,13 +254,14 @@ class ProviderEligibilityDecision:
             self.authentication_eligible, bool
         ):
             raise ProviderEligibilityError("authentication eligibility is invalid")
-        decision_at = _instant("provider decision_at", self.decision_at)
-        expires_at = _instant("provider decision expires_at", self.expires_at)
-        if expires_at <= decision_at or expires_at > decision_at + _DECISION_TTL:
+        expires_at = _instant("provider decision expiry", self.expires_at)
+        if expires_at <= issued or expires_at > issued + _DECISION_TTL:
+            raise ProviderEligibilityError("provider decision TTL is invalid")
+        if expires_at > source_expires:
             raise ProviderEligibilityError("provider decision TTL is invalid")
         if now is not None:
             current = _now(now)
-            if decision_at > current:
+            if issued > current:
                 raise ProviderEligibilityError("provider decision is future-dated")
             if expires_at <= current:
                 raise ProviderEligibilityError("provider decision is stale")
@@ -269,6 +279,7 @@ def _decision_from_state(
     revision_scope: str,
     now: str,
     required_capabilities: Iterable[str],
+    issued_at: str | None = None,
 ) -> ProviderEligibilityDecision:
     current = _now(now)
     try:
@@ -288,6 +299,11 @@ def _decision_from_state(
         raise ProviderEligibilityError("owner provider intelligence is unavailable") from exc
     if _instant("provider intelligence observed_at", state.observed_at) > current:
         raise ProviderEligibilityError("provider intelligence is future-dated")
+    issuance = current if issued_at is None else _instant("provider decision_at", issued_at)
+    if issuance > current or issuance < _instant(
+        "provider intelligence observed_at", state.observed_at
+    ):
+        raise ProviderEligibilityError("provider decision issuance time is invalid")
     if provider_kind not in _PROVIDER_KINDS:
         raise ProviderEligibilityError("provider decision kind is invalid")
     if provider_kind not in _DOMAIN_KINDS.get(state.decision_domain, set()):
@@ -403,10 +419,10 @@ def _decision_from_state(
             "source_state_sha256": state.state_sha256,
         }
     )
-    decision_at = state.observed_at
+    decision_at = issuance.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     expiry = min(
         _instant("provider intelligence expiry", state.expires_at),
-        _instant("provider decision_at", decision_at) + _DECISION_TTL,
+        issuance + _DECISION_TTL,
     ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     decision = ProviderEligibilityDecision(
         project_id=state.project_id,
@@ -422,6 +438,8 @@ def _decision_from_state(
         authorized_requirements=requested,
         authority_context_hash=context_hash,
         source_state_sha256=state.state_sha256,
+        source_observed_at=state.observed_at,
+        source_expires_at=state.expires_at,
         policy_generation=state.policy_generation,
         policy_eligible=policy,
         privacy_eligible=privacy,
@@ -514,6 +532,7 @@ class ProviderEligibilityAuthority:
         target_sha: str | None = None,
         revision_scope: str = "revision-bound",
         decision_domain: str | None = None,
+        _issued_at: str | None = None,
     ) -> ProviderEligibilityDecision:
         domain = decision_domain or {
             "code-intelligence": "code-intelligence",
@@ -533,6 +552,7 @@ class ProviderEligibilityAuthority:
             revision_scope=revision_scope,
             now=now,
             required_capabilities=required_capabilities,
+            issued_at=_issued_at,
         )
         _require_owner_eligible(decision)
         return decision
@@ -607,7 +627,12 @@ class ProviderEligibilityAuthority:
             revision_scope=decision.revision_scope,
             decision_domain=decision.source_decision_domain,
         )
-        if expected != decision:
+        expected_unsigned = expected._unsigned()
+        actual_unsigned = decision._unsigned()
+        for field in ("decision_at", "expires_at"):
+            expected_unsigned.pop(field)
+            actual_unsigned.pop(field)
+        if expected_unsigned != actual_unsigned:
             raise ProviderEligibilityError("provider eligibility decision differs from authority")
         return decision
 
