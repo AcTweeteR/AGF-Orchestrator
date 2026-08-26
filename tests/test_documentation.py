@@ -693,6 +693,23 @@ def test_provider_binding_issuance_is_not_persisted_in_documentation_evidence():
     assert "issuance_token" not in payload
 
 
+def test_public_binding_fields_cannot_forge_live_runtime_issuance():
+    issued = binding_for("knowledge-provider-issued")
+    payload = issued.to_dict()
+    unsigned = {**payload, "binding_sha256": ""}
+    payload["binding_sha256"] = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    fabricated = ProviderBinding(**payload)
+    assert (
+        evidence(
+            provider_id=fabricated.provider_id,
+            provider_binding_sha256=fabricated.binding_sha256,
+        ).assess(request(provider_binding=fabricated), now=NOW)
+        is DocumentationStatus.PROVIDER_INELIGIBLE
+    )
+
+
 def test_live_legacy_provider_binding_survives_decision_hash_upgrade():
     issued = binding_for("knowledge-docs")
     authority = issued.authority
@@ -759,7 +776,10 @@ def test_provider_binding_issuance_survives_restart_and_artifact_tampering(tmp_p
         store, "session-one", issued.binding_sha256, eligibility_authority=authority
     )
     assert loaded.authority is authority
-    assert item.assess(request(provider_binding=loaded), now=NOW) is DocumentationStatus.VALID
+    assert (
+        item.assess(request(provider_binding=loaded), now=NOW)
+        is DocumentationStatus.PROVIDER_INELIGIBLE
+    )
     path = (
         store.artifacts_dir
         / "session-one"
@@ -1173,6 +1193,31 @@ def test_npm_keeps_partial_range_operands():
         resolved_version="1.2.3"
     )
     assert partial_tilde.demonstrated_version() == "1.2.3"
+
+
+@pytest.mark.parametrize("operator", ["=", "==", ">", ">=", "<", "<="])
+def test_npm_comparator_rejects_four_component_operands(operator):
+    with pytest.raises(DocumentationError):
+        dependency(
+            registry="npm",
+            declared_constraint=f"{operator}1.2.3.4",
+            locked_version=None,
+            resolved_version="2.0.0",
+        ).demonstrated_version()
+
+
+@pytest.mark.parametrize("package_id", [
+    "-requests", "_requests", ".requests", "requests-", "requests_", "requests.",
+    "foo/", "foo bar", "https://example.com/pkg", "",
+])
+def test_pypi_project_names_require_alphanumeric_boundaries(package_id):
+    with pytest.raises(DocumentationError):
+        dependency(registry="pypi", package_id=package_id).validate()
+
+
+def test_pypi_project_name_normalization_is_registry_aware():
+    for package_id in ("Foo.Bar", "foo_bar", "foo-bar"):
+        dependency(registry="pypi", package_id=package_id).validate()
 
 
 @pytest.mark.parametrize("registry,package_id", [

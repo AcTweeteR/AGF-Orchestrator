@@ -6,6 +6,7 @@ import hashlib
 import html
 import json
 import re
+import weakref
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -75,7 +76,7 @@ class DocumentationOperation(StrEnum):
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 _NPM_PACKAGE = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]{0,63}/)?[a-z0-9][a-z0-9._-]{0,127}$")
-_PYPI_PACKAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_PYPI_PACKAGE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
 _GO_MODULE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,63}(?:/[A-Za-z0-9][A-Za-z0-9._~-]{0,63})+$")
 _GO_DOMAIN_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _MAVEN_COORDINATE = re.compile(
@@ -238,6 +239,24 @@ def _canonical_concrete_version(registry: str, label: str, value: Any) -> str:
     canonical = _canonical_version(registry, label, value)
     if registry in {"npm", "go"} and not _STRICT_SEMVER.fullmatch(canonical):
         raise DocumentationError(f"{label} must be a concrete SemVer")
+    return canonical
+
+
+def _canonical_range_operand(registry: str, label: str, value: Any) -> str:
+    """Canonicalize a range operand without widening registry grammar."""
+    canonical = _canonical_version(registry, label, value)
+    if registry not in {"npm", "go"}:
+        return canonical
+    core, separator, _ = canonical.partition("-")
+    core = core.partition("+")[0]
+    components = core.split(".")
+    if not 1 <= len(components) <= 3 or any(
+        not re.fullmatch(r"0|[1-9][0-9]{0,31}", component)
+        for component in components
+    ):
+        raise DocumentationError(f"{label} has an invalid range operand")
+    if separator and len(components) != 3:
+        raise DocumentationError(f"{label} has an invalid range operand")
     return canonical
 
 
@@ -475,7 +494,7 @@ def _explicit_prerelease_cores(
         )
     cores = set()
     for operand in operands:
-        operand = _canonical_version(registry, "constraint version", operand)
+        operand = _canonical_range_operand(registry, "constraint version", operand)
         if "-" in operand.partition("+")[0]:
             cores.add(_version_key(operand)[:4])
     return cores
@@ -510,12 +529,13 @@ def _constraint_allows(
         )
         return version_value >= lower and version_value < upper
     if _VERSION.fullmatch(normalized):
+        normalized = _canonical_range_operand(registry, "constraint version", normalized)
         return _version_identity(canonical_version, registry) == _version_identity(
             normalized, registry
         )
     if normalized.startswith("^"):
         base = normalized[1:]
-        base = _canonical_version(registry, "constraint version", base)
+        base = _canonical_range_operand(registry, "constraint version", base)
         base_value = _version_key(base)
         components = len(base.split("-", 1)[0].split("."))
         if components > 3:
@@ -534,7 +554,7 @@ def _constraint_allows(
         return version_value >= base_value and version_value < upper
     if normalized.startswith("~"):
         base = normalized[1:]
-        base = _canonical_version(registry, "constraint version", base)
+        base = _canonical_range_operand(registry, "constraint version", base)
         components = len(base.split("-", 1)[0].split("."))
         if components > 3:
             return None
@@ -551,7 +571,7 @@ def _constraint_allows(
         if not match:
             return None
         operator, operand = match.groups()
-        operand = _canonical_version(registry, "constraint version", operand)
+        operand = _canonical_range_operand(registry, "constraint version", operand)
         operand_value = _version_key(operand)
         if (
             operator in {"=", "=="}
@@ -820,6 +840,13 @@ class DocumentationProvider(Protocol):
         ...
 
 
+class _RuntimeBindingIssuance:
+    __slots__ = ("__weakref__",)
+
+
+_ACTIVE_RUNTIME_ISSUANCES: weakref.WeakSet[_RuntimeBindingIssuance] = weakref.WeakSet()
+
+
 @dataclass(frozen=True)
 class ProviderBinding:
     """Sealed identity of the provider eligibility decision used by evidence."""
@@ -842,6 +869,9 @@ class ProviderBinding:
     # Runtime-only injection; persisted bindings always re-resolve canonical state.
     authority: Any = field(default=None, compare=False, repr=False)
     schema_version: str = "1.0"
+    _runtime_issuance: _RuntimeBindingIssuance | None = field(
+        default=None, compare=False, repr=False
+    )
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -868,9 +898,12 @@ class ProviderBinding:
         *,
         now: str | None = None,
         eligibility_authority: ProviderEligibilityAuthority | None = None,
+        require_runtime_issuance: bool = False,
     ) -> None:
         if self.schema_version not in {"1.0", "2.0"}:
             raise DocumentationError("provider binding schema version is unsupported")
+        if require_runtime_issuance and self._runtime_issuance not in _ACTIVE_RUNTIME_ISSUANCES:
+            raise DocumentationError("provider binding lacks live trusted issuance")
         if not _ID.fullmatch(self.provider_id):
             raise DocumentationError("provider binding provider_id is invalid")
         if not _ID.fullmatch(self.project_id) or not self.project_id.startswith("project-"):
@@ -1012,7 +1045,9 @@ def _seal_provider_binding(
         decision.revision_scope,
         authority,
         "2.0",
+        _RuntimeBindingIssuance(),
     )
+    _ACTIVE_RUNTIME_ISSUANCES.add(binding._runtime_issuance)
     binding.validate(eligibility_authority=authority)
     return binding
 
@@ -1171,7 +1206,7 @@ class DocumentationEvidence:
         if selected_binding is None:
             return DocumentationStatus.PROVIDER_INELIGIBLE
         try:
-            selected_binding.validate(now=now)
+            selected_binding.validate(now=now, require_runtime_issuance=True)
         except DocumentationError:
             return DocumentationStatus.PROVIDER_INELIGIBLE
         expected_scope = (
