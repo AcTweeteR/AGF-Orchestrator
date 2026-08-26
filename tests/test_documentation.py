@@ -710,6 +710,20 @@ def test_live_legacy_provider_binding_survives_decision_hash_upgrade():
     legacy.validate(now=NOW, eligibility_authority=authority)
 
 
+def test_legacy_provider_binding_compatibility_is_bounded_by_artifact_ttl():
+    issued = binding_for("knowledge-docs")
+    payload = issued.to_dict()
+    payload["schema_version"] = "1.0"
+    payload["expires_at"] = "2026-08-24T13:00:01Z"
+    unsigned = {**payload, "binding_sha256": ""}
+    unsigned.pop("schema_version")
+    payload["binding_sha256"] = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    with pytest.raises(DocumentationError, match="compatibility TTL"):
+        ProviderBinding(**payload).validate(now=NOW, eligibility_authority=issued.authority)
+
+
 def test_provider_binding_issuance_survives_restart_and_artifact_tampering(tmp_path, monkeypatch):
     monkeypatch.setenv("AGF_STATE_DIR", str(_DOCUMENTATION_STATE_ROOT))
     issued = binding_for("knowledge-provider-durable")

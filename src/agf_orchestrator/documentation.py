@@ -152,7 +152,6 @@ _CLOCK_SKEW_SECONDS = 0
 _MAX_VERSION_LENGTH = 256
 _MAX_CITATION_REFS = 8
 _PROVIDER_BINDING_TTL_SECONDS = 3600
-_LEGACY_BINDING_CUTOFF = datetime(2026, 8, 26, tzinfo=UTC)
 def _contains_credential_query(value: str) -> bool:
     for candidate_text in (value, html.unescape(value)):
         for candidate in _URI_CANDIDATE.findall(candidate_text):
@@ -816,16 +815,20 @@ class ProviderBinding:
         if not re.fullmatch(r"[0-9a-f]{40}", self.target_sha):
             raise DocumentationError("provider binding target revision is invalid")
         decision = _timestamp("provider binding decision_at", self.decision_at)
-        if self.schema_version == "1.0" and decision >= _LEGACY_BINDING_CUTOFF:
-            raise DocumentationError("legacy provider binding is outside its compatibility window")
         if now is not None and decision > _timestamp("provider binding now", now):
             raise DocumentationError("provider binding is future-dated")
         if self.expires_at is not None:
             expiry = _timestamp("provider binding expires_at", self.expires_at)
             if expiry <= _timestamp("provider binding decision_at", self.decision_at):
                 raise DocumentationError("provider binding expiry is invalid")
+            if self.schema_version == "1.0" and expiry > decision + timedelta(
+                seconds=_PROVIDER_BINDING_TTL_SECONDS
+            ):
+                raise DocumentationError("legacy provider binding exceeds its compatibility TTL")
             if now is not None and _timestamp("provider binding now", now) >= expiry:
                 raise DocumentationError("provider binding has expired")
+        elif self.schema_version == "1.0":
+            raise DocumentationError("legacy provider binding must have a bounded expiry")
         try:
             authority = _canonical_authority(eligibility_authority or self.authority)
             decision = authority.resolve(
