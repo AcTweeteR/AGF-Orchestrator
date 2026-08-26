@@ -1,0 +1,13 @@
+# Default ownership for governance and implementation changes.
+* @AcTweeteR
+
+# Normative governance and trust-boundary documentation.
+/docs/CONSTITUTION.md @AcTweeteR
+/docs/adr/ @AcTweeteR
+/SECURITY.md @AcTweeteR
+/GOVERNANCE.md @AcTweeteR
+/AGENTS.md @AcTweeteR
+
+# Automation and release/security configuration.
+/.github/workflows/ @AcTweeteR
+/.github/dependabot.yml @AcTweeteR
