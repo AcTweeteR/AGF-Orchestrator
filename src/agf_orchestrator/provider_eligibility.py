@@ -65,6 +65,7 @@ class _OwnerStoreHandle:
 
 
 _DECISION_TTL = timedelta(hours=1)
+_DECISION_SCHEMA_VERSION = "2.0"
 _REVISION_SCOPES = frozenset({"revision-bound", "resolve-library"})
 _PROVIDER_KINDS = {"capability", "code-intelligence", "knowledge", "documentation"}
 _DOMAIN_KINDS = {
@@ -153,6 +154,7 @@ class ProviderEligibilityDecision:
     decision_at: str
     expires_at: str
     decision_sha256: str
+    schema_version: str = _DECISION_SCHEMA_VERSION
 
     def _unsigned(self) -> dict[str, Any]:
         return {
@@ -183,12 +185,15 @@ class ProviderEligibilityDecision:
             "fallback_eligible": self.fallback_eligible,
             "decision_at": self.decision_at,
             "expires_at": self.expires_at,
+            "schema_version": self.schema_version,
         }
 
     def to_dict(self) -> dict[str, Any]:
         return {**self._unsigned(), "decision_sha256": self.decision_sha256}
 
     def validate(self, *, now: str | None = None) -> None:
+        if self.schema_version != _DECISION_SCHEMA_VERSION:
+            raise ProviderEligibilityError("provider decision schema version is unsupported")
         if not self.project_id.startswith("project-"):
             raise ProviderEligibilityError("provider decision project binding is invalid")
         if not self.provider_id or not self.provider_id.startswith(("provider-", "knowledge-")):

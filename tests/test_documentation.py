@@ -674,6 +674,42 @@ def test_provider_binding_issuance_is_not_persisted_in_documentation_evidence():
     assert "issuance_token" not in payload
 
 
+def test_live_legacy_provider_binding_survives_decision_hash_upgrade():
+    issued = binding_for("knowledge-docs")
+    authority = issued.authority
+    decision = authority.resolve(
+        project_id=issued.project_id,
+        provider_id=issued.provider_id,
+        provider_kind="knowledge",
+        capability_domain="documentation",
+        now=issued.decision_at,
+        required_capabilities=("documentation",),
+        target_sha=issued.target_sha,
+        decision_domain="documentation",
+        _issued_at=issued.decision_at,
+    )
+    legacy_decision = decision._unsigned()
+    legacy_decision.pop("source_observed_at")
+    legacy_decision.pop("source_expires_at")
+    legacy_decision.pop("schema_version")
+    legacy_decision_sha = hashlib.sha256(
+        json.dumps(legacy_decision, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    payload = issued.to_dict()
+    payload["schema_version"] = "1.0"
+    payload["decision_sha256"] = legacy_decision_sha
+    payload["issuance_token"] = hashlib.sha256(
+        f"agf-provider-binding-v1:{legacy_decision_sha}:{issued.profile_sha256}".encode()
+    ).hexdigest()
+    unsigned = {**payload, "binding_sha256": ""}
+    unsigned.pop("schema_version")
+    payload["binding_sha256"] = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    legacy = ProviderBinding(**payload)
+    legacy.validate(now=NOW, eligibility_authority=authority)
+
+
 def test_provider_binding_issuance_survives_restart_and_artifact_tampering(tmp_path, monkeypatch):
     monkeypatch.setenv("AGF_STATE_DIR", str(_DOCUMENTATION_STATE_ROOT))
     issued = binding_for("knowledge-provider-durable")

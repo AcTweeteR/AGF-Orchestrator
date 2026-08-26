@@ -152,6 +152,7 @@ _CLOCK_SKEW_SECONDS = 0
 _MAX_VERSION_LENGTH = 256
 _MAX_CITATION_REFS = 8
 _PROVIDER_BINDING_TTL_SECONDS = 3600
+_LEGACY_BINDING_CUTOFF = datetime(2026, 8, 26, tzinfo=UTC)
 def _contains_credential_query(value: str) -> bool:
     for candidate_text in (value, html.unescape(value)):
         for candidate in _URI_CANDIDATE.findall(candidate_text):
@@ -772,6 +773,7 @@ class ProviderBinding:
     revision_scope: str = "revision-bound"
     # Runtime-only injection; persisted bindings always re-resolve canonical state.
     authority: Any = field(default=None, compare=False, repr=False)
+    schema_version: str = "1.0"
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -790,6 +792,7 @@ class ProviderBinding:
             "decision_sha256": self.decision_sha256,
             "target_sha": self.target_sha,
             "revision_scope": self.revision_scope,
+            "schema_version": self.schema_version,
         }
 
     def validate(
@@ -798,6 +801,8 @@ class ProviderBinding:
         now: str | None = None,
         eligibility_authority: ProviderEligibilityAuthority | None = None,
     ) -> None:
+        if self.schema_version not in {"1.0", "2.0"}:
+            raise DocumentationError("provider binding schema version is unsupported")
         if not _ID.fullmatch(self.provider_id):
             raise DocumentationError("provider binding provider_id is invalid")
         if not _ID.fullmatch(self.project_id) or not self.project_id.startswith("project-"):
@@ -811,6 +816,8 @@ class ProviderBinding:
         if not re.fullmatch(r"[0-9a-f]{40}", self.target_sha):
             raise DocumentationError("provider binding target revision is invalid")
         decision = _timestamp("provider binding decision_at", self.decision_at)
+        if self.schema_version == "1.0" and decision >= _LEGACY_BINDING_CUTOFF:
+            raise DocumentationError("legacy provider binding is outside its compatibility window")
         if now is not None and decision > _timestamp("provider binding now", now):
             raise DocumentationError("provider binding is future-dated")
         if self.expires_at is not None:
@@ -842,7 +849,17 @@ class ProviderBinding:
             "privacy_eligible": decision.privacy_eligible,
             "network_allowed": decision.network_eligible,
         }
-        if self.decision_sha256 != decision.decision_sha256:
+        if self.schema_version == "2.0":
+            expected_decision_sha256 = decision.decision_sha256
+        else:
+            legacy_unsigned = decision._unsigned()
+            legacy_unsigned.pop("source_observed_at")
+            legacy_unsigned.pop("source_expires_at")
+            legacy_unsigned.pop("schema_version")
+            expected_decision_sha256 = hashlib.sha256(
+                json.dumps(legacy_unsigned, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+        if self.decision_sha256 != expected_decision_sha256:
             raise DocumentationError("provider binding decision differs from authority")
         if self.decision_at != decision.decision_at:
             raise DocumentationError("provider binding decision time differs from authority")
@@ -851,7 +868,7 @@ class ProviderBinding:
         if self.revision_scope != decision.revision_scope:
             raise DocumentationError("provider binding revision scope differs from authority")
         expected_token = hashlib.sha256(
-            f"agf-provider-binding-v1:{decision.decision_sha256}:{self.profile_sha256}".encode()
+            f"agf-provider-binding-v1:{expected_decision_sha256}:{self.profile_sha256}".encode()
         ).hexdigest()
         if self.issuance_token != expected_token:
             raise DocumentationError("provider binding issuance artifact is invalid")
@@ -862,6 +879,8 @@ class ProviderBinding:
         ):
             raise DocumentationError("provider binding observations differ from authority")
         unsigned = {**self.to_dict(), "binding_sha256": ""}
+        if self.schema_version == "1.0":
+            unsigned.pop("schema_version")
         expected = hashlib.sha256(
             json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -907,6 +926,7 @@ def _seal_provider_binding(
         "decision_sha256": decision.decision_sha256,
         "target_sha": decision.target_sha,
         "revision_scope": decision.revision_scope,
+        "schema_version": "2.0",
     }
     digest = hashlib.sha256(
         json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
@@ -919,6 +939,7 @@ def _seal_provider_binding(
         digest, issuance_token, decision.decision_sha256, decision.target_sha,
         decision.revision_scope,
         authority,
+        "2.0",
     )
     binding.validate(eligibility_authority=authority)
     return binding
