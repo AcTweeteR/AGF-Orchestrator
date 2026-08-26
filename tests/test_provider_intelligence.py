@@ -5,6 +5,7 @@ import pytest
 from agf_orchestrator.capability_profiles import CapabilityStatus
 from agf_orchestrator.capability_selection import CapabilityCandidate, SelectionGates
 from agf_orchestrator.provider_intelligence import (
+    ARCHITECT_GATE_NAMES,
     ARCHITECT_REQUIREMENTS,
     ProviderIntelligenceError,
     ProviderIntelligenceStore,
@@ -97,6 +98,34 @@ def test_unknown_decision_domain_is_rejected(tmp_path):
     store = ProviderIntelligenceStore(tmp_path, signing_key=TEST_KEY, staging=True)
     with pytest.raises(ProviderIntelligenceError):
         store.for_project(PROJECT, decision_domain="unknown-domain")
+
+
+def test_non_architect_domains_use_common_gate_schema_without_architect_evidence():
+    generic = tuple((name, f"owner-evidence:{name}:True") for name in ARCHITECT_GATE_NAMES)
+    value = state(
+        decision_domain="documentation",
+        requirements=("documentation",),
+        provider_interfaces=(("provider-codex", "documentation"),),
+        gate_evidence=generic,
+    )
+    value.validate(now=NOW, target_sha=TARGET)
+
+
+def test_architect_gate_evidence_remains_domain_specific():
+    with pytest.raises(ProviderIntelligenceError):
+        state(gate_evidence=GATE_EVIDENCE[:-1]).validate()
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [[], ["provider-codex"], ["provider-codex", "0" * 64],
+     ["provider-codex", "0" * 64, [] , "extra"]],
+)
+def test_malformed_scoped_gate_evidence_is_typed(malformed):
+    payload = state().to_dict()
+    payload["provider_gate_evidence_by_candidate"] = [malformed]
+    with pytest.raises(ProviderIntelligenceError):
+        state_from_dict(payload)
 
 
 def test_tampered_profile_or_state_hash_fails_closed(tmp_path):
