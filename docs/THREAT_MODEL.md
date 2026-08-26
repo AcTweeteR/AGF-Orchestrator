@@ -32,6 +32,45 @@ An actor fabricates a review, receipt, plan, target SHA, or evidence file, or su
 
 **Controls:** exact project/session/target binding, persisted hashes, signatures where required, canonical identity checks, independent review/Compliance, lineage verification.
 
+### Self-authenticating authorization artifact
+
+An actor reconstructs a purportedly governed provider artifact from public
+fields and public digests, then treats the digest as proof that AGF issued it.
+
+**Controls:** integrity hashes are never issuance authority; durable provider
+bindings require an owner-verifiable envelope over the complete binding
+subject. Bindings without that envelope remain inspectable but cannot produce
+authoritative documentation status or authorize new provider work.
+
+### Representation-as-authority
+
+A class, private attribute, or deterministic object representation is treated
+as an authority merely because ordinary callers are expected not to construct
+it.
+
+**Controls:** authority derives from the canonical owner verification path and
+the governed resolution flow, not Python object identity, underscored names,
+or public token values. Runtime code never receives the owner private key.
+
+### Transferable authentication artifact
+
+An authenticated marker or receipt from one governed binding is copied to a
+different provider, project, profile, domain, revision, or runtime context.
+
+**Controls:** the owner envelope signs the complete binding subject, including
+the exact subject digest, owner decision, runtime observations, scope, and
+lifetime. Any mutation or transfer fails verification.
+
+### Process-local authority
+
+A durable claim depends on an in-memory marker or object identity that is lost
+or substituted after restart.
+
+**Controls:** durable provider provenance is re-verified from the canonical
+owner envelope and state root after restart. Historical provenance is separate
+from current runtime authorization, which always requires a fresh governed
+resolution.
+
 ### Replay and stale state
 
 A previously valid authorization/checkpoint is replayed after the target, policy, session, or campaign state has advanced.

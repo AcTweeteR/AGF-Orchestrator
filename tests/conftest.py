@@ -4,11 +4,12 @@ from pathlib import Path
 import pytest
 from provider_test_support import verify_envelope
 
-from agf_orchestrator import provider_intelligence
+from agf_orchestrator import documentation, provider_intelligence
 
 # Module-level fixtures in the provider tests are created during collection;
 # install the generated test trust root before that collection happens.
 provider_intelligence.verify_envelope = verify_envelope
+documentation.verify_envelope = verify_envelope
 
 
 @pytest.fixture(autouse=True)

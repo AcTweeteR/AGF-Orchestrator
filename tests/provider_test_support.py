@@ -59,6 +59,19 @@ def verify_envelope(payload: object, envelope: dict[str, object]) -> None:
     )
 
 
+def sign_binding_subject(subject: dict[str, object]) -> dict[str, str]:
+    """Fixture-only owner controller for authenticated binding issuance."""
+    payload_bytes = canonical_bytes(subject)
+    return {
+        "signature_scheme": "Ed25519",
+        "signature_version": "1",
+        "key_id": _KEY_ID,
+        "public_key_fingerprint": _FINGERPRINT,
+        "payload_hash": hashlib.sha256(payload_bytes).hexdigest(),
+        "signature": base64.b64encode(_PRIVATE_KEY.sign(payload_bytes)).decode("ascii"),
+    }
+
+
 def canonical_test_authority(store):
     """Construct production wiring against an explicitly configured test root."""
     from agf_orchestrator.provider_eligibility import ProviderEligibilityAuthority

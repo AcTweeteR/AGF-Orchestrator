@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from provider_test_support import canonical_test_authority
+from provider_test_support import canonical_test_authority, sign_binding_subject
 from provider_test_support import sign_state as sign_owner_state
 
 from agf_orchestrator.capability_extensions import (
@@ -233,6 +233,7 @@ def _documentation_authority(profile_value, kwargs):
 def resolve_provider(profile_value, **kwargs):
     if kwargs.get("revision_scope", "revision-bound") == "revision-bound":
         kwargs.setdefault("target_sha", REVISION)
+    kwargs.setdefault("issuance_attestor", sign_binding_subject)
     return _resolve_provider(
         profile_value,
         eligibility_authority=_documentation_authority(profile_value, kwargs),
@@ -561,7 +562,8 @@ def test_runtime_denials_restrict_owner_authorization_without_granting_it(tmp_pa
     assert privacy_result.status is DocumentationStatus.PRIVACY_BLOCKED
 
     offline_result = _resolve_provider(
-        profile(), **{**base, "network_allowed": False}
+        profile(), **{**base, "network_allowed": False,
+                      "issuance_attestor": sign_binding_subject}
     )
     assert offline_result.status is DocumentationStatus.VALID
 
@@ -688,6 +690,34 @@ def test_provider_binding_requires_authenticated_agf_issuance():
         ).assess(request(provider_binding=tampered), now=NOW)
 
 
+def test_public_binding_data_cannot_forge_authenticated_issuance():
+    issued = binding_for("knowledge-provider-issued")
+    payload = issued.to_dict()
+    payload.pop("issuance_attestation")
+    payload["provider_id"] = "knowledge-provider-a"
+    unsigned = {**payload, "binding_sha256": ""}
+    payload["binding_sha256"] = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    fabricated = ProviderBinding(**payload)
+    with pytest.raises(DocumentationError, match="attestation"):
+        evidence(
+            provider_id=fabricated.provider_id,
+            provider_binding_sha256=fabricated.binding_sha256,
+        ).assess(request(provider_binding=fabricated), now=NOW)
+
+    transferred = replace(issued, provider_id="knowledge-provider-a")
+    unsigned = {**transferred.to_dict(), "binding_sha256": ""}
+    transferred = replace(
+        transferred,
+        binding_sha256=hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    )
+    with pytest.raises(DocumentationError, match="attestation"):
+        transferred.validate(now=NOW, eligibility_authority=issued.authority)
+
+
 def test_provider_binding_issuance_is_not_persisted_in_documentation_evidence():
     payload = evidence().to_dict()
     assert "issuance_token" not in payload
@@ -746,6 +776,8 @@ def test_live_legacy_provider_binding_survives_decision_hash_upgrade():
         json.dumps(legacy_decision, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     payload = issued.to_dict()
+    payload.pop("issuance_attestation", None)
+    payload.pop("runtime_constraints", None)
     payload["schema_version"] = "1.0"
     payload["decision_sha256"] = legacy_decision_sha
     payload["issuance_token"] = hashlib.sha256(
