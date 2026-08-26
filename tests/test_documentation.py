@@ -1015,6 +1015,50 @@ def test_go_registry_accepts_v_prefixed_versions_without_global_normalization():
     assert build.demonstrated_version() == "v1.10.0+linux"
 
 
+@pytest.mark.parametrize(
+    "package_id,version",
+    [
+        ("github.com/acme/lib", "v0.9.0"),
+        ("github.com/acme/lib", "v1.9.0"),
+        ("github.com/acme/lib/v2", "v2.0.0"),
+        ("github.com/acme/lib/v2", "v2.0.0-rc.1"),
+        ("github.com/acme/lib/v3", "v3.1.0"),
+        ("github.com/acme/lib", "v2.0.0+incompatible"),
+        ("gopkg.in/yaml.v2", "v2.13.1"),
+        ("gopkg.in/yaml.v3", "v3.0.1"),
+        ("gopkg.in/yaml.v1", "v1.0.0"),
+    ],
+)
+def test_go_module_major_matches_module_path(package_id, version):
+    dependency(
+        registry="go", package_id=package_id,
+        declared_constraint=f"={version}",
+        locked_version=version, resolved_version=version,
+    ).validate()
+
+
+@pytest.mark.parametrize(
+    "package_id,version",
+    [
+        ("github.com/acme/lib/v2", "v1.9.0"),
+        ("github.com/acme/lib/v2", "v3.0.0"),
+        ("github.com/acme/lib", "v2.0.0"),
+        ("github.com/acme/lib", "v3.1.0"),
+        ("github.com/acme/lib", "v2.0.0+foo"),
+        ("github.com/acme/lib/v2", "v2.0.0+incompatible"),
+        ("gopkg.in/yaml.v2", "v1.0.0"),
+        ("gopkg.in/yaml.v3", "v2.0.0"),
+    ],
+)
+def test_go_module_major_mismatch_is_rejected(package_id, version):
+    with pytest.raises(DocumentationError):
+        dependency(
+            registry="go", package_id=package_id,
+            declared_constraint=f"={version}",
+            locked_version=version, resolved_version=version,
+        ).validate()
+
+
 def test_non_go_registries_reject_v_prefix():
     with pytest.raises(DocumentationError):
         dependency(registry="npm", resolved_version="v1.10.0").validate()

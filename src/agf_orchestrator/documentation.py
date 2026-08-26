@@ -230,6 +230,38 @@ def _canonical_concrete_version(registry: str, label: str, value: Any) -> str:
     return canonical
 
 
+def _validate_go_module_version(package_id: str, version: str, label: str) -> None:
+    """Validate a concrete Go version against the module identity.
+
+    DependencyVersionEvidence treats ``package_id`` as the module path, not an
+    arbitrary import subpath.  Resolving an import path to a module would need
+    network/module-graph state and is intentionally outside this boundary.
+    """
+    if not isinstance(package_id, str) or not isinstance(version, str):
+        raise DocumentationError(f"{label} is invalid")
+    version_without_build, separator, build = version.partition("+")
+    try:
+        major = int(version_without_build.removeprefix("v").split(".", 1)[0])
+    except (TypeError, ValueError, IndexError) as exc:
+        raise DocumentationError(f"{label} has an invalid Go major") from exc
+    incompatible = separator == "+" and build == "incompatible"
+    normal_suffix = re.search(r"/v([0-9]+)$", package_id)
+    gopkg_suffix = re.search(r"\.v([0-9]+)$", package_id)
+    if package_id.startswith("gopkg.in/"):
+        if gopkg_suffix is None or int(gopkg_suffix.group(1)) != major:
+            raise DocumentationError(f"{label} is incompatible with its Go module path")
+        if incompatible:
+            raise DocumentationError(f"{label} has invalid +incompatible semantics")
+        return
+    if normal_suffix is not None:
+        path_major = int(normal_suffix.group(1))
+        if path_major < 2 or path_major != major or incompatible:
+            raise DocumentationError(f"{label} is incompatible with its Go module path")
+        return
+    if major >= 2 and not incompatible:
+        raise DocumentationError(f"{label} requires +incompatible for an unsuffixed Go module")
+
+
 def _maven_parts(label: str, value: str) -> tuple[tuple[int, ...], str | None, int]:
     if not isinstance(value, str) or len(value) > _MAX_VERSION_LENGTH:
         raise DocumentationError(f"{label} is invalid")
@@ -579,6 +611,8 @@ class DependencyVersionEvidence:
         ):
             if value is not None:
                 _canonical_concrete_version(self.registry, label, value)
+                if self.registry == "go":
+                    _validate_go_module_version(self.package_id, value, label)
         _text("dependency source", self.source)
         _timestamp("dependency observed_at", self.observed_at)
 
@@ -1020,6 +1054,12 @@ class DocumentationEvidence:
             _canonical_concrete_version(
                 self.dependency.registry, "documentation_version", self.documentation_version
             )
+            if self.dependency.registry == "go":
+                _validate_go_module_version(
+                    self.dependency.package_id,
+                    self.documentation_version,
+                    "documentation_version",
+                )
         _text("documentation_source", self.documentation_source)
         if len(self.citations) > _MAX_CITATIONS:
             raise DocumentationError("citations exceed the bound")
