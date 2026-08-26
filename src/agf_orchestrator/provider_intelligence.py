@@ -534,6 +534,22 @@ def state_from_dict(payload: dict[str, Any]) -> ProviderIntelligenceState:
     }
     if not set(payload).issubset(required | optional) or not required.issubset(payload):
         raise ProviderIntelligenceError("provider intelligence state schema is invalid")
+
+    def parse_security_posture(value: Any) -> tuple[tuple[str, str], ...]:
+        if not isinstance(value, (list, tuple)):
+            raise ProviderIntelligenceError("provider security posture is invalid")
+        parsed: list[tuple[str, str]] = []
+        for item in value:
+            if (
+                not isinstance(item, (list, tuple))
+                or len(item) != 2
+                or not isinstance(item[0], str)
+                or not isinstance(item[1], str)
+            ):
+                raise ProviderIntelligenceError("provider security posture is invalid")
+            parsed.append((item[0], item[1]))
+        return tuple(parsed)
+
     try:
         candidates = tuple(
             CapabilityCandidate(
@@ -566,14 +582,19 @@ def state_from_dict(payload: dict[str, Any]) -> ProviderIntelligenceState:
             payload["state_sha256"],
             tuple(tuple(item) for item in payload.get("provider_gate_evidence", ())),
             payload.get("decision_domain", "architect"),
-            tuple(tuple(item) for item in payload.get("provider_security_posture", ())),
+            parse_security_posture(payload.get("provider_security_posture", ())),
             _parse_scoped_gate_evidence(
                 payload.get("provider_gate_evidence_by_candidate", ())
             ),
         )
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise ProviderIntelligenceError("provider intelligence state schema is invalid") from exc
-    state.validate()
+    try:
+        state.validate()
+    except ProviderIntelligenceError:
+        raise
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
+        raise ProviderIntelligenceError("provider intelligence state schema is invalid") from exc
     return state
 
 

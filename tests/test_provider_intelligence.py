@@ -186,6 +186,31 @@ def test_state_schema_rejects_unknown_or_malformed_payload():
         state_from_dict(payload)
 
 
+@pytest.mark.parametrize(
+    "posture",
+    [[[]], [["provider-codex"]], [["provider-codex", "payload", "extra"]],
+     [123, "payload"], ["provider-codex", None], "not-a-list"],
+)
+def test_malformed_provider_security_posture_is_typed(posture):
+    payload = state().to_dict()
+    payload["provider_security_posture"] = posture
+    with pytest.raises(ProviderIntelligenceError):
+        state_from_dict(payload)
+
+
+def test_store_load_translates_malformed_security_posture(tmp_path):
+    value = sign_state(state(), TEST_KEY, staging=True)
+    payload = value.to_dict()
+    payload["provider_security_posture"] = [["provider-codex"]]
+    store = ProviderIntelligenceStore(tmp_path, signing_key=TEST_KEY, staging=True).for_project(
+        PROJECT
+    )
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ProviderIntelligenceError):
+        store.load()
+
+
 def _persisted_state(
     *, generation: int, profile_version: int, expired: bool, target=TARGET, observed=None
 ):
