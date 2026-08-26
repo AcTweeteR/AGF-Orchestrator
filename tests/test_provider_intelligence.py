@@ -116,6 +116,18 @@ def test_architect_gate_evidence_remains_domain_specific():
         state(gate_evidence=GATE_EVIDENCE[:-1]).validate()
 
 
+def test_architect_rejects_candidate_scoped_gate_evidence():
+    scoped = (
+        (
+            "provider-codex",
+            candidate().profile.profile_sha256,
+            tuple((name, True) for name in ARCHITECT_GATE_NAMES),
+        ),
+    )
+    with pytest.raises(ProviderIntelligenceError, match="candidate-scoped"):
+        state(provider_gate_evidence_by_candidate=scoped).validate()
+
+
 @pytest.mark.parametrize(
     "malformed",
     [[], ["provider-codex"], ["provider-codex", "0" * 64],

@@ -356,13 +356,15 @@ def _decision_from_state(
             "provider capability is not owner-eligible",
             reason_code="UNSUPPORTED_CAPABILITY",
         ) from exc
-    scoped_gate_records = {
-        (provider, profile_sha): dict(facts)
-        for provider, profile_sha, facts in state.provider_gate_evidence_by_candidate
-    }
-    scoped_facts = scoped_gate_records.get(
-        (candidate.profile.provider_id, candidate.profile.profile_sha256)
-    )
+    scoped_facts = None
+    if state.decision_domain != "architect":
+        scoped_gate_records = {
+            (provider, profile_sha): dict(facts)
+            for provider, profile_sha, facts in state.provider_gate_evidence_by_candidate
+        }
+        scoped_facts = scoped_gate_records.get(
+            (candidate.profile.provider_id, candidate.profile.profile_sha256)
+        )
     if scoped_facts is not None:
         required_gate_names = {
             "policy_eligible", "privacy_eligible", "health_eligible", "budget_eligible",

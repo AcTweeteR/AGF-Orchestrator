@@ -128,7 +128,10 @@ _URI_CANDIDATE = re.compile(r"(?i)\b[a-z][a-z0-9+.-]{1,31}://[^\s<>]+")
 _CREDENTIAL_QUERY_NAMES = frozenset({
     "x-amz-signature", "x-amz-credential", "x-amz-security-token",
     "x-goog-signature", "googleaccessid", "signature", "sig", "access_token",
-    "oauth_token", "bearer_token", "api_key", "client_secret",
+    "oauth_token", "bearer_token", "api_key", "apikey", "client_secret",
+    "token", "key", "secret", "credential", "credentials", "auth",
+    "authorization", "auth_token", "session", "session_token", "password", "passwd",
+    "signed",
 })
 _SECRET = re.compile(
     r"(?i)(aws[_-]?secret[_-]?access[_-]?key|aws[_-]?access[_-]?key[_-]?id|"
@@ -141,7 +144,9 @@ _QUOTED_SECRET_LABEL = re.compile(
     r"(?i)(['\"])(?:aws[_-]?secret[_-]?access[_-]?key|"
     r"aws[_-]?access[_-]?key[_-]?id|secret\s+access\s+key|"
     r"password|passwd|secret|client[_ ]secret|api[_ ]key|"
-    r"access[_ ]token|refresh[_ ]token|private[_ ]key)\1\s*:\s*"
+    r"access[_ ]token|refresh[_ ]token|private[_ ]key|token|"
+    r"authorization|bearer[_ ]token|auth[_ ]token|id[_ ]token|"
+    r"session[_ ]token|credential|credentials)\1\s*:\s*"
     r"(['\"])[^'\"]*\2"
 )
 _MAX_TEXT = 4000
@@ -157,10 +162,15 @@ def _contains_credential_query(value: str) -> bool:
     for candidate_text in (value, html.unescape(value)):
         for candidate in _URI_CANDIDATE.findall(candidate_text):
             try:
-                query = parse_qsl(urlsplit(candidate).query, keep_blank_values=True)
+                parsed = urlsplit(candidate)
             except ValueError:
-                continue
-            if any(name.casefold() in _CREDENTIAL_QUERY_NAMES for name, _ in query):
+                raise DocumentationError("text contains an unparseable URI") from None
+            query = parse_qsl(parsed.query, keep_blank_values=True)
+            fragment = parse_qsl(parsed.fragment, keep_blank_values=True)
+            if any(
+                name.casefold() in _CREDENTIAL_QUERY_NAMES
+                for name, _ in (*query, *fragment)
+            ):
                 return True
     return False
 

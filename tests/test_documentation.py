@@ -474,6 +474,25 @@ def test_bounds_secret_safety_hash_and_authority_boundary():
     assert upgrade.assess(request(), now=NOW) is DocumentationStatus.VERSION_MISMATCH
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        '{"token":"opaque"}',
+        '{"authorization":"Bearer opaque"}',
+        '{"auth_token":"opaque"}',
+        '{"session_token":"opaque"}',
+    ],
+)
+def test_quoted_token_fields_are_secret_safe(value):
+    with pytest.raises(DocumentationError):
+        DocumentationCitation("source", "topic", value).validate()
+
+
+def test_unparseable_uri_is_fail_closed_during_secret_screening():
+    with pytest.raises(DocumentationError, match="unparseable URI"):
+        DocumentationCitation("source", "topic", "https://[bad]?sig=opaque-token").validate()
+
+
 def test_provider_required_optional_network_privacy_and_capability_gates():
     kwargs = dict(
         project_id=PROJECT, now=NOW, available=True, authenticated=True,

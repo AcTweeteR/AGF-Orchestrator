@@ -345,6 +345,10 @@ class ProviderIntelligenceState:
             self.provider_gate_evidence
         ):
             raise ProviderIntelligenceError("provider gate evidence is invalid")
+        if self.decision_domain == "architect" and self.provider_gate_evidence_by_candidate:
+            raise ProviderIntelligenceError(
+                "Architect state cannot contain candidate-scoped gate evidence"
+            )
         candidate_keys = {
             (candidate.profile.provider_id, candidate.profile.profile_sha256)
             for candidate in self.candidates
