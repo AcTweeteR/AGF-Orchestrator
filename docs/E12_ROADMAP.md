@@ -230,7 +230,7 @@ Acceptance:
 - failed/partial workflows produce failure/UNKNOWN, never inferred success;
 - evidence is replayable enough to identify URL/step/assertion/revision without storing secrets.
 
-### E12-T14-PRE — Canonical provider-eligibility authority boundary — Executing
+### E12-T14-PRE — Canonical provider-eligibility authority boundary — Done
 
 Objective: provide one provider-neutral, owner-governed eligibility decision
 boundary reusable by capabilities, code intelligence and knowledge providers.
@@ -251,6 +251,11 @@ Acceptance:
   deterministic selection logic rather than an authority source;
 - knowledge-provider profiles can consume the same boundary without an
   Architect-specific runtime dependency.
+
+Closure evidence: the complete PR #173 review inventory was reconciled against
+the final implementation and regression canaries. No justified review thread
+remains open; authenticated v3 N-1 representations remain bounded and
+fail-closed without upgrading legacy unsigned artifacts.
 
 ### E12-T14 — Context7 current-documentation provider — Executing
 
