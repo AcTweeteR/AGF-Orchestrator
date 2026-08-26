@@ -727,6 +727,7 @@ class ProviderEligibilityAuthority:
         eligible: list[CapabilityCandidate] = []
         fallback_allowed = True
         rejection_codes: list[str] = []
+        rejection_reasons: dict[str, str] = {}
         for candidate in owner_candidates:
             try:
                 decision = _decision_from_state(
@@ -745,9 +746,9 @@ class ProviderEligibilityAuthority:
                 eligible.append(candidate)
                 fallback_allowed = fallback_allowed and decision.fallback_eligible
             except (ProviderEligibilityError, ProviderIntelligenceError) as exc:
-                rejection_codes.append(
-                    getattr(exc, "reason_code", "INELIGIBLE")
-                )
+                reason_code = getattr(exc, "reason_code", "INELIGIBLE")
+                rejection_codes.append(reason_code)
+                rejection_reasons[candidate.profile.provider_id] = reason_code
                 continue
         if not eligible and rejection_codes and all(
             code == "UNSUPPORTED_CAPABILITY" for code in rejection_codes
@@ -757,11 +758,12 @@ class ProviderEligibilityAuthority:
                 reason_code="UNSUPPORTED_CAPABILITY",
             )
         selected = CapabilitySelector().select(
-            eligible,
+            owner_candidates,
             project_id=project_id,
             required_capabilities=required,
             now=now,
             gates=SelectionGates(True, True, True, True, True, True),
+            precomputed_rejections=rejection_reasons,
         )
         canonical_primary = CapabilitySelector.order_candidates(owner_candidates)
         if canonical_primary and selected.provider_id != canonical_primary[0].profile.provider_id:

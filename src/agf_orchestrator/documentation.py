@@ -284,6 +284,8 @@ def _validate_go_module_version(package_id: str, version: str, label: str) -> No
     except (TypeError, ValueError, IndexError) as exc:
         raise DocumentationError(f"{label} has an invalid Go major") from exc
     incompatible = separator == "+" and build == "incompatible"
+    if separator and not incompatible:
+        raise DocumentationError(f"{label} has noncanonical Go build metadata")
     normal_suffix = re.search(r"/v([0-9]+)$", package_id)
     gopkg_suffix = re.search(r"\.v([0-9]+)$", package_id)
     if package_id.startswith("gopkg.in/"):
@@ -1099,6 +1101,29 @@ class ProviderBinding:
             raise DocumentationError("provider binding hash does not match content")
 
 
+class _ProviderIssuanceRequest:
+    """Ephemeral capability passed to the owner-controlled attestor.
+
+    The attestor is intentionally not a generic ``sign(dict)`` hook.  Only the
+    governed resolver can construct this request; durable verification uses
+    the resulting owner envelope and never relies on this process-local
+    object.  This is API confinement, not a claim of Python memory isolation.
+    """
+
+    __slots__ = ("subject", "__token")
+    _TOKEN = object()
+
+    def __init__(self, subject: dict[str, Any], token: object) -> None:
+        if token is not self._TOKEN:
+            raise DocumentationError("provider issuance request is not governed")
+        self.subject = subject
+        self.__token = token
+
+    @classmethod
+    def create(cls, subject: dict[str, Any]) -> "_ProviderIssuanceRequest":
+        return cls(subject, cls._TOKEN)
+
+
 def _seal_provider_binding(
     profile: KnowledgeProviderProfile,
     *,
@@ -1178,7 +1203,7 @@ def _seal_provider_binding(
         json.dumps(subject, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     try:
-        issuance_attestation = issuance_attestor(subject)
+        issuance_attestation = issuance_attestor(_ProviderIssuanceRequest.create(subject))
         if not isinstance(issuance_attestation, dict):
             raise TypeError
     except (TimeoutError, ConnectionError, OSError) as exc:

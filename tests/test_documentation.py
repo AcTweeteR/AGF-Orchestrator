@@ -6,7 +6,11 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from provider_test_support import canonical_test_authority, sign_binding_subject
+from provider_test_support import (
+    canonical_test_authority,
+    sign_binding_subject,
+    sign_binding_subject_payload,
+)
 from provider_test_support import sign_state as sign_owner_state
 
 from agf_orchestrator.capability_extensions import (
@@ -690,6 +694,11 @@ def test_provider_binding_requires_authenticated_agf_issuance():
         ).assess(request(provider_binding=tampered), now=NOW)
 
 
+def test_attestor_rejects_unbound_caller_subjects():
+    with pytest.raises(TypeError, match="governed issuance request"):
+        sign_binding_subject({"available": True})
+
+
 def test_public_binding_data_cannot_forge_authenticated_issuance():
     issued = binding_for("knowledge-provider-issued")
     payload = issued.to_dict()
@@ -742,7 +751,7 @@ def test_signed_runtime_denial_is_rejected_by_binding_verifier():
             for name, value in issued.runtime_constraints
         ),
     )
-    denied = replace(denied, issuance_attestation=sign_binding_subject(
+    denied = replace(denied, issuance_attestation=sign_binding_subject_payload(
         denied._attestation_subject()
     ))
     unsigned = {**denied.to_dict(), "binding_sha256": ""}
@@ -843,7 +852,7 @@ def _historical_v3_binding(issued, *, profile_sha256, runtime_constraints):
     )
     historical = replace(
         historical,
-        issuance_attestation=sign_binding_subject(historical._attestation_subject()),
+        issuance_attestation=sign_binding_subject_payload(historical._attestation_subject()),
     )
     unsigned = {**historical.to_dict(), "binding_sha256": ""}
     return replace(
@@ -911,7 +920,10 @@ def test_versionless_n1_binding_never_downgrades_mandatory_gates(gate):
 def test_versionless_n1_binding_missing_runtime_gate_is_malformed():
     issued = binding_for("knowledge-provider-issued")
     old = replace(issued, attestation_version=None, runtime_constraints=())
-    old = replace(old, issuance_attestation=sign_binding_subject(old._attestation_subject()))
+    old = replace(
+        old,
+        issuance_attestation=sign_binding_subject_payload(old._attestation_subject()),
+    )
     unsigned = {**old.to_dict(), "binding_sha256": ""}
     old = replace(
         old,
@@ -1247,8 +1259,8 @@ def test_go_registry_accepts_v_prefixed_versions_without_global_normalization():
         go, declared_constraint="==v1.10.0+linux",
         locked_version="v1.10.0+linux", resolved_version="v1.10.0+linux",
     )
-    build.validate()
-    assert build.demonstrated_version() == "v1.10.0+linux"
+    with pytest.raises(DocumentationError, match="noncanonical Go build metadata"):
+        build.validate()
 
 
 @pytest.mark.parametrize(
@@ -1347,6 +1359,17 @@ def test_go_pseudo_version_exception_is_narrow(package_id, version):
             registry="go", package_id=package_id,
             declared_constraint=f"={version}",
             locked_version=version, resolved_version=version,
+        ).validate()
+
+
+@pytest.mark.parametrize("suffix", ["linux", "foo", "build.1", "metadata"])
+def test_go_rejects_noncanonical_build_metadata(suffix):
+    with pytest.raises(DocumentationError, match="noncanonical Go build metadata"):
+        dependency(
+            registry="go", package_id="github.com/acme/lib",
+            declared_constraint=f"=v1.2.3+{suffix}",
+            locked_version=f"v1.2.3+{suffix}",
+            resolved_version=f"v1.2.3+{suffix}",
         ).validate()
 
 

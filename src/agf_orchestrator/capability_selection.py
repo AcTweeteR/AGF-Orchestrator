@@ -85,6 +85,7 @@ class CapabilitySelector:
         required_capabilities: Iterable[str],
         now: str,
         gates: SelectionGates | None = None,
+        precomputed_rejections: dict[str, str] | None = None,
     ) -> SelectionResult:
         active_gates = gates or SelectionGates()
         required = tuple(sorted(set(required_capabilities)))
@@ -93,20 +94,26 @@ class CapabilitySelector:
         ordered = self.order_candidates(candidates)
         considered: list[str] = []
         rejected: list[str] = []
+        selected: tuple[str, str, bool] | None = None
         for index, candidate in enumerate(ordered):
             provider = candidate.profile.provider_id
             considered.append(provider)
-            reason = self._rejection_reason(candidate, project_id, required, now, active_gates)
+            reason = (precomputed_rejections or {}).get(provider)
+            if reason is None:
+                reason = self._rejection_reason(candidate, project_id, required, now, active_gates)
             if reason is not None:
                 rejected.append(f"{provider}: {reason}")
                 continue
             if index > 0 and not active_gates.allow_fallback:
                 rejected.append(f"{provider}: fallback is not permitted")
                 continue
+            if selected is None:
+                selected = (provider, candidate.profile.profile_id, index > 0)
+        if selected is not None:
             return SelectionResult(
-                provider_id=provider,
-                profile_id=candidate.profile.profile_id,
-                fallback_used=index > 0,
+                provider_id=selected[0],
+                profile_id=selected[1],
+                fallback_used=selected[2],
                 considered_candidates=tuple(considered),
                 rejected_reasons=tuple(rejected),
             )

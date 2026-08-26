@@ -504,6 +504,40 @@ def test_revisionless_selection_uses_documentation_domain(tmp_path):
     assert selected.fallback_used is False
 
 
+def test_selection_audit_retains_rejected_owner_candidates(tmp_path):
+    primary = candidate("knowledge-primary", docs=False, priority=0)
+    secondary = candidate("knowledge-secondary", priority=1)
+    scoped = tuple(
+        (
+            item.profile.provider_id,
+            item.profile.profile_sha256,
+            (
+                ("policy_eligible", True), ("privacy_eligible", True),
+                ("network_eligible", True), ("authentication_eligible", True),
+                ("health_eligible", True), ("budget_eligible", True),
+                ("empirical_evidence_eligible", True), ("independence_eligible", True),
+            ),
+        )
+        for item in (primary, secondary)
+    )
+    authority_value, _ = make_authority(
+        tmp_path, state(candidates=(primary, secondary), provider_gate_evidence_by_candidate=scoped)
+    )
+    selected = authority_value.select(
+        (), project_id=PROJECT, required_capabilities=("documentation",),
+        provider_kind="knowledge", now=NOW, revision_scope="revision-bound",
+        target_sha=TARGET,
+    )
+    assert selected.provider_id == "knowledge-secondary"
+    assert selected.fallback_used is True
+    assert selected.considered_candidates == (
+        "knowledge-primary", "knowledge-secondary",
+    )
+    assert selected.rejected_reasons == (
+        "knowledge-primary: UNSUPPORTED_CAPABILITY",
+    )
+
+
 def test_credentials_require_owner_authentication_eligibility(tmp_path):
     authority_value, _ = make_authority(
         tmp_path, state(security_profile=knowledge_profile(credentials=True))
