@@ -77,6 +77,7 @@ _ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 _NPM_PACKAGE = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]{0,63}/)?[a-z0-9][a-z0-9._-]{0,127}$")
 _PYPI_PACKAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _GO_MODULE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,63}(?:/[A-Za-z0-9][A-Za-z0-9._~-]{0,63})+$")
+_GO_DOMAIN_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _MAVEN_COORDINATE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}:[A-Za-z0-9][A-Za-z0-9_.-]{0,127}"
     r"(?::[A-Za-z0-9][A-Za-z0-9_.-]{0,127})?$"
@@ -274,6 +275,16 @@ def _validate_go_module_version(package_id: str, version: str, label: str) -> No
         raise DocumentationError(f"{label} requires +incompatible for an unsuffixed Go module")
 
 
+def _validate_go_module_path(package_id: str) -> None:
+    """Validate the module-path identity used by Go dependency evidence."""
+    if package_id.startswith("gopkg.in/"):
+        return
+    leading = package_id.split("/", 1)[0]
+    labels = leading.split(".")
+    if len(labels) < 2 or any(not _GO_DOMAIN_LABEL.fullmatch(label) for label in labels):
+        raise DocumentationError("Go module path has an invalid leading domain")
+
+
 def _maven_parts(label: str, value: str) -> tuple[tuple[int, ...], str | None, int]:
     if not isinstance(value, str) or len(value) > _MAX_VERSION_LENGTH:
         raise DocumentationError(f"{label} is invalid")
@@ -403,6 +414,8 @@ def _validate_registry_package(registry: str, package_id: str) -> None:
         raise DocumentationError("package identity is invalid for registry")
     if ".." in package_id or "/./" in f"/{package_id}/" or "/../" in f"/{package_id}/":
         raise DocumentationError("package identity contains traversal")
+    if registry == "go":
+        _validate_go_module_path(package_id)
 
 
 def _repository_identity(value: Any) -> None:
@@ -1363,16 +1376,16 @@ class ProviderRuntimeConstraints:
     network_allowed: bool | None
 
     def denial_reason(self, profile: KnowledgeProviderProfile) -> str | None:
-        if self.available is False:
+        if self.available is not True:
             return "provider is unavailable at invocation time"
-        if self.policy_authorized is False:
+        if self.policy_authorized is not True:
             return "provider is not authorized for this invocation"
         if profile.requires_credentials or profile.requires_authenticated_session:
-            if self.authenticated is False:
+            if self.authenticated is not True:
                 return "provider authentication is unavailable at invocation time"
-        if profile.network_required and self.network_allowed is False:
+        if profile.network_required and self.network_allowed is not True:
             return "provider network access is unavailable at invocation time"
-        if profile.privacy_review_required and self.privacy_eligible is False:
+        if profile.privacy_review_required and self.privacy_eligible is not True:
             return "provider privacy eligibility is unavailable at invocation time"
         return None
 

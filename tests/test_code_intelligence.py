@@ -292,6 +292,24 @@ def test_runtime_gate_denials_only_restrict_canonical_selection(tmp_path):
     # required, as demonstrated by the canonical authority path above.
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "policy_eligible", "privacy_eligible", "health_eligible",
+        "budget_eligible", "empirical_evidence_eligible", "independence_eligible",
+    ],
+)
+def test_missing_runtime_gate_is_not_an_allow(tmp_path, field):
+    candidate = provider_candidate()
+    authority = eligibility_authority(tmp_path, (candidate,))
+    gates = SelectionGates(True, True, True, True, True, True)
+    result = resolve_provider(
+        (candidate,), project_id=PROJECT, required=True, now=NOW,
+        gates=replace(gates, **{field: None}), eligibility_authority=authority,
+    )
+    assert result.status is IntelligenceStatus.UNAVAILABLE
+
+
 def test_fallback_is_existing_selector_policy_and_never_changes_scope(tmp_path):
     gates = SelectionGates(True, True, True, True, True, True, allow_fallback=True)
     first = provider_candidate("project-other", "provider-first", 0)

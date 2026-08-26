@@ -379,12 +379,7 @@ def resolve_provider(
             now=now,
             target_sha=target_sha,
         )
-        runtime_denials = tuple(
-            name for name in (
-                "policy_eligible", "privacy_eligible", "health_eligible",
-                "budget_eligible", "empirical_evidence_eligible", "independence_eligible",
-            ) if getattr(gates, name) is False
-        )
+        runtime_denials = gates.failed()
         if runtime_denials:
             return ProviderResolution(
                 IntelligenceStatus.UNAVAILABLE,

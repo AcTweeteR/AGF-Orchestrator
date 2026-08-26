@@ -991,6 +991,20 @@ def test_registry_aware_package_identifiers(registry, package_id):
     dependency(registry=registry, package_id=package_id).validate()
 
 
+@pytest.mark.parametrize(
+    "package_id",
+    [
+        "GitHub.com/acme/lib", "example/lib", "github/acme/lib",
+        "foo..bar/acme/lib", ".example.com/acme/lib", "example.com./acme/lib",
+        "foo-.example/acme/lib", "-foo.example/acme/lib", "example.com//lib",
+        "example.com/../lib",
+    ],
+)
+def test_go_module_path_requires_valid_leading_domain(package_id):
+    with pytest.raises(DocumentationError):
+        dependency(registry="go", package_id=package_id).validate()
+
+
 def test_go_registry_accepts_v_prefixed_versions_without_global_normalization():
     go = dependency(
         registry="go", package_id="github.com/gin-gonic/gin",
@@ -1057,6 +1071,30 @@ def test_go_module_major_mismatch_is_rejected(package_id, version):
             declared_constraint=f"={version}",
             locked_version=version, resolved_version=version,
         ).validate()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"available": None}, {"policy_authorized": None}, {"authenticated": None},
+        {"privacy_eligible": None}, {"network_allowed": None},
+    ],
+)
+def test_documentation_runtime_unknown_is_not_an_allow(kwargs):
+    result = _resolve_provider(
+        profile(
+            network_required=kwargs.get("network_allowed") is None,
+            privacy_review_required=kwargs.get("privacy_eligible") is None,
+        ),
+        project_id=PROJECT, now=NOW,
+        available=kwargs.get("available", True),
+        authenticated=kwargs.get("authenticated", True),
+        policy_authorized=kwargs.get("policy_authorized", True),
+        privacy_eligible=kwargs.get("privacy_eligible", True),
+        network_allowed=kwargs.get("network_allowed", True),
+        required=True, target_sha=REVISION,
+    )
+    assert result.status is not DocumentationStatus.VALID
 
 
 def test_gopkg_v1_historical_pseudo_version_is_path_compatible():
