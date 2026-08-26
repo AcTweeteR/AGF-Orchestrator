@@ -1,0 +1,41 @@
+title: "[Integration] "
+labels:
+  - discussion
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this category to discuss providers, execution adapters, MCP/tool integrations, gateways, research sources, or other ecosystem integrations. Integrations remain subordinate to AGF authority and must not create a parallel policy, registry, scheduler, credential store, or merge path.
+
+  - type: input
+    id: project
+    attributes:
+      label: Integration or project
+      description: Name and public URL of the integration, if available.
+      placeholder: Example: provider/project-name
+    validations:
+      required: true
+
+  - type: textarea
+    id: capability
+    attributes:
+      label: Capability it adds
+      description: What concrete capability would this add to AGF?
+    validations:
+      required: true
+
+  - type: textarea
+    id: fit
+    attributes:
+      label: Why it belongs under AGF governance
+      description: Explain how it can remain provider-neutral and subordinate to existing authority, policy, privacy, evidence, and external-action boundaries.
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and external dependencies
+      description: Cover network access, credentials, privacy, licensing, unofficial APIs, external mutation, supply-chain risk, or vendor lock-in where applicable.
+    validations:
+      required: true
