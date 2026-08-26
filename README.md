@@ -1,5 +1,11 @@
 # AGF-Orchestrator
 
+[![CI](https://github.com/AcTweeteR/AGF-Orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/AcTweeteR/AGF-Orchestrator/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/AcTweeteR/AGF-Orchestrator/actions/workflows/codeql.yml/badge.svg)](https://github.com/AcTweeteR/AGF-Orchestrator/actions/workflows/codeql.yml)
+[![Release](https://img.shields.io/github/v/release/AcTweeteR/AGF-Orchestrator)](https://github.com/AcTweeteR/AGF-Orchestrator/releases)
+[![License](https://img.shields.io/github/license/AcTweeteR/AGF-Orchestrator)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB)](pyproject.toml)
+
 **Governance for autonomous software-development agents.**
 
 AGF-Orchestrator is a provider-neutral runtime and reference architecture for coordinating autonomous software-development agents under explicit authority, policy, evidence, review, compliance, recovery, and human-control boundaries.
@@ -9,6 +15,19 @@ Coding agents can plan and change software. AGF-Orchestrator focuses on the hard
 The project treats model/provider integrations as interchangeable execution adapters rather than governing authorities. Authority remains explicit, bounded, auditable, and fail-closed.
 
 > **Project status:** active, experimental, pre-1.0 software. The runtime is real and tested, but interfaces and persistence formats may still evolve. Do not grant it production authority that you have not explicitly reviewed and bounded.
+
+## Public project resources
+
+| Resource | Purpose |
+| --- | --- |
+| [Documentation](https://actweeter.github.io/AGF-Orchestrator/) | Public architecture, governance, runtime, and roadmap documentation |
+| [Releases](https://github.com/AcTweeteR/AGF-Orchestrator/releases) | Versioned public releases and release notes |
+| [Issues](https://github.com/AcTweeteR/AGF-Orchestrator/issues) | Reproducible bugs and actionable implementation work |
+| [Discussions](https://github.com/AcTweeteR/AGF-Orchestrator/discussions) | Questions, ideas, integrations, and community design discussion |
+| [Security policy](SECURITY.md) | Private-first vulnerability reporting guidance |
+| [Contributing](CONTRIBUTING.md) | Contribution workflow and governance expectations |
+| [Governance](GOVERNANCE.md) | Maintainer and decision-making model |
+| [Code of Conduct](CODE_OF_CONDUCT.md) | Community participation standards |
 
 ## Why AGF-Orchestrator exists
 
@@ -165,6 +184,10 @@ External contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), [GO
 ## Security
 
 Read [SECURITY.md](SECURITY.md) before reporting a vulnerability. Please do not publish exploit details for governance-boundary, signature, provenance, or external-action bypasses before maintainers have had an opportunity to assess them.
+
+## Citation
+
+Machine-readable citation metadata is available in [`CITATION.cff`](CITATION.cff). When evaluating or researching AGF-Orchestrator, cite the specific release or commit used so governance behavior remains reproducible.
 
 ## License
 

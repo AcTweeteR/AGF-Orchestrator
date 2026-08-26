@@ -1,0 +1,28 @@
+title: "[Q&A] "
+labels:
+  - discussion
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this category for questions about AGF-Orchestrator architecture, setup, behavior, or governance. For reproducible bugs, use Issues. For security-sensitive findings, follow SECURITY.md instead of posting details publicly.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What are you trying to understand or accomplish?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Include the relevant AGF version, operating environment, workflow stage, or documentation section when useful.
+
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you already tried?
+      description: Optional commands, documentation, or approaches you have already checked. Do not include secrets, tokens, private repository data, or credentials.

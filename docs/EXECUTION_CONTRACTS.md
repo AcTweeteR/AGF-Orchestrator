@@ -6,13 +6,13 @@ This specification defines how the executable agent contracts interact. It does 
 
 | Contract | Role | Receives | Produces | Next authority |
 |---|---|---|---|---|
-| [DIRECTOR.md](../contracts/DIRECTOR.md) | Director | Goal and Project Context | Director Decision | Planner, Architect, or human |
-| [PLANNER.md](../contracts/PLANNER.md) | Planner | Approved Director Decision | Execution Plan | Architect or Director |
-| [ARCHITECT.md](../contracts/ARCHITECT.md) | Architect | Accepted Execution Plan | Architecture Decision | Implementer or Director |
-| [IMPLEMENTER.md](../contracts/IMPLEMENTER.md) | Implementer | Exactly one approved task | Implementation Report | Reviewer or Director |
-| [REVIEWER.md](../contracts/REVIEWER.md) | Reviewer | One Implementation Report | Review Report | Compliance Officer, Implementer, or Director |
-| [COMPLIANCE.md](../contracts/COMPLIANCE.md) | Compliance Officer | Accepted Review Report | AGF Compliance Report | Release Manager, Director, or human |
-| [RELEASE_MANAGER.md](../contracts/RELEASE_MANAGER.md) | Release Manager | Approved compliance and readiness package | Release Readiness | Done, Director, or human |
+| [DIRECTOR.md](https://github.com/AcTweeteR/AGF-Orchestrator/blob/main/contracts/DIRECTOR.md) | Director | Goal and Project Context | Director Decision | Planner, Architect, or human |
+| [PLANNER.md](https://github.com/AcTweeteR/AGF-Orchestrator/blob/main/contracts/PLANNER.md) | Planner | Approved Director Decision | Execution Plan | Architect or Director |
+| [ARCHITECT.md](https://github.com/AcTweeteR/AGF-Orchestrator/blob/main/contracts/ARCHITECT.md) | Architect | Accepted Execution Plan | Architecture Decision | Implementer or Director |
+| [IMPLEMENTER.md](https://github.com/AcTweeteR/AGF-Orchestrator/blob/main/contracts/IMPLEMENTER.md) | Implementer | Exactly one approved task | Implementation Report | Reviewer or Director |
+| [REVIEWER.md](https://github.com/AcTweeteR/AGF-Orchestrator/blob/main/contracts/REVIEWER.md) | Reviewer | One Implementation Report | Review Report | Compliance Officer, Implementer, or Director |
+| [COMPLIANCE.md](https://github.com/AcTweeteR/AGF-Orchestrator/blob/main/contracts/COMPLIANCE.md) | Compliance Officer | Accepted Review Report | AGF Compliance Report | Release Manager, Director, or human |
+| [RELEASE_MANAGER.md](https://github.com/AcTweeteR/AGF-Orchestrator/blob/main/contracts/RELEASE_MANAGER.md) | Release Manager | Approved compliance and readiness package | Release Readiness | Done, Director, or human |
 
 ## Invocation contract
 

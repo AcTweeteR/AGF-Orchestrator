@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and design discussion
+    url: https://github.com/AcTweeteR/AGF-Orchestrator/discussions
+    about: Ask architecture, setup, governance, provider, and integration questions in Discussions.
+  - name: Security vulnerability
+    url: https://github.com/AcTweeteR/AGF-Orchestrator/security/advisories/new
+    about: Report vulnerabilities privately through GitHub Security Advisories. Do not disclose exploit details in a public issue.
+  - name: Documentation
+    url: https://actweeter.github.io/AGF-Orchestrator/
+    about: Read the public AGF-Orchestrator documentation before opening an issue.
