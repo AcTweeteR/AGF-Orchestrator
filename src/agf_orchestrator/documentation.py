@@ -839,16 +839,15 @@ class DocumentationProvider(Protocol):
         ...
 
 
-class _RuntimeBindingIssuance:
-    __slots__ = ("binding_sha256",)
-
-    def __init__(self) -> None:
-        self.binding_sha256: str | None = None
-
-
 @dataclass(frozen=True)
 class ProviderBinding:
-    """Sealed identity of the provider eligibility decision used by evidence."""
+    """Durable provenance for a provider eligibility decision.
+
+    This object is evidence of the owner-state relationship used for a
+    documentation result.  It is deliberately not a current invocation
+    capability; new provider work must go through ``resolve_provider`` with
+    current runtime constraints.
+    """
 
     provider_id: str
     project_id: str
@@ -868,9 +867,6 @@ class ProviderBinding:
     # Runtime-only injection; persisted bindings always re-resolve canonical state.
     authority: Any = field(default=None, compare=False, repr=False)
     schema_version: str = "1.0"
-    _runtime_issuance: _RuntimeBindingIssuance | None = field(
-        default=None, compare=False, repr=False
-    )
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -897,15 +893,9 @@ class ProviderBinding:
         *,
         now: str | None = None,
         eligibility_authority: ProviderEligibilityAuthority | None = None,
-        require_runtime_issuance: bool = False,
     ) -> None:
         if self.schema_version not in {"1.0", "2.0"}:
             raise DocumentationError("provider binding schema version is unsupported")
-        if require_runtime_issuance and (
-            not isinstance(self._runtime_issuance, _RuntimeBindingIssuance)
-            or self._runtime_issuance.binding_sha256 != self.binding_sha256
-        ):
-            raise DocumentationError("provider binding lacks exact live trusted issuance")
         if not _ID.fullmatch(self.provider_id):
             raise DocumentationError("provider binding provider_id is invalid")
         if not _ID.fullmatch(self.project_id) or not self.project_id.startswith("project-"):
@@ -1038,7 +1028,6 @@ def _seal_provider_binding(
     digest = hashlib.sha256(
         json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    runtime_issuance = _RuntimeBindingIssuance()
     binding = ProviderBinding(
         profile.knowledge_provider_id, profile.project_id, profile.profile_sha256,
         now, binding_expires_at,
@@ -1048,9 +1037,7 @@ def _seal_provider_binding(
         decision.revision_scope,
         authority,
         "2.0",
-        runtime_issuance,
     )
-    runtime_issuance.binding_sha256 = binding.binding_sha256
     binding.validate(eligibility_authority=authority)
     return binding
 
@@ -1209,7 +1196,7 @@ class DocumentationEvidence:
         if selected_binding is None:
             return DocumentationStatus.PROVIDER_INELIGIBLE
         try:
-            selected_binding.validate(now=now, require_runtime_issuance=True)
+            selected_binding.validate(now=now)
         except DocumentationError:
             return DocumentationStatus.PROVIDER_INELIGIBLE
         expected_scope = (

@@ -693,7 +693,7 @@ def test_provider_binding_issuance_is_not_persisted_in_documentation_evidence():
     assert "issuance_token" not in payload
 
 
-def test_public_binding_fields_cannot_forge_live_runtime_issuance():
+def test_public_binding_fields_are_only_durable_provenance():
     issued = binding_for("knowledge-provider-issued")
     payload = issued.to_dict()
     unsigned = {**payload, "binding_sha256": ""}
@@ -701,28 +701,26 @@ def test_public_binding_fields_cannot_forge_live_runtime_issuance():
         json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     fabricated = ProviderBinding(**payload)
-    assert (
-        evidence(
-            provider_id=fabricated.provider_id,
-            provider_binding_sha256=fabricated.binding_sha256,
-        ).assess(request(provider_binding=fabricated), now=NOW)
-        is DocumentationStatus.PROVIDER_INELIGIBLE
-    )
+    fabricated.validate(now=NOW, eligibility_authority=issued.authority)
 
 
-def test_runtime_issuance_marker_cannot_transfer_between_bindings():
+def test_persisted_binding_is_assessable_provenance_but_not_live_authorization(tmp_path):
     issued = binding_for("knowledge-provider-issued")
-    other = binding_for("knowledge-provider-a")
-    transferred = replace(
-        other,
-        _runtime_issuance=issued._runtime_issuance,
+    store = SessionStore(tmp_path / "session-state")
+    item = evidence(
+        provider_id=issued.provider_id,
+        provider_binding_sha256=issued.binding_sha256,
+    )
+    persist_evidence(store, "session-one", item, provider_binding=issued)
+    loaded = load_provider_binding(
+        store, "session-one", issued.binding_sha256, eligibility_authority=issued.authority
     )
     assert (
         evidence(
-            provider_id=transferred.provider_id,
-            provider_binding_sha256=transferred.binding_sha256,
-        ).assess(request(provider_binding=transferred), now=NOW)
-        is DocumentationStatus.PROVIDER_INELIGIBLE
+            provider_id=loaded.provider_id,
+            provider_binding_sha256=loaded.binding_sha256,
+        ).assess(request(provider_binding=loaded), now=NOW)
+        is DocumentationStatus.VALID
     )
 
 
@@ -794,7 +792,7 @@ def test_provider_binding_issuance_survives_restart_and_artifact_tampering(tmp_p
     assert loaded.authority is authority
     assert (
         item.assess(request(provider_binding=loaded), now=NOW)
-        is DocumentationStatus.PROVIDER_INELIGIBLE
+        is DocumentationStatus.VALID
     )
     path = (
         store.artifacts_dir
