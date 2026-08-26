@@ -875,6 +875,10 @@ class ProviderBinding:
     # Exact invocation-local observations, retained as historical evidence
     # only; these never become owner authority or a future runtime grant.
     runtime_constraints: tuple[tuple[str, bool | None], ...] = ()
+    # Explicit representation marker for current v3 issuance.  Immediately
+    # preceding v3 artifacts predate this marker and are verified using their
+    # authenticated historical representation instead of current formatting.
+    attestation_version: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -898,6 +902,8 @@ class ProviderBinding:
         if self.schema_version == "3.0":
             payload["issuance_attestation"] = self.issuance_attestation
             payload["runtime_constraints"] = [list(item) for item in self.runtime_constraints]
+            if self.attestation_version is not None:
+                payload["attestation_version"] = self.attestation_version
         return payload
 
     def _attestation_subject(self) -> dict[str, Any]:
@@ -951,11 +957,6 @@ class ProviderBinding:
             if any(not isinstance(name, str) or value not in {True, False, None}
                    for name, value in runtime_items):
                 raise DocumentationError("provider binding runtime constraints are invalid")
-            # The attested record contains only effective gates: a gate that
-            # is not applicable is represented as True, while an applicable
-            # False/unknown value can never become an issuance.
-            if any(value is not True for _, value in runtime_items):
-                raise DocumentationError("provider binding runtime authorization is denied")
             try:
                 verify_envelope(self._attestation_subject(), self.issuance_attestation)
             except (OwnerAuthorityError, TypeError, ValueError) as exc:
@@ -1018,8 +1019,56 @@ class ProviderBinding:
             raise DocumentationError("provider binding decision differs from authority")
         if self.decision_at != decision.decision_at:
             raise DocumentationError("provider binding decision time differs from authority")
-        if self.profile_sha256 != decision.candidate_profile_sha256:
-            raise DocumentationError("provider binding profile differs from authority")
+        if self.schema_version == "3.0":
+            if self.attestation_version not in {None, "3.1"}:
+                raise DocumentationError("provider binding attestation version is unsupported")
+            if self.attestation_version == "3.1":
+                if self.profile_sha256 != decision.candidate_profile_sha256:
+                    raise DocumentationError("provider binding profile differs from authority")
+                if any(value is not True for _, value in runtime_items):
+                    raise DocumentationError("provider binding runtime authorization is denied")
+            else:
+                # N-1 v3 used the KnowledgeProviderProfile hash namespace and
+                # represented genuinely inapplicable gates as None.  The
+                # signed historical hash is retained verbatim; current owner
+                # posture and decision identity provide the compatibility
+                # relation, so it is never compared to the newer namespace.
+                try:
+                    posture_state_sha256, posture = authority.security_posture_for(
+                        self.project_id, "documentation", self.provider_id
+                    )
+                except ProviderEligibilityError as exc:
+                    raise DocumentationError(
+                        "provider binding historical posture is unavailable"
+                    ) from exc
+                if posture_state_sha256 != decision.source_state_sha256:
+                    raise DocumentationError(
+                        "provider binding historical posture is not from the decision state"
+                    )
+                posture_fields = (
+                    "requires_credentials",
+                    "requires_authenticated_session",
+                    "network_required",
+                    "privacy_review_required",
+                )
+                if any(not isinstance(posture.get(name), bool) for name in posture_fields):
+                    raise DocumentationError("provider binding historical posture is invalid")
+                required = {
+                    "authenticated": bool(
+                        posture.get("requires_credentials")
+                        or posture.get("requires_authenticated_session")
+                    ),
+                    "network_allowed": bool(posture.get("network_required")),
+                    "privacy_eligible": bool(posture.get("privacy_review_required")),
+                }
+                if any(
+                    value is False
+                    or (value is None and required.get(name, False))
+                    for name, value in runtime_items
+                ):
+                    raise DocumentationError(
+                        "provider binding historical runtime authorization is denied"
+                    )
         if self.target_sha != decision.target_sha:
             raise DocumentationError("provider binding target revision differs from authority")
         if self.revision_scope != decision.revision_scope:
@@ -1088,6 +1137,7 @@ def _seal_provider_binding(
         "target_sha": decision.target_sha,
         "revision_scope": decision.revision_scope,
         "schema_version": "3.0",
+        "attestation_version": "3.1",
         "issuance_attestation": None,
         "runtime_constraints": [
             [name, value]
@@ -1146,6 +1196,7 @@ def _seal_provider_binding(
         unsigned["schema_version"],
         issuance_attestation,
         tuple(tuple(item) for item in unsigned["runtime_constraints"]),
+        unsigned["attestation_version"],
     )
     binding.validate(eligibility_authority=authority)
     return binding

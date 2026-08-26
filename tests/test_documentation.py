@@ -816,6 +816,7 @@ def test_live_legacy_provider_binding_survives_decision_hash_upgrade():
     payload = issued.to_dict()
     payload.pop("issuance_attestation", None)
     payload.pop("runtime_constraints", None)
+    payload.pop("attestation_version", None)
     payload["schema_version"] = "1.0"
     payload["decision_sha256"] = legacy_decision_sha
     payload["issuance_token"] = hashlib.sha256(
@@ -828,6 +829,68 @@ def test_live_legacy_provider_binding_survives_decision_hash_upgrade():
     ).hexdigest()
     legacy = ProviderBinding(**payload)
     legacy.validate(now=NOW, eligibility_authority=authority)
+
+
+def _historical_v3_binding(issued, *, profile_sha256, runtime_constraints):
+    historical = replace(
+        issued,
+        profile_sha256=profile_sha256,
+        attestation_version=None,
+        runtime_constraints=runtime_constraints,
+        issuance_token=hashlib.sha256(
+            f"agf-provider-binding-v1:{issued.decision_sha256}:{profile_sha256}".encode()
+        ).hexdigest(),
+    )
+    historical = replace(
+        historical,
+        issuance_attestation=sign_binding_subject(historical._attestation_subject()),
+    )
+    unsigned = {**historical.to_dict(), "binding_sha256": ""}
+    return replace(
+        historical,
+        binding_sha256=hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    )
+
+
+def test_authenticated_n1_v3_binding_preserves_old_profile_and_optional_none_gates():
+    issued = binding_for("knowledge-provider-issued")
+    old = _historical_v3_binding(
+        issued,
+        profile_sha256=profile(provider_id="knowledge-provider-issued").profile_sha256,
+        runtime_constraints=(
+            ("authenticated", None),
+            ("available", True),
+            ("network_allowed", None),
+            ("policy_authorized", True),
+            ("privacy_eligible", None),
+        ),
+    )
+    old.validate(now=NOW, eligibility_authority=issued.authority)
+
+
+def test_authenticated_n1_v3_binding_rejects_none_for_required_gate():
+    network_profile = profile(network_required=True, capabilities=("documentation", "citations"))
+    issued = resolve_provider(
+        network_profile, project_id=PROJECT, now=NOW, available=True,
+        authenticated=True, policy_authorized=True, privacy_eligible=True,
+        network_allowed=True, required=True,
+    ).binding
+    assert issued is not None
+    old = _historical_v3_binding(
+        issued,
+        profile_sha256=network_profile.profile_sha256,
+        runtime_constraints=(
+            ("authenticated", None),
+            ("available", True),
+            ("network_allowed", None),
+            ("policy_authorized", True),
+            ("privacy_eligible", None),
+        ),
+    )
+    with pytest.raises(DocumentationError, match="historical runtime authorization"):
+        old.validate(now=NOW, eligibility_authority=issued.authority)
 
 
 def test_legacy_provider_binding_compatibility_is_bounded_by_artifact_ttl():

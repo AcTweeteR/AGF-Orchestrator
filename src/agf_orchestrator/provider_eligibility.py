@@ -527,6 +527,27 @@ class ProviderEligibilityAuthority:
                 "owner provider intelligence is unavailable"
             ) from exc
 
+    def security_posture_for(
+        self, project_id: str, decision_domain: str, provider_id: str
+    ) -> tuple[str, dict[str, Any]]:
+        """Return the owner-authenticated posture for one provider.
+
+        This is used only to interpret historical representations.  Callers
+        must still validate the decision from the same canonical state; the
+        posture is never accepted as caller-supplied authority.
+        """
+        state = self._load_state(project_id, decision_domain)
+        payload = dict(state.provider_security_posture).get(provider_id)
+        if payload is None:
+            raise ProviderEligibilityError("owner provider security posture is unavailable")
+        try:
+            posture = json.loads(payload)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProviderEligibilityError("owner provider security posture is invalid") from exc
+        if not isinstance(posture, dict):
+            raise ProviderEligibilityError("owner provider security posture is invalid")
+        return state.state_sha256, posture
+
     def resolve(
         self,
         *,
