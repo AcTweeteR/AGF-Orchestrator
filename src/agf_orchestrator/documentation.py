@@ -931,16 +931,31 @@ class ProviderBinding:
         if self.schema_version == "3.0":
             if not self.has_authenticated_issuance():
                 raise DocumentationError("provider binding issuance attestation is missing")
-            if tuple(sorted(self.runtime_constraints)) != tuple(self.runtime_constraints) or {
-                name for name, _ in self.runtime_constraints
+            try:
+                runtime_items = tuple(
+                    (item[0], item[1])
+                    for item in self.runtime_constraints
+                    if isinstance(item, (tuple, list)) and len(item) == 2
+                )
+            except (TypeError, ValueError) as exc:
+                raise DocumentationError(
+                    "provider binding runtime constraints are invalid"
+                ) from exc
+            if len(runtime_items) != 5 or tuple(sorted(runtime_items)) != runtime_items or {
+                name for name, _ in runtime_items
             } != {
                 "available", "authenticated", "policy_authorized",
                 "privacy_eligible", "network_allowed",
             }:
                 raise DocumentationError("provider binding runtime constraints are invalid")
             if any(not isinstance(name, str) or value not in {True, False, None}
-                   for name, value in self.runtime_constraints):
+                   for name, value in runtime_items):
                 raise DocumentationError("provider binding runtime constraints are invalid")
+            # The attested record contains only effective gates: a gate that
+            # is not applicable is represented as True, while an applicable
+            # False/unknown value can never become an issuance.
+            if any(value is not True for _, value in runtime_items):
+                raise DocumentationError("provider binding runtime authorization is denied")
             try:
                 verify_envelope(self._attestation_subject(), self.issuance_attestation)
             except (OwnerAuthorityError, TypeError, ValueError) as exc:
@@ -1003,6 +1018,8 @@ class ProviderBinding:
             raise DocumentationError("provider binding decision differs from authority")
         if self.decision_at != decision.decision_at:
             raise DocumentationError("provider binding decision time differs from authority")
+        if self.profile_sha256 != decision.candidate_profile_sha256:
+            raise DocumentationError("provider binding profile differs from authority")
         if self.target_sha != decision.target_sha:
             raise DocumentationError("provider binding target revision differs from authority")
         if self.revision_scope != decision.revision_scope:
@@ -1050,13 +1067,14 @@ def _seal_provider_binding(
             effective_expiry, _timestamp("provider profile expires_at", profile.expires_at)
         )
     binding_expires_at = effective_expiry.strftime("%Y-%m-%dT%H:%M:%SZ")
+    owner_profile_sha256 = decision.candidate_profile_sha256
     issuance_token = hashlib.sha256(
-        f"agf-provider-binding-v1:{decision.decision_sha256}:{profile.profile_sha256}".encode()
+        f"agf-provider-binding-v1:{decision.decision_sha256}:{owner_profile_sha256}".encode()
     ).hexdigest()
     unsigned = {
         "provider_id": profile.knowledge_provider_id,
         "project_id": profile.project_id,
-        "profile_sha256": profile.profile_sha256,
+        "profile_sha256": owner_profile_sha256,
         "decision_at": now,
         "expires_at": binding_expires_at,
         "available": decision.health_eligible,
@@ -1080,6 +1098,26 @@ def _seal_provider_binding(
     }
     if not callable(issuance_attestor):
         raise DocumentationError("owner issuance attestor is unavailable")
+    effective_runtime = {
+        "available": runtime_constraints.available,
+        "authenticated": (
+            runtime_constraints.authenticated
+            if profile.requires_credentials or profile.requires_authenticated_session
+            else True
+        ),
+        "network_allowed": (
+            runtime_constraints.network_allowed if profile.network_required else True
+        ),
+        "policy_authorized": runtime_constraints.policy_authorized,
+        "privacy_eligible": (
+            runtime_constraints.privacy_eligible if profile.privacy_review_required else True
+        ),
+    }
+    if any(value is not True for value in effective_runtime.values()):
+        raise DocumentationError("runtime authorization is denied")
+    unsigned["runtime_constraints"] = [
+        [name, value] for name, value in sorted(effective_runtime.items())
+    ]
     subject = {key: value for key, value in unsigned.items()
                if key not in {"binding_sha256", "issuance_attestation"}}
     subject["binding_subject_sha256"] = hashlib.sha256(
@@ -1089,6 +1127,8 @@ def _seal_provider_binding(
         issuance_attestation = issuance_attestor(subject)
         if not isinstance(issuance_attestation, dict):
             raise TypeError
+    except (TimeoutError, ConnectionError, OSError) as exc:
+        raise DocumentationError("owner issuance attestor is unavailable") from exc
     except (TypeError, ValueError, OwnerAuthorityError) as exc:
         raise DocumentationError("owner issuance attestation is invalid") from exc
     unsigned["issuance_attestation"] = issuance_attestation
@@ -1096,7 +1136,7 @@ def _seal_provider_binding(
         json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     binding = ProviderBinding(
-        profile.knowledge_provider_id, profile.project_id, profile.profile_sha256,
+        profile.knowledge_provider_id, profile.project_id, owner_profile_sha256,
         now, binding_expires_at,
         decision.health_eligible, decision.authentication_eligible is True,
         decision.policy_eligible, decision.privacy_eligible, decision.network_eligible,

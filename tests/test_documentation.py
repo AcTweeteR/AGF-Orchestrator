@@ -718,6 +718,44 @@ def test_public_binding_data_cannot_forge_authenticated_issuance():
         transferred.validate(now=NOW, eligibility_authority=issued.authority)
 
 
+@pytest.mark.parametrize("failure", [TimeoutError, ConnectionError, OSError])
+def test_owner_attestor_availability_fail_closes(failure):
+    def unavailable(_subject):
+        raise failure("synthetic attestor outage")
+
+    result = _resolve_provider(
+        profile(), project_id=PROJECT, now=NOW, available=True,
+        authenticated=True, policy_authorized=True, privacy_eligible=True,
+        network_allowed=True, required=True,
+        eligibility_authority=binding_for("knowledge-docs").authority,
+        target_sha=REVISION, issuance_attestor=unavailable,
+    )
+    assert result.status is DocumentationStatus.PROVIDER_INELIGIBLE
+
+
+def test_signed_runtime_denial_is_rejected_by_binding_verifier():
+    issued = binding_for("knowledge-provider-issued")
+    denied = replace(
+        issued,
+        runtime_constraints=tuple(
+            (name, False if name == "available" else value)
+            for name, value in issued.runtime_constraints
+        ),
+    )
+    denied = replace(denied, issuance_attestation=sign_binding_subject(
+        denied._attestation_subject()
+    ))
+    unsigned = {**denied.to_dict(), "binding_sha256": ""}
+    denied = replace(
+        denied,
+        binding_sha256=hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    )
+    with pytest.raises(DocumentationError, match="runtime authorization"):
+        denied.validate(now=NOW, eligibility_authority=issued.authority)
+
+
 def test_provider_binding_issuance_is_not_persisted_in_documentation_evidence():
     payload = evidence().to_dict()
     assert "issuance_token" not in payload
