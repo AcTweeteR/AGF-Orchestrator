@@ -578,7 +578,7 @@ def test_runtime_authentication_denial_applies_only_to_credentialed_profiles(tmp
         policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
     )
     offline = resolve_provider(profile(), **base)
-    assert offline.status is DocumentationStatus.VALID
+    assert offline.status is DocumentationStatus.PROVIDER_INELIGIBLE
 
     credentialed = profile()
     credentialed = replace(credentialed, requires_credentials=True)

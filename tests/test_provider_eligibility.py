@@ -26,6 +26,7 @@ from agf_orchestrator.capability_selection import CapabilityCandidate, Selection
 from agf_orchestrator.provider_eligibility import (
     ProviderEligibilityAuthority,
     ProviderEligibilityError,
+    _require_owner_eligible,
     canonical_knowledge_security_posture,
 )
 from agf_orchestrator.provider_intelligence import (
@@ -431,6 +432,19 @@ def test_policy_privacy_health_budget_and_empirical_denials_fail_closed(tmp_path
                 capability_domain="documentation", now=NOW,
                 target_sha=TARGET, required_capabilities=("documentation",),
             )
+
+
+@pytest.mark.parametrize("field", ["network_eligible", "authentication_eligible"])
+def test_explicit_optional_owner_denials_never_become_eligible(tmp_path, field):
+    authority_value, _ = make_authority(tmp_path / field)
+    decision = authority_value.resolve(
+        project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
+        capability_domain="documentation", now=NOW, target_sha=TARGET,
+        required_capabilities=("documentation",), decision_domain="documentation",
+    )
+    denied = replace(decision, **{field: False})
+    with pytest.raises(ProviderEligibilityError):
+        _require_owner_eligible(denied)
 
 
 def test_knowledge_profile_requires_owner_network_and_authentication(tmp_path):

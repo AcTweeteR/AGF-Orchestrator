@@ -480,6 +480,12 @@ def _require_owner_eligible(decision: ProviderEligibilityDecision) -> None:
         )
     ):
         raise ProviderEligibilityError("provider is not owner-eligible")
+    # Network/authentication facts are optional only when the owner-bound
+    # posture makes them inapplicable.  An explicit owner denial is never
+    # equivalent to omission, even for domains without a separate runtime
+    # gate surface.
+    if decision.network_eligible is False or decision.authentication_eligible is False:
+        raise ProviderEligibilityError("provider is not owner-eligible")
 
 
 class ProviderEligibilityAuthority:
