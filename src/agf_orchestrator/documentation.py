@@ -376,12 +376,19 @@ def _hash_payload(payload: dict[str, Any]) -> str:
 def _explicit_prerelease_cores(
     constraint: str, registry: str
 ) -> set[tuple[Any, ...]]:
-    if constraint.startswith(("^", "~")):
-        operands = (constraint[1:],)
+    normalized = constraint.strip()
+    if (
+        registry in {"npm", "go"}
+        and _VERSION.fullmatch(normalized)
+        and "-" in normalized.partition("+")[0]
+    ):
+        operands = (normalized,)
+    elif normalized.startswith(("^", "~")):
+        operands = (normalized[1:],)
     else:
         operands = tuple(
             match.group(2)
-            for term in constraint.split(",")
+            for term in normalized.split(",")
             if (match := re.fullmatch(r"(==|=|>=|<=|>|<)(.+)", term.strip()))
         )
     cores = set()

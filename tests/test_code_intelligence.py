@@ -233,7 +233,21 @@ def test_optional_and_required_provider_unavailability_fail_closed(tmp_path):
             tmp_path / "unsupported", (unsupported_candidate,)
         ),
     )
-    assert unsupported.status is IntelligenceStatus.UNAVAILABLE
+    assert unsupported.status is IntelligenceStatus.UNSUPPORTED_CAPABILITY
+    supported = provider_candidate(provider_id="provider-code-supported", priority=1)
+    mixed = resolve_provider(
+        (unsupported_candidate, supported),
+        project_id=PROJECT,
+        required=True,
+        now=NOW,
+        gates=gates,
+        eligibility_authority=eligibility_authority(
+            tmp_path / "mixed", (unsupported_candidate, supported)
+        ),
+    )
+    assert mixed.status is IntelligenceStatus.VALID
+    assert mixed.selection is not None
+    assert mixed.selection.provider_id == "provider-code-supported"
 
 
 def test_caller_gates_cannot_authorize_without_canonical_authority():

@@ -31,6 +31,10 @@ from .provider_intelligence import (
 class ProviderEligibilityError(ValueError):
     """Raised when canonical provider eligibility is unavailable or invalid."""
 
+    def __init__(self, message: str, *, reason_code: str = "INELIGIBLE") -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+
 
 def _canonical_state_root() -> Path:
     """Return the process' owner-configured AGF state root.
@@ -327,7 +331,10 @@ def _decision_from_state(
         for capability in requested:
             candidate.profile.require_supported(capability)
     except (CapabilityProfileError, ValueError) as exc:
-        raise ProviderEligibilityError("provider capability is not owner-eligible") from exc
+        raise ProviderEligibilityError(
+            "provider capability is not owner-eligible",
+            reason_code="UNSUPPORTED_CAPABILITY",
+        ) from exc
     scoped_gate_records = {
         (provider, profile_sha): dict(facts)
         for provider, profile_sha, facts in state.provider_gate_evidence_by_candidate
@@ -666,6 +673,7 @@ class ProviderEligibilityAuthority:
 
         eligible: list[CapabilityCandidate] = []
         fallback_allowed = True
+        rejection_codes: list[str] = []
         for candidate in owner_candidates:
             try:
                 decision = _decision_from_state(
@@ -683,8 +691,18 @@ class ProviderEligibilityAuthority:
                 _require_owner_eligible(decision)
                 eligible.append(candidate)
                 fallback_allowed = fallback_allowed and decision.fallback_eligible
-            except (ProviderEligibilityError, ProviderIntelligenceError):
+            except (ProviderEligibilityError, ProviderIntelligenceError) as exc:
+                rejection_codes.append(
+                    getattr(exc, "reason_code", "INELIGIBLE")
+                )
                 continue
+        if not eligible and rejection_codes and all(
+            code == "UNSUPPORTED_CAPABILITY" for code in rejection_codes
+        ):
+            raise ProviderEligibilityError(
+                "required capability is not supported",
+                reason_code="UNSUPPORTED_CAPABILITY",
+            )
         selected = CapabilitySelector().select(
             eligible,
             project_id=project_id,

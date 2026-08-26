@@ -393,7 +393,7 @@ def resolve_provider(
             )
         return ProviderResolution(IntelligenceStatus.VALID, selection, "eligible")
     except (ProviderEligibilityError, ValueError, TypeError) as exc:
-        if "required capability is not supported" in str(exc):
+        if getattr(exc, "reason_code", None) == "UNSUPPORTED_CAPABILITY":
             return ProviderResolution(IntelligenceStatus.UNSUPPORTED_CAPABILITY, None, str(exc))
         if required:
             return ProviderResolution(IntelligenceStatus.UNAVAILABLE, None, f"required:{exc}")

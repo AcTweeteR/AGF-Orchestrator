@@ -1106,6 +1106,33 @@ def test_explicit_prerelease_series_can_satisfy_range():
     ).assess(ranged, now=NOW) is DocumentationStatus.VALID
 
 
+def test_bare_exact_prerelease_constraint_is_explicit():
+    exact = request(
+        dependency=dependency(
+            registry="npm",
+            declared_constraint="1.0.0-rc.1",
+            locked_version=None,
+            resolved_version="1.0.0-rc.1",
+        )
+    )
+    assert evidence(
+        dependency=exact.dependency, documentation_version="1.0.0-rc.1"
+    ).assess(exact, now=NOW) is DocumentationStatus.VALID
+
+    exact_build = request(
+        dependency=dependency(
+            registry="npm",
+            declared_constraint="1.0.0-rc.1+build.5",
+            locked_version=None,
+            resolved_version="1.0.0-rc.1+build.5",
+        )
+    )
+    assert evidence(
+        dependency=exact_build.dependency,
+        documentation_version="1.0.0-rc.1+build.5",
+    ).assess(exact_build, now=NOW) is DocumentationStatus.VALID
+
+
 @pytest.mark.parametrize("value", [
     "1.8.3-rc..1", "1.8.3-.rc1", "1.8.3-rc1.", "1.8.3+",
     "1.8.3-rc..1+build", "1.8.3-rc1+..build",
