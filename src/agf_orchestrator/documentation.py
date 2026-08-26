@@ -6,7 +6,6 @@ import hashlib
 import html
 import json
 import re
-import weakref
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -841,10 +840,10 @@ class DocumentationProvider(Protocol):
 
 
 class _RuntimeBindingIssuance:
-    __slots__ = ("__weakref__",)
+    __slots__ = ("binding_sha256",)
 
-
-_ACTIVE_RUNTIME_ISSUANCES: weakref.WeakSet[_RuntimeBindingIssuance] = weakref.WeakSet()
+    def __init__(self) -> None:
+        self.binding_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -902,8 +901,11 @@ class ProviderBinding:
     ) -> None:
         if self.schema_version not in {"1.0", "2.0"}:
             raise DocumentationError("provider binding schema version is unsupported")
-        if require_runtime_issuance and self._runtime_issuance not in _ACTIVE_RUNTIME_ISSUANCES:
-            raise DocumentationError("provider binding lacks live trusted issuance")
+        if require_runtime_issuance and (
+            not isinstance(self._runtime_issuance, _RuntimeBindingIssuance)
+            or self._runtime_issuance.binding_sha256 != self.binding_sha256
+        ):
+            raise DocumentationError("provider binding lacks exact live trusted issuance")
         if not _ID.fullmatch(self.provider_id):
             raise DocumentationError("provider binding provider_id is invalid")
         if not _ID.fullmatch(self.project_id) or not self.project_id.startswith("project-"):
@@ -1036,6 +1038,7 @@ def _seal_provider_binding(
     digest = hashlib.sha256(
         json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+    runtime_issuance = _RuntimeBindingIssuance()
     binding = ProviderBinding(
         profile.knowledge_provider_id, profile.project_id, profile.profile_sha256,
         now, binding_expires_at,
@@ -1045,9 +1048,9 @@ def _seal_provider_binding(
         decision.revision_scope,
         authority,
         "2.0",
-        _RuntimeBindingIssuance(),
+        runtime_issuance,
     )
-    _ACTIVE_RUNTIME_ISSUANCES.add(binding._runtime_issuance)
+    runtime_issuance.binding_sha256 = binding.binding_sha256
     binding.validate(eligibility_authority=authority)
     return binding
 

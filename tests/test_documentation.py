@@ -710,6 +710,22 @@ def test_public_binding_fields_cannot_forge_live_runtime_issuance():
     )
 
 
+def test_runtime_issuance_marker_cannot_transfer_between_bindings():
+    issued = binding_for("knowledge-provider-issued")
+    other = binding_for("knowledge-provider-a")
+    transferred = replace(
+        other,
+        _runtime_issuance=issued._runtime_issuance,
+    )
+    assert (
+        evidence(
+            provider_id=transferred.provider_id,
+            provider_binding_sha256=transferred.binding_sha256,
+        ).assess(request(provider_binding=transferred), now=NOW)
+        is DocumentationStatus.PROVIDER_INELIGIBLE
+    )
+
+
 def test_live_legacy_provider_binding_survives_decision_hash_upgrade():
     issued = binding_for("knowledge-docs")
     authority = issued.authority
