@@ -149,4 +149,3 @@ Costs include stricter dependence on canonical owner state, explicit runtime
 gate requirements, attestation lifecycle and bounded schema compatibility. An
 arbitrary alternate authority root cannot be used in production, and
 historical artifacts cannot be treated as permissions for future work.
-
