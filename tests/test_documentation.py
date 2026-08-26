@@ -970,6 +970,29 @@ def test_non_go_registries_reject_v_prefix():
         dependency(registry="npm", resolved_version="v1.10.0").validate()
 
 
+@pytest.mark.parametrize("registry", ["npm", "go"])
+@pytest.mark.parametrize(
+    "version",
+    ["1", "1.2", "1.2.3.4", "01.2.3", "1.02.3", "1.2.03"],
+)
+def test_npm_and_go_reject_non_concrete_versions(registry, version):
+    with pytest.raises(DocumentationError):
+        dependency(registry=registry, resolved_version=version).validate()
+
+
+def test_npm_keeps_partial_range_operands():
+    npm = dependency(
+        registry="npm", declared_constraint="^1", locked_version=None,
+        resolved_version="1.5.0"
+    )
+    assert npm.demonstrated_version() == "1.5.0"
+    partial_tilde = dependency(
+        registry="npm", declared_constraint="~1.2", locked_version=None,
+        resolved_version="1.2.3"
+    )
+    assert partial_tilde.demonstrated_version() == "1.2.3"
+
+
 @pytest.mark.parametrize("registry,package_id", [
     ("unknown", "package"),
     ("go", "github.com/example/../secret"),
@@ -1060,9 +1083,8 @@ def test_semver_prerelease_ordering_fails_closed_or_orders_correctly():
             declared_constraint="~1.2.3.4", locked_version=None, resolved_version="1.2.99.0"
         )
     )
-    assert evidence(
-        dependency=tilde_four.dependency, documentation_version="1.2.99.0"
-    ).assess(tilde_four, now=NOW) is DocumentationStatus.CONTRADICTORY
+    with pytest.raises(DocumentationError):
+        evidence(dependency=tilde_four.dependency, documentation_version="1.2.99.0")
 
 
 @pytest.mark.parametrize("constraint", ["^1.0.0", "~1.2", ">=1.0.0"])

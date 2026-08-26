@@ -110,6 +110,13 @@ _VERSION = re.compile(
     r"(?:-[0-9A-Za-z-]{1,64}(?:\.[0-9A-Za-z-]{1,64})*)?"
     r"(?:\+[0-9A-Za-z-]{1,64}(?:\.[0-9A-Za-z-]{1,64})*)?$"
 )
+_STRICT_SEMVER = re.compile(
+    r"^(?:0|[1-9][0-9]{0,31})\."
+    r"(?:0|[1-9][0-9]{0,31})\."
+    r"(?:0|[1-9][0-9]{0,31})"
+    r"(?:-[0-9A-Za-z-]{1,64}(?:\.[0-9A-Za-z-]{1,64})*)?"
+    r"(?:\+[0-9A-Za-z-]{1,64}(?:\.[0-9A-Za-z-]{1,64})*)?$"
+)
 _SHA1 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -213,6 +220,14 @@ def _canonical_version(registry: str, label: str, value: Any) -> str:
         return _canonical_maven_version(label, value)
     _version(label, value)
     return value
+
+
+def _canonical_concrete_version(registry: str, label: str, value: Any) -> str:
+    """Validate a resolved/documented version, distinct from range syntax."""
+    canonical = _canonical_version(registry, label, value)
+    if registry in {"npm", "go"} and not _STRICT_SEMVER.fullmatch(canonical):
+        raise DocumentationError(f"{label} must be a concrete SemVer")
+    return canonical
 
 
 def _maven_parts(label: str, value: str) -> tuple[tuple[int, ...], str | None, int]:
@@ -404,7 +419,7 @@ def _constraint_allows(
 ) -> bool | None:
     """Evaluate the small, deterministic constraint subset used by fixtures."""
     normalized = constraint.strip()
-    canonical_version = _canonical_version(registry, "version", version)
+    canonical_version = _canonical_concrete_version(registry, "version", version)
     if registry in {"pypi", "maven"}:
         return _ecosystem_constraint_allows(normalized, canonical_version, registry)
     version_value = _version_key(canonical_version)
@@ -563,7 +578,7 @@ class DependencyVersionEvidence:
             ("runtime_observed_version", self.runtime_observed_version),
         ):
             if value is not None:
-                _canonical_version(self.registry, label, value)
+                _canonical_concrete_version(self.registry, label, value)
         _text("dependency source", self.source)
         _timestamp("dependency observed_at", self.observed_at)
 
@@ -581,7 +596,7 @@ class DependencyVersionEvidence:
         if not values:
             return None
         canonical_values = tuple(
-            _canonical_version(self.registry, "dependency version", value)
+            _canonical_concrete_version(self.registry, "dependency version", value)
             for value in values
         )
         if len({_version_identity(value, self.registry) for value in canonical_values}) != 1:
@@ -975,7 +990,7 @@ class DocumentationEvidence:
         _text("requested_topic", self.requested_topic, limit=512)
         _optional_text("returned_topic", self.returned_topic, limit=512)
         if self.documentation_version is not None:
-            _canonical_version(
+            _canonical_concrete_version(
                 self.dependency.registry, "documentation_version", self.documentation_version
             )
         _text("documentation_source", self.documentation_source)
@@ -1090,10 +1105,12 @@ class DocumentationEvidence:
             return DocumentationStatus.AMBIGUOUS_VERSION
         registry = request.dependency.registry
         if _version_identity(
-            _canonical_version(registry, "documentation_version", self.documentation_version),
+            _canonical_concrete_version(
+                registry, "documentation_version", self.documentation_version
+            ),
             registry,
         ) != _version_identity(
-            _canonical_version(registry, "project version", project_version), registry
+            _canonical_concrete_version(registry, "project version", project_version), registry
         ):
             return DocumentationStatus.VERSION_MISMATCH
         if self.freshness is DocumentationFreshness.STALE:
@@ -1382,13 +1399,13 @@ def reconcile_evidence(
             item.documentation_version is None
             or first.documentation_version is None
             or _version_identity(
-                _canonical_version(
+                _canonical_concrete_version(
                     registry, "documentation version", item.documentation_version
                 ),
                 registry,
             )
             != _version_identity(
-                _canonical_version(
+                _canonical_concrete_version(
                     registry, "documentation version", first.documentation_version
                 ),
                 registry,
