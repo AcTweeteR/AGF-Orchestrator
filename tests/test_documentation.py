@@ -1059,6 +1059,37 @@ def test_go_module_major_mismatch_is_rejected(package_id, version):
         ).validate()
 
 
+def test_gopkg_v1_historical_pseudo_version_is_path_compatible():
+    pseudo = "v0.0.0-20161208181325-20d25e280405"
+    go = dependency(
+        registry="go", package_id="gopkg.in/check.v1",
+        declared_constraint=f"={pseudo}",
+        locked_version=pseudo, resolved_version=pseudo,
+        runtime_observed_version=pseudo,
+    )
+    go.validate()
+    assert go.demonstrated_version() == pseudo
+
+
+@pytest.mark.parametrize(
+    "package_id,version",
+    [
+        ("gopkg.in/check.v1", "v0.9.0"),
+        ("gopkg.in/check.v1", "v0.0.0-malformed"),
+        ("gopkg.in/check.v1", "v0.0.0-20261399129999-deadbeef"),
+        ("gopkg.in/check.v2", "v0.0.0-20161208181325-20d25e280405"),
+        ("github.com/acme/lib/v1", "v0.0.0-20161208181325-20d25e280405"),
+    ],
+)
+def test_go_pseudo_version_exception_is_narrow(package_id, version):
+    with pytest.raises(DocumentationError):
+        dependency(
+            registry="go", package_id=package_id,
+            declared_constraint=f"={version}",
+            locked_version=version, resolved_version=version,
+        ).validate()
+
+
 def test_non_go_registries_reject_v_prefix():
     with pytest.raises(DocumentationError):
         dependency(registry="npm", resolved_version="v1.10.0").validate()

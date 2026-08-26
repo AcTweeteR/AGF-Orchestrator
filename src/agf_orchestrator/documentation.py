@@ -240,6 +240,15 @@ def _validate_go_module_version(package_id: str, version: str, label: str) -> No
     if not isinstance(package_id, str) or not isinstance(version, str):
         raise DocumentationError(f"{label} is invalid")
     version_without_build, separator, build = version.partition("+")
+    gopkg_pseudo = re.fullmatch(
+        r"v0\.0\.0-(?P<timestamp>[0-9]{14})-(?P<revision>[0-9a-f]{12})",
+        version_without_build,
+    )
+    if gopkg_pseudo is not None:
+        try:
+            datetime.strptime(gopkg_pseudo.group("timestamp"), "%Y%m%d%H%M%S")
+        except ValueError as exc:
+            raise DocumentationError(f"{label} has an invalid Go pseudo-version") from exc
     try:
         major = int(version_without_build.removeprefix("v").split(".", 1)[0])
     except (TypeError, ValueError, IndexError) as exc:
@@ -248,7 +257,10 @@ def _validate_go_module_version(package_id: str, version: str, label: str) -> No
     normal_suffix = re.search(r"/v([0-9]+)$", package_id)
     gopkg_suffix = re.search(r"\.v([0-9]+)$", package_id)
     if package_id.startswith("gopkg.in/"):
-        if gopkg_suffix is None or int(gopkg_suffix.group(1)) != major:
+        if gopkg_suffix is None:
+            raise DocumentationError(f"{label} is incompatible with its Go module path")
+        path_major = int(gopkg_suffix.group(1))
+        if not (gopkg_pseudo is not None and path_major == 1) and path_major != major:
             raise DocumentationError(f"{label} is incompatible with its Go module path")
         if incompatible:
             raise DocumentationError(f"{label} has invalid +incompatible semantics")
