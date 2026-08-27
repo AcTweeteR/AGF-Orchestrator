@@ -217,7 +217,9 @@ def _version(label: str, value: Any) -> None:
 
 
 def _canonical_version(registry: str, label: str, value: Any) -> str:
-    if registry == "go" and isinstance(value, str) and value.startswith("v"):
+    if registry == "go":
+        if not isinstance(value, str) or not value.startswith("v"):
+            raise DocumentationError(f"{label} must use the canonical Go v prefix")
         value = value[1:]
     if registry == "pypi" and isinstance(value, str):
         try:
@@ -269,6 +271,8 @@ def _validate_go_module_version(package_id: str, version: str, label: str) -> No
     """
     if not isinstance(package_id, str) or not isinstance(version, str):
         raise DocumentationError(f"{label} is invalid")
+    if not version.startswith("v"):
+        raise DocumentationError(f"{label} must use the canonical Go v prefix")
     version_without_build, separator, build = version.partition("+")
     gopkg_pseudo = re.fullmatch(
         r"v0\.0\.0-(?P<timestamp>[0-9]{14})-(?P<revision>[0-9a-f]{12})",
@@ -511,8 +515,10 @@ def _constraint_allows(
     if registry in {"pypi", "maven"}:
         return _ecosystem_constraint_allows(normalized, canonical_version, registry)
     version_value = _version_key(canonical_version)
-    if registry == "go" and normalized.startswith("v"):
-        normalized = normalized[1:]
+    if registry == "go" and (
+        normalized.startswith("v") or _VERSION.fullmatch(normalized)
+    ):
+        normalized = _canonical_version(registry, "constraint version", normalized)
     if "-" in canonical_version.partition("+")[0]:
         if _version_key(canonical_version)[:4] not in _explicit_prerelease_cores(
             normalized, registry
@@ -531,6 +537,10 @@ def _constraint_allows(
         )
         return version_value >= lower and version_value < upper
     if _VERSION.fullmatch(normalized):
+        if registry == "go":
+            return _version_identity(canonical_version, registry) == _version_identity(
+                normalized, registry
+            )
         normalized = _canonical_range_operand(registry, "constraint version", normalized)
         return _version_identity(canonical_version, registry) == _version_identity(
             normalized, registry

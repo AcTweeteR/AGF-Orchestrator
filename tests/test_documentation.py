@@ -1321,7 +1321,13 @@ def test_repository_identity_and_binding_validation():
     ("maven", "org.slf4j:slf4j-api"),
 ])
 def test_registry_aware_package_identifiers(registry, package_id):
-    dependency(registry=registry, package_id=package_id).validate()
+    dependency(
+        registry=registry,
+        package_id=package_id,
+        declared_constraint="=v1.8.3" if registry == "go" else "==1.8.3",
+        locked_version="v1.8.3" if registry == "go" else "1.8.3",
+        resolved_version="v1.8.3" if registry == "go" else "1.8.3",
+    ).validate()
 
 
 @pytest.mark.parametrize(
@@ -1360,6 +1366,22 @@ def test_go_registry_accepts_v_prefixed_versions_without_global_normalization():
     )
     with pytest.raises(DocumentationError, match="noncanonical Go build metadata"):
         build.validate()
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "1.2.3",
+        "0.0.0-20161208181325-20d25e280405",
+    ],
+)
+def test_go_concrete_versions_require_v_prefix(version):
+    with pytest.raises(DocumentationError, match="canonical Go v prefix"):
+        dependency(
+            registry="go", package_id="github.com/acme/lib",
+            declared_constraint=f"={version}",
+            locked_version=version, resolved_version=version,
+        ).validate()
 
 
 @pytest.mark.parametrize(
