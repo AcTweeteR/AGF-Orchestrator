@@ -958,9 +958,19 @@ class ProviderBinding:
                 "privacy_eligible", "network_allowed",
             }:
                 raise DocumentationError("provider binding runtime constraints are invalid")
-            if any(not isinstance(name, str) or value not in {True, False, None}
+            if any(
+                not isinstance(name, str)
+                or (value is not True and value is not False and value is not None)
                    for name, value in runtime_items):
                 raise DocumentationError("provider binding runtime constraints are invalid")
+            for name, value in (
+                ("available", self.available), ("authenticated", self.authenticated),
+                ("policy_authorized", self.policy_authorized),
+                ("privacy_eligible", self.privacy_eligible),
+                ("network_allowed", self.network_allowed),
+            ):
+                if value is not None and type(value) is not bool:
+                    raise DocumentationError(f"provider binding {name} is invalid")
             try:
                 verify_envelope(self._attestation_subject(), self.issuance_attestation)
             except (OwnerAuthorityError, TypeError, ValueError) as exc:

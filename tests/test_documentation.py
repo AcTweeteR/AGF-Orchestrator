@@ -935,6 +935,29 @@ def test_versionless_n1_binding_missing_runtime_gate_is_malformed():
         old.validate(now=NOW, eligibility_authority=issued.authority)
 
 
+@pytest.mark.parametrize("invalid", [1, 0, 1.0, 0.0, "true", [], {}, ()])
+def test_binding_runtime_gate_types_are_strict(invalid):
+    issued = binding_for("knowledge-docs")
+    runtime = tuple(
+        (name, invalid if name == "available" else value)
+        for name, value in issued.runtime_constraints
+    )
+    malformed = replace(issued, runtime_constraints=runtime)
+    malformed = replace(
+        malformed,
+        issuance_attestation=sign_binding_subject_payload(malformed._attestation_subject()),
+    )
+    unsigned = {**malformed.to_dict(), "binding_sha256": ""}
+    malformed = replace(
+        malformed,
+        binding_sha256=hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    )
+    with pytest.raises(DocumentationError):
+        malformed.validate(now=NOW, eligibility_authority=issued.authority)
+
+
 def test_current_v3_issuance_has_explicit_representation_marker():
     issued = binding_for("knowledge-provider-issued")
     assert issued.attestation_version == "3.1"

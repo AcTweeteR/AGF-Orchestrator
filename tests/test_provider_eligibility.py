@@ -243,44 +243,44 @@ def test_decision_contains_explicit_snapshot_domain_and_candidate_identity(tmp_p
 
 def test_resolution_issues_fresh_decision_within_long_lived_state(tmp_path):
     state_value = state(
-        observed="2026-08-25T00:00:00Z",
-        expires="2026-08-27T00:00:00Z",
+        observed="2026-09-25T00:00:00Z",
+        expires="2026-09-27T00:00:00Z",
     )
     authority_value, _ = make_authority(tmp_path, state_value)
-    issued_now = "2026-08-25T10:00:00Z"
+    issued_now = "2026-09-25T10:00:00Z"
     decision = authority_value.resolve(
         project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
         capability_domain="documentation", now=issued_now, target_sha=TARGET,
         required_capabilities=("documentation",), decision_domain="documentation",
     )
-    assert decision.source_observed_at == "2026-08-25T00:00:00Z"
+    assert decision.source_observed_at == "2026-09-25T00:00:00Z"
     assert decision.decision_at == issued_now
-    assert decision.expires_at == "2026-08-25T11:00:00Z"
+    assert decision.expires_at == "2026-09-25T11:00:00Z"
     renewed = authority_value.resolve(
         project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
-        capability_domain="documentation", now="2026-08-26T23:30:00Z",
+        capability_domain="documentation", now="2026-09-26T23:30:00Z",
         target_sha=TARGET, required_capabilities=("documentation",),
         decision_domain="documentation",
     )
-    assert renewed.decision_at == "2026-08-26T23:30:00Z"
-    assert renewed.expires_at == "2026-08-27T00:00:00Z"
+    assert renewed.decision_at == "2026-09-26T23:30:00Z"
+    assert renewed.expires_at == "2026-09-27T00:00:00Z"
 
 
 def test_verify_does_not_rejuvenate_expired_decision(tmp_path):
     state_value = state(
-        observed="2026-08-25T00:00:00Z",
-        expires="2026-08-27T00:00:00Z",
+        observed="2026-09-25T00:00:00Z",
+        expires="2026-09-27T00:00:00Z",
     )
     authority_value, _ = make_authority(tmp_path, state_value)
     decision = authority_value.resolve(
         project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
-        capability_domain="documentation", now="2026-08-26T10:00:00Z",
+        capability_domain="documentation", now="2026-09-26T10:00:00Z",
         target_sha=TARGET, required_capabilities=("documentation",),
         decision_domain="documentation",
     )
     with pytest.raises(ProviderEligibilityError, match="stale"):
         canonical_test_authority(ProviderIntelligenceStore(tmp_path)).verify(
-            decision, now="2026-08-26T11:01:00Z", target_sha=TARGET,
+            decision, now="2026-09-26T11:01:00Z", target_sha=TARGET,
             required_capabilities=("documentation",),
         )
 
@@ -445,6 +445,18 @@ def test_explicit_optional_owner_denials_never_become_eligible(tmp_path, field):
     denied = replace(decision, **{field: False})
     with pytest.raises(ProviderEligibilityError):
         _require_owner_eligible(denied)
+
+
+@pytest.mark.parametrize("invalid", [1, 1.0, "true", [], {}])
+def test_provider_decision_gate_types_are_strict(tmp_path, invalid):
+    authority_value, _ = make_authority(tmp_path)
+    decision = authority_value.resolve(
+        project_id=PROJECT, provider_id="knowledge-docs", provider_kind="knowledge",
+        capability_domain="documentation", now=NOW, target_sha=TARGET,
+        required_capabilities=("documentation",), decision_domain="documentation",
+    )
+    with pytest.raises(ProviderEligibilityError):
+        replace(decision, network_eligible=invalid).validate(now=NOW)
 
 
 def test_knowledge_profile_requires_owner_network_and_authentication(tmp_path):

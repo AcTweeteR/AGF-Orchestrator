@@ -24,6 +24,17 @@ class SelectionGates:
     empirical_evidence_eligible: bool | None = None
     allow_fallback: bool = True
 
+    def validate(self) -> None:
+        for name in (
+            "policy_eligible", "privacy_eligible", "independence_eligible",
+            "budget_eligible", "health_eligible", "empirical_evidence_eligible",
+        ):
+            value = getattr(self, name)
+            if value is not None and type(value) is not bool:
+                raise CapabilitySelectionError(f"{name} gate is invalid")
+        if type(self.allow_fallback) is not bool:
+            raise CapabilitySelectionError("fallback gate is invalid")
+
     def failed(self) -> tuple[str, ...]:
         return tuple(
             name if passed is False else f"missing:{name}"
@@ -88,6 +99,7 @@ class CapabilitySelector:
         precomputed_rejections: dict[str, str] | None = None,
     ) -> SelectionResult:
         active_gates = gates or SelectionGates()
+        active_gates.validate()
         required = tuple(sorted(set(required_capabilities)))
         if not required:
             raise CapabilitySelectionError("required_capabilities must not be empty")

@@ -251,12 +251,13 @@ class ProviderEligibilityDecision:
             ("independence", self.independence_eligible),
             ("fallback", self.fallback_eligible),
         ):
-            if not isinstance(value, bool):
+            if type(value) is not bool:
                 raise ProviderEligibilityError(f"{label} eligibility is invalid")
-        if self.network_eligible is not None and not isinstance(self.network_eligible, bool):
+        if self.network_eligible is not None and type(self.network_eligible) is not bool:
             raise ProviderEligibilityError("network eligibility is invalid")
-        if self.authentication_eligible is not None and not isinstance(
-            self.authentication_eligible, bool
+        if (
+            self.authentication_eligible is not None
+            and type(self.authentication_eligible) is not bool
         ):
             raise ProviderEligibilityError("authentication eligibility is invalid")
         expires_at = _instant("provider decision expiry", self.expires_at)
