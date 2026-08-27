@@ -141,6 +141,16 @@ def test_missing_empirical_evidence_fails_closed():
         )
 
 
+@pytest.mark.parametrize("invalid", [1, 1.0, "true", [], {}])
+def test_selection_gate_types_are_strict(invalid):
+    with pytest.raises(CapabilitySelectionError, match="gate is invalid"):
+        CapabilitySelector().select(
+            [candidate("provider-a")], project_id=PROJECT,
+            required_capabilities=["tool-calling"], now="2026-08-09T12:00:00Z",
+            gates=SelectionGates(invalid, True, True, True, True, True),
+        )
+
+
 def test_qwen_is_diagnostic_only_even_if_caller_lies():
     with pytest.raises(CapabilitySelectionError, match="diagnostic-only"):
         CapabilitySelector().select(

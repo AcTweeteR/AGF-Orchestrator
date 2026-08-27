@@ -230,7 +230,34 @@ Acceptance:
 - failed/partial workflows produce failure/UNKNOWN, never inferred success;
 - evidence is replayable enough to identify URL/step/assertion/revision without storing secrets.
 
-### E12-T14 — Context7 current-documentation provider — PLANNED
+### E12-T14-PRE — Canonical provider-eligibility authority boundary — Done
+
+Objective: provide one provider-neutral, owner-governed eligibility decision
+boundary reusable by capabilities, code intelligence and knowledge providers.
+
+Current implementation: `ProviderEligibilityAuthority` is a verified
+projection of the existing owner-authenticated `provider_intelligence`
+component. It reloads and verifies the source state on every resolve/verify,
+binds project/provider/domain/requirements and applies a bounded decision TTL.
+It does not add a store, key, policy engine or independent authority source.
+
+Acceptance:
+- caller profiles, booleans and self-hashes cannot authorize a provider;
+- project/provider/domain, policy/privacy/health/budget/empirical and optional
+  network/authentication gates are bound to owner-verified state;
+- persisted decisions survive restart only through re-verification of the
+  owner-controlled source state;
+- Architect/T11 remains compatible while `CapabilitySelector` stays
+  deterministic selection logic rather than an authority source;
+- knowledge-provider profiles can consume the same boundary without an
+  Architect-specific runtime dependency.
+
+Closure evidence: the complete PR #173 review inventory was reconciled against
+the final implementation and regression canaries. No justified review thread
+remains open; authenticated v3 N-1 representations remain bounded and
+fail-closed without upgrading legacy unsigned artifacts.
+
+### E12-T14 — Context7 current-documentation provider — Executing
 
 Source: `upstash/context7`.
 
@@ -249,6 +276,15 @@ Acceptance:
 - unavailable or ambiguous docs degrade to UNKNOWN/fallback rather than fabricated API knowledge;
 - technical claims used for implementation/review remain attributable to retrieved documentation;
 - Context7 has no authority over dependency upgrades or code changes.
+
+Current implementation evidence:
+- provider-neutral `DocumentationProvider` evidence binds registry/package identity, declared/locked/resolved/runtime dependency sources, requested/returned topic, documentation version, normalized claims, source, citations, project/repository/revision and hash;
+- version compatibility is assessed separately from freshness, with latest-versus-project-version mismatch failing closed;
+- bounded citations, excerpt secret-safety, deterministic hashes, persistence, tamper/replay checks and claim-level contradictory-source reconciliation are covered by deterministic fixtures;
+- future-dated observations, stale dependency evidence, prerelease ordering, caret ranges below 1.0 and build-identity mismatches fail closed;
+- retrieval reconciliation requires request/time-bound assessment, repository/revision binding and order-independent normalized claims;
+- unsupported constraint shapes and terminal provider statuses fail closed without being relabeled as version ambiguity;
+- existing `KnowledgeProviderProfile`, network/privacy classification and knowledge-provider eligibility are reused; no Context7 runtime dependency is introduced.
 
 ### E12-T15 — Superpowers workflow-pattern review and procedure extraction — PLANNED
 

@@ -2,6 +2,8 @@ import json
 from dataclasses import replace
 
 import pytest
+from provider_test_support import canonical_test_authority
+from provider_test_support import sign_state as sign_owner_state
 
 from agf_orchestrator.capability_profiles import (
     CapabilityObservation,
@@ -22,16 +24,25 @@ from agf_orchestrator.code_intelligence import (
     evidence_from_dict,
     load_evidence,
     persist_evidence,
-    resolve_provider,
     seal,
+)
+from agf_orchestrator.code_intelligence import resolve_provider as _resolve_provider
+from agf_orchestrator.provider_intelligence import (
+    ProviderIntelligenceStore,
+    build_state,
 )
 from agf_orchestrator.session_store import SessionStore
 
-PROJECT = "project-demo"
+PROJECT = "project-efc8e8ef7be7050b"
 REPOSITORY = "github.com/example/repository"
 REVISION = "a" * 40
 OTHER_REVISION = "b" * 40
 NOW = "2026-08-24T12:00:00Z"
+
+
+def resolve_provider(candidates, **kwargs):
+    kwargs.setdefault("target_sha", REVISION)
+    return _resolve_provider(candidates, **kwargs)
 
 
 def request(**changes):
@@ -145,7 +156,7 @@ def provider_candidate(
     source = "fixture provider profile"
     profile = CapabilityProfile(
         "1.0", "profile-code-intelligence", project_id, provider_id, 1,
-        source, sha256_text(source), NOW, "2026-08-25T12:00:00Z",
+        source, sha256_text(source), NOW, "2030-08-25T12:00:00Z",
         (CapabilityObservation("code-intelligence", capability_status, "1"),), "",
     )
     return CapabilityCandidate(
@@ -153,40 +164,223 @@ def provider_candidate(
     )
 
 
-def test_optional_and_required_provider_unavailability_fail_closed():
+def eligibility_authority(tmp_path, candidates):
+    gate_evidence = (
+        ("policy_eligible", "active-policy:merge-policy-adr-0003:" + "a" * 64),
+        ("privacy_eligible", "codex-safe-environment-v1;read-only-canary;True"),
+        ("independence_eligible", "architect-advisory;reviewer-separate-stage;True"),
+        ("budget_eligible", "bounded-timeout-seconds:90;True"),
+        ("health_eligible", "invocation-verified:True"),
+        ("empirical_evidence_eligible", "deterministic-canary-sha256:" + "b" * 64),
+    )
+    value = build_state(
+        project_id=PROJECT, target_sha=REVISION,
+        constitution_id="constitution-agf-v1", constitution_record_hash="c" * 64,
+        observed_at=NOW, expires_at="2030-08-25T12:00:00Z",
+        candidates=tuple(candidates),
+        provider_interfaces=tuple((item.profile.provider_id, "code") for item in candidates),
+        gates=SelectionGates(True, True, True, True, True, True),
+        gate_evidence=gate_evidence, policy_generation=2,
+        signing_key_id="test-owner-ed25519",
+        requirements=("code-intelligence",), decision_domain="code-intelligence",
+        provider_gate_evidence_by_candidate=tuple(
+            (
+                item.profile.provider_id,
+                item.profile.profile_sha256,
+                (
+                    ("policy_eligible", True),
+                    ("privacy_eligible", True),
+                    ("health_eligible", True),
+                    ("budget_eligible", True),
+                    ("empirical_evidence_eligible", True),
+                    ("independence_eligible", True),
+                ),
+            )
+            for item in candidates
+        ),
+    )
+    store = ProviderIntelligenceStore(tmp_path)
+    project_store = store.for_project(PROJECT, decision_domain="code-intelligence")
+    project_store.save(sign_owner_state(value))
+    return canonical_test_authority(store)
+
+
+def test_optional_and_required_provider_unavailability_fail_closed(tmp_path):
     gates = SelectionGates(True, True, True, True, True, True)
-    optional = resolve_provider((), project_id=PROJECT, required=False, now=NOW, gates=gates)
-    required = resolve_provider((), project_id=PROJECT, required=True, now=NOW, gates=gates)
+    authority = eligibility_authority(tmp_path, ())
+    optional = resolve_provider((), project_id=PROJECT, required=False, now=NOW, gates=gates,
+                               eligibility_authority=authority)
+    required = resolve_provider((), project_id=PROJECT, required=True, now=NOW, gates=gates,
+                                eligibility_authority=authority)
     assert optional.status is IntelligenceStatus.UNAVAILABLE
     assert required.status is IntelligenceStatus.UNAVAILABLE
+    selected_candidate = provider_candidate()
     selected = resolve_provider(
-        (provider_candidate(),), project_id=PROJECT, required=True, now=NOW, gates=gates
+        (selected_candidate,), project_id=PROJECT, required=True, now=NOW, gates=gates,
+        eligibility_authority=eligibility_authority(tmp_path / "selected", (selected_candidate,)),
     )
     assert selected.status is IntelligenceStatus.VALID
     wrong_project = resolve_provider(
         (provider_candidate("project-other"),), project_id=PROJECT,
-        required=True, now=NOW, gates=gates,
+        required=True, now=NOW, gates=gates, eligibility_authority=authority,
     )
     assert wrong_project.status is IntelligenceStatus.UNAVAILABLE
+    unsupported_candidate = provider_candidate(capability_status=CapabilityStatus.UNSUPPORTED)
     unsupported = resolve_provider(
-        (provider_candidate(capability_status=CapabilityStatus.UNSUPPORTED),),
+        (unsupported_candidate,),
         project_id=PROJECT, required=True, now=NOW,
-        gates=gates,
+        gates=gates, eligibility_authority=eligibility_authority(
+            tmp_path / "unsupported", (unsupported_candidate,)
+        ),
     )
     assert unsupported.status is IntelligenceStatus.UNSUPPORTED_CAPABILITY
+    supported = provider_candidate(provider_id="provider-code-supported", priority=1)
+    mixed = resolve_provider(
+        (unsupported_candidate, supported),
+        project_id=PROJECT,
+        required=True,
+        now=NOW,
+        gates=gates,
+        eligibility_authority=eligibility_authority(
+            tmp_path / "mixed", (unsupported_candidate, supported)
+        ),
+    )
+    assert mixed.status is IntelligenceStatus.VALID
+    assert mixed.selection is not None
+    assert mixed.selection.provider_id == "provider-code-supported"
 
 
-def test_fallback_is_existing_selector_policy_and_never_changes_scope():
+def test_caller_gates_cannot_authorize_without_canonical_authority():
+    result = resolve_provider(
+        (provider_candidate(),), project_id=PROJECT, required=True, now=NOW,
+        gates=SelectionGates(True, True, True, True, True, True),
+    )
+    assert result.status is IntelligenceStatus.UNAVAILABLE
+    assert "canonical provider eligibility" in result.reason
+
+
+def test_code_intelligence_rejects_duck_typed_authority():
+    class ForgedAuthority:
+        def select(self, *_args, **_kwargs):
+            raise AssertionError("forged authority was invoked")
+
+    result = resolve_provider(
+        (provider_candidate(),), project_id=PROJECT, required=True, now=NOW,
+        gates=SelectionGates(True, True, True, True, True, True),
+        eligibility_authority=ForgedAuthority(),
+    )
+    assert result.status is IntelligenceStatus.UNAVAILABLE
+    assert "canonical provider eligibility" in result.reason
+
+
+def test_runtime_gate_denials_only_restrict_canonical_selection(tmp_path):
+    candidate = provider_candidate()
+    authority = eligibility_authority(tmp_path, (candidate,))
+    allowed = resolve_provider(
+        (candidate,), project_id=PROJECT, required=True, now=NOW,
+        gates=SelectionGates(True, True, True, True, True, True),
+        eligibility_authority=authority,
+    )
+    assert allowed.status is IntelligenceStatus.VALID
+    denied = resolve_provider(
+        (candidate,), project_id=PROJECT, required=True, now=NOW,
+        gates=SelectionGates(False, True, True, True, True, True),
+        eligibility_authority=authority,
+    )
+    assert denied.status is IntelligenceStatus.UNAVAILABLE
+    # A true runtime gate remains non-authoritative; owner state is still
+    # required, as demonstrated by the canonical authority path above.
+
+
+@pytest.mark.parametrize("invalid", [1, 0, 1.0, "yes", [], {}])
+def test_code_intelligence_rejects_non_boolean_runtime_gates(tmp_path, invalid):
+    candidate = provider_candidate()
+    authority = eligibility_authority(tmp_path, (candidate,))
+    result = resolve_provider(
+        (candidate,), project_id=PROJECT, required=True, now=NOW,
+        gates=SelectionGates(invalid, True, True, True, True, True),
+        eligibility_authority=authority,
+    )
+    assert result.status is IntelligenceStatus.UNAVAILABLE
+    assert "gate is invalid" in result.reason
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "policy_eligible", "privacy_eligible", "health_eligible",
+        "budget_eligible", "empirical_evidence_eligible", "independence_eligible",
+    ],
+)
+def test_missing_runtime_gate_is_not_an_allow(tmp_path, field):
+    candidate = provider_candidate()
+    authority = eligibility_authority(tmp_path, (candidate,))
+    gates = SelectionGates(True, True, True, True, True, True)
+    result = resolve_provider(
+        (candidate,), project_id=PROJECT, required=True, now=NOW,
+        gates=replace(gates, **{field: None}), eligibility_authority=authority,
+    )
+    assert result.status is IntelligenceStatus.UNAVAILABLE
+
+
+def test_fallback_is_existing_selector_policy_and_never_changes_scope(tmp_path):
     gates = SelectionGates(True, True, True, True, True, True, allow_fallback=True)
+    first = provider_candidate("project-other", "provider-first", 0)
+    second = provider_candidate(priority=1)
     fallback = resolve_provider(
-        (provider_candidate("project-other", "provider-first", 0), provider_candidate(priority=1)),
+        (first, second),
         project_id=PROJECT, required=True, now=NOW, gates=gates,
+        eligibility_authority=eligibility_authority(tmp_path, (second,)),
     )
     assert fallback.status is IntelligenceStatus.VALID
-    assert fallback.selection is not None and fallback.selection.fallback_used is True
+    # A caller cannot omit the owner candidate and turn it into a fallback;
+    # the owner state contains only ``second``, so it is the primary.
+    assert fallback.selection is not None and fallback.selection.fallback_used is False
     forbidden = resolve_provider(
-        (provider_candidate("project-other", "provider-first", 0), provider_candidate(priority=1)),
+        (first, second),
         project_id=PROJECT, required=True, now=NOW,
         gates=replace(gates, allow_fallback=False),
+        eligibility_authority=eligibility_authority(tmp_path / "forbidden", (second,)),
     )
-    assert forbidden.status is IntelligenceStatus.UNAVAILABLE
+    # Caller-supplied fallback flags are observations only; the owner state
+    # remains authoritative and permits the configured fallback.
+    assert forbidden.status is IntelligenceStatus.VALID
+
+
+def test_fallback_uses_selector_priority_order_not_input_order(tmp_path):
+    low_priority = provider_candidate(provider_id="provider-low", priority=0)
+    high_priority = provider_candidate(provider_id="provider-high", priority=1)
+    authority = eligibility_authority(tmp_path, (low_priority, high_priority))
+    result = resolve_provider(
+        (high_priority, low_priority), project_id=PROJECT, required=True, now=NOW,
+        gates=SelectionGates(True, True, True, True, True, True, allow_fallback=False),
+        eligibility_authority=authority,
+    )
+    assert result.status is IntelligenceStatus.VALID
+    assert result.selection is not None
+    assert result.selection.provider_id == "provider-low"
+    assert result.selection.fallback_used is False
+
+
+def test_caller_cannot_add_or_omit_owner_candidates_or_change_priority(tmp_path):
+    owner_low = provider_candidate(provider_id="provider-low", priority=0)
+    owner_high = provider_candidate(provider_id="provider-high", priority=1)
+    authority = eligibility_authority(tmp_path, (owner_low, owner_high))
+
+    # The caller omits the owner primary, supplies a fabricated candidate,
+    # and changes the apparent priority. Selection must still use the
+    # owner-authenticated candidate set and its priority/order.
+    fabricated = provider_candidate(provider_id="provider-fabricated", priority=-100)
+    result = resolve_provider(
+        (replace(owner_high, priority=-100), fabricated),
+        project_id=PROJECT,
+        required=True,
+        now=NOW,
+        gates=SelectionGates(True, True, True, True, True, True),
+        eligibility_authority=authority,
+    )
+    assert result.status is IntelligenceStatus.VALID
+    assert result.selection is not None
+    assert result.selection.provider_id == "provider-low"
+    assert result.selection.profile_id == owner_low.profile.profile_id
+    assert result.selection.fallback_used is False
