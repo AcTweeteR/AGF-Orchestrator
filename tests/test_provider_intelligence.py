@@ -171,6 +171,27 @@ def test_unknown_required_capability_remains_ineligible():
     )
 
 
+@pytest.mark.parametrize("value", [True, False, None])
+def test_nullable_selection_gates_are_structurally_preserved(value):
+    gates = SelectionGates(value, True, True, True, True, True)
+    value_state = state(
+        decision_domain="documentation", requirements=("documentation",),
+        gates=gates, gate_evidence=GATE_EVIDENCE,
+    )
+    value_state.validate(now=NOW, target_sha=TARGET)
+
+
+@pytest.mark.parametrize("value", [1, 0, 1.0, 0.0, "true", [], {}, ()])
+def test_non_boolean_selection_gates_are_rejected_at_state_boundary(value):
+    gates = SelectionGates(value, True, True, True, True, True)
+    value_state = state(
+        decision_domain="documentation", requirements=("documentation",),
+        gates=gates, gate_evidence=GATE_EVIDENCE,
+    )
+    with pytest.raises(ProviderIntelligenceError, match="selection gate types"):
+        value_state.validate(now=NOW, target_sha=TARGET)
+
+
 def test_target_binding_and_stale_state_are_rejected():
     value = state()
     with pytest.raises(ProviderIntelligenceError, match="target SHA"):

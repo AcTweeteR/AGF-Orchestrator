@@ -352,10 +352,12 @@ class ProviderIntelligenceState:
         for name in (
             "policy_eligible", "privacy_eligible", "independence_eligible",
             "budget_eligible", "health_eligible", "empirical_evidence_eligible",
-            "allow_fallback",
         ):
-            if type(getattr(self.gates, name)) is not bool:
+            value = getattr(self.gates, name)
+            if value is not None and type(value) is not bool:
                 raise ProviderIntelligenceError("selection gate types are invalid")
+        if type(self.gates.allow_fallback) is not bool:
+            raise ProviderIntelligenceError("selection gate types are invalid")
         candidate_keys = {
             (candidate.profile.provider_id, candidate.profile.profile_sha256)
             for candidate in self.candidates
