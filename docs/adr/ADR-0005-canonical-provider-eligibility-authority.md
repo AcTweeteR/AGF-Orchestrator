@@ -36,6 +36,14 @@ owner-authenticated `ProviderIntelligenceState` for provider eligibility. It:
 The authority is a projection and verification boundary, not a second policy
 engine, provider registry, scheduler, credential store or signing hierarchy.
 
+Python encapsulation is not an authorization boundary against hostile
+in-process caller-controlled code. Provider-binding issuance therefore crosses
+an owner-controlled local process boundary. The issuance process owns the
+single-use authorization state and signing capability; the orchestrator can
+submit only the exact governed subject over restricted local IPC. The process
+does not replace `ProviderEligibilityAuthority` or introduce a second policy
+engine, and its unavailability fails closed.
+
 ## Owner authority and runtime authorization
 
 Owner authority determines whether a provider may be eligible according to

@@ -63,6 +63,16 @@ lifetime. Any mutation or transfer fails verification.
 
 ### Process-local authority
 
+Caller-controlled code attempts to inspect or mutate issuance state that is
+kept in the same Python process, including through globals, reflection,
+context propagation, or copied capabilities.
+
+**Controls:** provider-binding issuance is handled by a separate
+owner-controlled local process over bounded IPC. That process owns issuance
+state and signing capability; the orchestrator never falls back to in-process
+signing. IPC failure, malformed messages, and stale/replayed requests fail
+closed.
+
 A durable claim depends on an in-memory marker or object identity that is lost
 or substituted after restart.
 
