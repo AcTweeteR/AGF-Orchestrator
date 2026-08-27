@@ -1131,27 +1131,45 @@ class _BoundProviderIssuance:
     memory isolation.
     """
 
-    __slots__ = ("__subject", "__active", "__used")
-
-    def __init__(self, subject: dict[str, Any]) -> None:
-        self.__subject = json.loads(json.dumps(subject))
-        self.__active = True
-        self.__used = False
+    __slots__ = ()
 
     @property
     def subject(self) -> dict[str, Any]:
         """Return a detached observation, never the signed subject object."""
-        return json.loads(json.dumps(self.__subject))
+        return _issuance_subject(self)
 
     def consume(self) -> dict[str, Any]:
         """Consume the one exact subject during the synchronous callback."""
-        if not self.__active or self.__used:
-            raise DocumentationError("provider issuance operation is unavailable")
-        self.__used = True
-        return self.subject
+        return _consume_issuance(self)
 
     def revoke(self) -> None:
-        self.__active = False
+        _revoke_issuance(self)
+
+
+# This is ephemeral control state, not an authority store: it exists only for
+# the synchronous issuance callback and is removed before the resolver returns.
+# Keeping it outside the exposed operation prevents caller-side attribute
+# mutation from changing consumption or revocation semantics.
+_ISSUANCE_STATES: dict[_BoundProviderIssuance, dict[str, Any]] = {}
+
+
+def _issuance_subject(operation: _BoundProviderIssuance) -> dict[str, Any]:
+    state = _ISSUANCE_STATES.get(operation)
+    if state is None or state["used"] is True or state["active"] is not True:
+        raise DocumentationError("provider issuance operation is unavailable")
+    return json.loads(json.dumps(state["subject"]))
+
+
+def _consume_issuance(operation: _BoundProviderIssuance) -> dict[str, Any]:
+    state = _ISSUANCE_STATES.get(operation)
+    if state is None or state["used"] is True or state["active"] is not True:
+        raise DocumentationError("provider issuance operation is unavailable")
+    state["used"] = True
+    return json.loads(json.dumps(state["subject"]))
+
+
+def _revoke_issuance(operation: _BoundProviderIssuance) -> None:
+    _ISSUANCE_STATES.pop(operation, None)
 
 
 def _seal_provider_binding(
@@ -1233,7 +1251,12 @@ def _seal_provider_binding(
         json.dumps(subject, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     expected_subject = json.loads(json.dumps(subject))
-    operation = _BoundProviderIssuance(subject)
+    operation = _BoundProviderIssuance()
+    _ISSUANCE_STATES[operation] = {
+        "subject": json.loads(json.dumps(subject)),
+        "active": True,
+        "used": False,
+    }
     try:
         try:
             issuance_attestation = issuance_attestor(operation)

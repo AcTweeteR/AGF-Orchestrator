@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import copy
 import hashlib
 import json
 import os
@@ -773,6 +774,27 @@ def test_issuance_operation_cannot_propagate_to_an_async_task():
             await captured["task"]
 
     asyncio.run(scenario())
+
+
+def test_issuance_state_is_not_mutable_through_the_capability():
+    def tampers(operation):
+        assert not hasattr(operation, "__dict__")
+        with pytest.raises(AttributeError):
+            setattr(operation, "__used", False)
+        with pytest.raises(AttributeError):
+            setattr(operation, "active", True)
+        clone = copy.copy(operation)
+        with pytest.raises(DocumentationError, match="unavailable"):
+            sign_binding_subject(clone)
+        return sign_binding_subject(operation)
+
+    result = resolve_provider(
+        profile(provider_id="knowledge-provider-issued"), project_id=PROJECT, now=NOW,
+        available=True, authenticated=True, policy_authorized=True,
+        privacy_eligible=True, network_allowed=True, required=True,
+        issuance_attestor=tampers,
+    )
+    assert result.status is DocumentationStatus.VALID
 
 
 def test_public_binding_data_cannot_forge_authenticated_issuance():
