@@ -1216,6 +1216,7 @@ def _seal_provider_binding(
     subject["binding_subject_sha256"] = hashlib.sha256(
         json.dumps(subject, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+    expected_subject = json.loads(json.dumps(subject))
     try:
         issuance_context = _ISSUANCE_CONTEXT.set(object())
         try:
@@ -1225,8 +1226,19 @@ def _seal_provider_binding(
             _ISSUANCE_CONTEXT.reset(issuance_context)
         if not isinstance(issuance_attestation, dict):
             raise TypeError
+        expected_subject_hash = hashlib.sha256(
+            json.dumps(expected_subject, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if issuance_attestation.get("payload_hash") != expected_subject_hash:
+            raise DocumentationError("owner issuance attestation subject differs")
+        try:
+            verify_envelope(expected_subject, issuance_attestation)
+        except (OwnerAuthorityError, TypeError, ValueError) as exc:
+            raise DocumentationError("owner issuance attestation is invalid") from exc
     except (TimeoutError, ConnectionError, OSError) as exc:
         raise DocumentationError("owner issuance attestor is unavailable") from exc
+    except DocumentationError:
+        raise
     except (TypeError, ValueError, OwnerAuthorityError) as exc:
         raise DocumentationError("owner issuance attestation is invalid") from exc
     unsigned["issuance_attestation"] = issuance_attestation
