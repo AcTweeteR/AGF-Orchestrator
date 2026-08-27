@@ -6,7 +6,6 @@ import hashlib
 import html
 import json
 import re
-from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -1112,30 +1111,37 @@ class ProviderBinding:
             raise DocumentationError("provider binding hash does not match content")
 
 
-_ISSUANCE_CONTEXT: ContextVar[object | None] = ContextVar(
-    "agf_provider_issuance_context", default=None
-)
+class _BoundProviderIssuance:
+    """One-shot attestation operation bound to one immutable subject.
 
-
-class _ProviderIssuanceRequest:
-    """Ephemeral capability passed to the owner-controlled attestor.
-
-    The attestor is intentionally not a generic ``sign(dict)`` hook.  Only the
-    governed resolver can construct this request; durable verification uses
-    the resulting owner envelope and never relies on this process-local
-    object.  This is API confinement, not a claim of Python memory isolation.
+    The injected owner-controller hook receives this operation, never a
+    caller-selected subject or ambient signing context.  It can request the
+    one expected attestation synchronously; the operation is revoked as soon
+    as the callback returns.  This is API confinement, not a claim of Python
+    memory isolation.
     """
 
-    __slots__ = ("subject", "__token")
+    __slots__ = ("__subject", "__active", "__used")
 
-    def __init__(self, subject: dict[str, Any], token: object) -> None:
-        if token is not _ISSUANCE_CONTEXT.get():
-            raise DocumentationError("provider issuance request is not governed")
-        self.subject = subject
-        self.__token = token
+    def __init__(self, subject: dict[str, Any]) -> None:
+        self.__subject = json.loads(json.dumps(subject))
+        self.__active = True
+        self.__used = False
 
-    def is_currently_governed(self) -> bool:
-        return self.__token is _ISSUANCE_CONTEXT.get()
+    @property
+    def subject(self) -> dict[str, Any]:
+        """Return a detached observation, never the signed subject object."""
+        return json.loads(json.dumps(self.__subject))
+
+    def consume(self) -> dict[str, Any]:
+        """Consume the one exact subject during the synchronous callback."""
+        if not self.__active or self.__used:
+            raise DocumentationError("provider issuance operation is unavailable")
+        self.__used = True
+        return self.subject
+
+    def revoke(self) -> None:
+        self.__active = False
 
 
 def _seal_provider_binding(
@@ -1217,13 +1223,12 @@ def _seal_provider_binding(
         json.dumps(subject, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     expected_subject = json.loads(json.dumps(subject))
+    operation = _BoundProviderIssuance(subject)
     try:
-        issuance_context = _ISSUANCE_CONTEXT.set(object())
         try:
-            request = _ProviderIssuanceRequest(subject, _ISSUANCE_CONTEXT.get())
-            issuance_attestation = issuance_attestor(request)
+            issuance_attestation = issuance_attestor(operation)
         finally:
-            _ISSUANCE_CONTEXT.reset(issuance_context)
+            operation.revoke()
         if not isinstance(issuance_attestation, dict):
             raise TypeError
         expected_subject_hash = hashlib.sha256(

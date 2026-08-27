@@ -61,12 +61,12 @@ def verify_envelope(payload: object, envelope: dict[str, object]) -> None:
 
 def sign_binding_subject(request) -> dict[str, str]:
     """Fixture-only owner controller for authenticated binding issuance."""
-    if (
-        type(request).__name__ != "_ProviderIssuanceRequest"
-        or not request.is_currently_governed()
-    ):
+    if type(request).__name__ != "_BoundProviderIssuance":
         raise TypeError("owner attestor requires a governed issuance request")
-    subject = request.subject
+    return _sign_binding_subject_payload(request.consume())
+
+
+def _sign_binding_subject_payload(subject: dict[str, object]) -> dict[str, str]:
     payload_bytes = canonical_bytes(subject)
     return {
         "signature_scheme": "Ed25519",
@@ -80,15 +80,7 @@ def sign_binding_subject(request) -> dict[str, str]:
 
 def sign_binding_subject_payload(subject: dict[str, object]) -> dict[str, str]:
     """Fixture-only helper for constructing historical signed test artifacts."""
-    payload_bytes = canonical_bytes(subject)
-    return {
-        "signature_scheme": "Ed25519",
-        "signature_version": "1",
-        "key_id": _KEY_ID,
-        "public_key_fingerprint": _FINGERPRINT,
-        "payload_hash": hashlib.sha256(payload_bytes).hexdigest(),
-        "signature": base64.b64encode(_PRIVATE_KEY.sign(payload_bytes)).decode("ascii"),
-    }
+    return _sign_binding_subject_payload(subject)
 
 
 def canonical_test_authority(store):

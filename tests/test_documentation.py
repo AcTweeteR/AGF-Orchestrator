@@ -1,3 +1,5 @@
+import asyncio
+import contextvars
 import hashlib
 import json
 import os
@@ -709,19 +711,68 @@ def test_attestor_rejects_unbound_caller_subjects():
         sign_binding_subject({"available": True})
 
 
-def test_attestor_must_sign_the_exact_governed_subject():
-    def substitutes_subject(request):
-        request.subject["available"] = False
-        return sign_binding_subject(request)
+def test_issuance_operation_cannot_be_copied_or_reused_after_callback():
+    captured = {}
+
+    def captures_operation(operation):
+        captured["operation"] = operation
+        copied_context = contextvars.copy_context()
+        captured["later"] = lambda: copied_context.run(operation.consume)
+        return sign_binding_subject(operation)
 
     result = resolve_provider(
         profile(provider_id="knowledge-provider-issued"), project_id=PROJECT, now=NOW,
         available=True, authenticated=True, policy_authorized=True,
         privacy_eligible=True, network_allowed=True, required=True,
-        issuance_attestor=substitutes_subject,
+        issuance_attestor=captures_operation,
     )
-    assert result.status is DocumentationStatus.PROVIDER_INELIGIBLE
-    assert "subject differs" in result.reason
+    assert result.status is DocumentationStatus.VALID
+    with pytest.raises(DocumentationError, match="unavailable"):
+        captured["operation"].consume()
+    with pytest.raises(DocumentationError, match="unavailable"):
+        captured["later"]()
+
+
+def test_issuance_operation_is_exact_and_non_reentrant():
+    def reentrant(operation):
+        envelope = sign_binding_subject(operation)
+        with pytest.raises(DocumentationError, match="unavailable"):
+            sign_binding_subject(operation)
+        return envelope
+
+    result = resolve_provider(
+        profile(provider_id="knowledge-provider-issued"), project_id=PROJECT, now=NOW,
+        available=True, authenticated=True, policy_authorized=True,
+        privacy_eligible=True, network_allowed=True, required=True,
+        issuance_attestor=reentrant,
+    )
+    assert result.status is DocumentationStatus.VALID
+
+
+def test_issuance_operation_cannot_propagate_to_an_async_task():
+    async def scenario():
+        captured = {}
+
+        def callback(operation):
+            envelope = sign_binding_subject(operation)
+            async def delayed_reuse():
+                await asyncio.sleep(0)
+                return operation.consume()
+
+            captured["task"] = asyncio.create_task(delayed_reuse())
+            return envelope
+
+        result = resolve_provider(
+            profile(provider_id="knowledge-provider-issued"), project_id=PROJECT, now=NOW,
+            available=True, authenticated=True, policy_authorized=True,
+            privacy_eligible=True, network_allowed=True, required=True,
+            issuance_attestor=callback,
+        )
+        assert result.status is DocumentationStatus.VALID
+        with pytest.raises(DocumentationError, match="unavailable"):
+            await captured["task"]
+
+    asyncio.run(scenario())
 
 
 def test_public_binding_data_cannot_forge_authenticated_issuance():
