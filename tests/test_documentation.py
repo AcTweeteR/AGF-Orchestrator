@@ -498,6 +498,16 @@ def test_unparseable_uri_is_fail_closed_during_secret_screening():
         DocumentationCitation("source", "topic", "https://[bad]?sig=opaque-token").validate()
 
 
+@pytest.mark.parametrize("value", ["x://alice:opaque@host", "x://host?token=opaque", "x://host?sig=opaque"])
+def test_single_character_uri_schemes_are_secret_screened(value):
+    with pytest.raises(DocumentationError):
+        DocumentationCitation("source", "topic", value).validate()
+
+
+def test_single_character_uri_scheme_without_credentials_remains_valid():
+    DocumentationCitation("source", "topic", "x://host/docs?lang=en").validate()
+
+
 def test_provider_required_optional_network_privacy_and_capability_gates():
     kwargs = dict(
         project_id=PROJECT, now=NOW, available=True, authenticated=True,

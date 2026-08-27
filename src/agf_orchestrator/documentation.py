@@ -6,6 +6,7 @@ import hashlib
 import html
 import json
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -123,9 +124,9 @@ _SHA1 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _URI_USERINFO = re.compile(
-    r"(?i)\b[a-z][a-z0-9+.-]{1,31}://[^/\s:@]+:[^/\s@]+@"
+    r"(?i)\b[a-z][a-z0-9+.-]{0,31}://[^/\s:@]+:[^/\s@]+@"
 )
-_URI_CANDIDATE = re.compile(r"(?i)\b[a-z][a-z0-9+.-]{1,31}://[^\s<>]+")
+_URI_CANDIDATE = re.compile(r"(?i)\b[a-z][a-z0-9+.-]{0,31}://[^\s<>]+")
 _CREDENTIAL_QUERY_NAMES = frozenset({
     "x-amz-signature", "x-amz-credential", "x-amz-security-token",
     "x-goog-signature", "googleaccessid", "signature", "sig", "access_token",
@@ -1111,6 +1112,11 @@ class ProviderBinding:
             raise DocumentationError("provider binding hash does not match content")
 
 
+_ISSUANCE_CONTEXT: ContextVar[object | None] = ContextVar(
+    "agf_provider_issuance_context", default=None
+)
+
+
 class _ProviderIssuanceRequest:
     """Ephemeral capability passed to the owner-controlled attestor.
 
@@ -1121,17 +1127,15 @@ class _ProviderIssuanceRequest:
     """
 
     __slots__ = ("subject", "__token")
-    _TOKEN = object()
 
     def __init__(self, subject: dict[str, Any], token: object) -> None:
-        if token is not self._TOKEN:
+        if token is not _ISSUANCE_CONTEXT.get():
             raise DocumentationError("provider issuance request is not governed")
         self.subject = subject
         self.__token = token
 
-    @classmethod
-    def create(cls, subject: dict[str, Any]) -> "_ProviderIssuanceRequest":
-        return cls(subject, cls._TOKEN)
+    def is_currently_governed(self) -> bool:
+        return self.__token is _ISSUANCE_CONTEXT.get()
 
 
 def _seal_provider_binding(
@@ -1213,7 +1217,12 @@ def _seal_provider_binding(
         json.dumps(subject, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     try:
-        issuance_attestation = issuance_attestor(_ProviderIssuanceRequest.create(subject))
+        issuance_context = _ISSUANCE_CONTEXT.set(object())
+        try:
+            request = _ProviderIssuanceRequest(subject, _ISSUANCE_CONTEXT.get())
+            issuance_attestation = issuance_attestor(request)
+        finally:
+            _ISSUANCE_CONTEXT.reset(issuance_context)
         if not isinstance(issuance_attestation, dict):
             raise TypeError
     except (TimeoutError, ConnectionError, OSError) as exc:

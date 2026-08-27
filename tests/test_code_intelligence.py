@@ -292,6 +292,19 @@ def test_runtime_gate_denials_only_restrict_canonical_selection(tmp_path):
     # required, as demonstrated by the canonical authority path above.
 
 
+@pytest.mark.parametrize("invalid", [1, 0, 1.0, "yes", [], {}])
+def test_code_intelligence_rejects_non_boolean_runtime_gates(tmp_path, invalid):
+    candidate = provider_candidate()
+    authority = eligibility_authority(tmp_path, (candidate,))
+    result = resolve_provider(
+        (candidate,), project_id=PROJECT, required=True, now=NOW,
+        gates=SelectionGates(invalid, True, True, True, True, True),
+        eligibility_authority=authority,
+    )
+    assert result.status is IntelligenceStatus.UNAVAILABLE
+    assert "gate is invalid" in result.reason
+
+
 @pytest.mark.parametrize(
     "field",
     [

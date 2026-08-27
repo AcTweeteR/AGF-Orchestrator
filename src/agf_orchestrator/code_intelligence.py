@@ -371,6 +371,7 @@ def resolve_provider(
             "canonical provider eligibility is required",
         )
     try:
+        gates.validate()
         selection = eligibility_authority.select(
             candidates,
             project_id=project_id,

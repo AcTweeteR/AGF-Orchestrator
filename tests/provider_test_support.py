@@ -61,7 +61,10 @@ def verify_envelope(payload: object, envelope: dict[str, object]) -> None:
 
 def sign_binding_subject(request) -> dict[str, str]:
     """Fixture-only owner controller for authenticated binding issuance."""
-    if not hasattr(request, "subject"):
+    if (
+        type(request).__name__ != "_ProviderIssuanceRequest"
+        or not request.is_currently_governed()
+    ):
         raise TypeError("owner attestor requires a governed issuance request")
     subject = request.subject
     payload_bytes = canonical_bytes(subject)
