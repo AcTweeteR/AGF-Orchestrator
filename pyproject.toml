@@ -9,7 +9,7 @@ description = "Provider-neutral governance and orchestration runtime for autonom
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
-dependencies = ["python-dotenv>=1.0,<2.0", "cryptography>=42,<46"]
+dependencies = ["python-dotenv>=1.0,<2.0", "cryptography>=42,<51"]
 keywords = ["agents", "ai", "governance", "orchestration", "autonomous-agents", "software-development"]
 classifiers = [
   "Development Status :: 3 - Alpha",
