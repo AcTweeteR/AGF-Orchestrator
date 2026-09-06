@@ -294,6 +294,33 @@ def test_safe_environment_allowlist_excludes_secret_variables(monkeypatch, tmp_p
     assert "PATH" in captured["env"]
 
 
+def test_configured_codex_home_reaches_the_child_process(monkeypatch, tmp_path):
+    config_home = tmp_path / "configured-home"
+    config_home.mkdir()
+    (config_home / "config.toml").write_text('model_provider = "example-proxy"\n')
+    fake = tmp_path / "config-reading-codex"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then exit 0; fi\n'
+        'test -z "$TOKEN_SHOULD_NOT_PASS" || exit 6\n'
+        'test -n "$CODEX_HOME" || exit 7\n'
+        'while [ "$#" -gt 0 ]; do\n'
+        '  if [ "$1" = "--output-last-message" ]; then\n'
+        '    cat "$CODEX_HOME/config.toml" > "$2"; shift 2\n'
+        '  else shift; fi\n'
+        'done\n'
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("CODEX_HOME", str(config_home))
+    monkeypatch.setenv("TOKEN_SHOULD_NOT_PASS", "test-only")
+    result = CodexAdapter(str(fake), profile=CodexInvocationProfile()).execute(
+        "instruction", str(tmp_path)
+    )
+    assert result.exit_code == 0
+    assert result.invocation_verified
+    assert result.final_message.strip() == 'model_provider = "example-proxy"'
+
+
 def test_discovery_places_global_flags_before_exec(monkeypatch):
     calls = []
 

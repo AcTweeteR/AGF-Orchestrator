@@ -22,6 +22,7 @@ SECRET_PATTERNS = (
 SAFE_ENV_KEYS = {
     "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+    "CODEX_HOME",
 }
 MACOS_CODEX_EXECUTABLE = "/Applications/ChatGPT.app/Contents/Resources/codex"
 

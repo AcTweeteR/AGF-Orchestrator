@@ -1,10 +1,15 @@
 import subprocess
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from agf_orchestrator.adapters.codex import CodexAdapter, CodexInvocationProfile
+from agf_orchestrator.adapters.codex import (
+    CodexAdapter,
+    CodexInvocationProfile,
+    CodexProcessResult,
+)
 from agf_orchestrator.delivery import (
     Attempt,
     DeliveryPipeline,
@@ -13,6 +18,7 @@ from agf_orchestrator.delivery import (
     _load_prospective_evidence,
     _patch_policy,
     _risk_assessment_for_attempt,
+    _run_attempt,
 )
 from agf_orchestrator.execution_models import ExecutionStatus
 from agf_orchestrator.git_delivery import DraftPRCreator, GitDeliveryError
@@ -93,6 +99,52 @@ def plan_for(root):
     )
     plan.validate()
     return plan
+
+
+@pytest.mark.parametrize("failure", ["cleanup", "caller_dirty", "caller_unreadable", "none"])
+def test_delivery_attempt_checks_cleanup_before_completing(tmp_path, monkeypatch, failure):
+    import agf_orchestrator.delivery as delivery
+
+    root = setup_repo(tmp_path)
+    plan = plan_for(root)
+    original_remove = delivery._remove_worktree
+    original_status = delivery._status_lines
+
+    class EditingAdapter(CodexAdapter):
+        def execute(self, instruction, repository):
+            (Path(repository) / "allowed.txt").write_text("after\n")
+            if failure == "caller_dirty":
+                (root / "unexpected.txt").write_text("preserve this evidence\n")
+            return CodexProcessResult("test execution", 0, "", "", final_message="done")
+
+    def remove(repository, worktree):
+        assert original_remove(repository, worktree)
+        return failure != "cleanup"
+
+    def status(repository):
+        if failure == "caller_unreadable" and Path(repository) == root:
+            raise OSError("status unavailable")
+        return original_status(repository)
+
+    monkeypatch.setattr(delivery, "_remove_worktree", remove)
+    monkeypatch.setattr(delivery, "_status_lines", status)
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    attempt = _run_attempt(plan, plan.tasks[0], str(root), EditingAdapter(), artifact_dir, None, 10)
+
+    assert attempt.caller_clean is (failure not in {"caller_dirty", "caller_unreadable"})
+    if failure == "none":
+        assert attempt.execution_status is ExecutionStatus.COMPLETED
+        assert attempt.patch is not None
+        assert not attempt.blocking_issues
+    else:
+        assert attempt.execution_status is ExecutionStatus.FAILED
+        assert attempt.blocking_issues
+        assert attempt.patch is None
+        assert list(artifact_dir.iterdir()), "Keep captured patch evidence after failure"
+    assert (root / "allowed.txt").read_text() == "before\n"
+    if failure == "caller_dirty":
+        assert (root / "unexpected.txt").read_text() == "preserve this evidence\n"
 
 
 def test_prospective_evidence_uses_persisted_baseline_and_preserves_unknown(monkeypatch):
