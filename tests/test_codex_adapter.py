@@ -294,6 +294,53 @@ def test_safe_environment_allowlist_excludes_secret_variables(monkeypatch, tmp_p
     assert "PATH" in captured["env"]
 
 
+def test_configured_codex_home_reaches_the_child_process(monkeypatch, tmp_path):
+    config_home = tmp_path / "configured-home"
+    config_home.mkdir()
+    (config_home / "config.toml").write_text('model_provider = "example-proxy"\n')
+    fake = tmp_path / "config-reading-codex"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then exit 0; fi\n'
+        'test -z "$TOKEN_SHOULD_NOT_PASS" || exit 6\n'
+        'test -n "$CODEX_HOME" || exit 7\n'
+        'while [ "$#" -gt 0 ]; do\n'
+        '  if [ "$1" = "--output-last-message" ]; then\n'
+        '    cat "$CODEX_HOME/config.toml" > "$2"; shift 2\n'
+        '  else shift; fi\n'
+        'done\n'
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("CODEX_HOME", str(config_home))
+    monkeypatch.setenv("TOKEN_SHOULD_NOT_PASS", "test-only")
+    result = CodexAdapter(str(fake), profile=CodexInvocationProfile()).execute(
+        "instruction", str(tmp_path)
+    )
+    assert result.exit_code == 0
+    assert result.invocation_verified
+    assert result.final_message.strip() == 'model_provider = "example-proxy"'
+
+
+@pytest.mark.parametrize("config_home", [".", "relative/home", "../home", "", "~/home"])
+def test_relative_codex_home_blocks_before_any_child_process(monkeypatch, tmp_path, config_home):
+    monkeypatch.setenv("CODEX_HOME", config_home)
+    fake = fake_version_executable(tmp_path)
+
+    def forbidden_run(*args, **kwargs):
+        pytest.fail("Invalid configuration must block even version/help probes")
+
+    monkeypatch.setattr(codex_module.subprocess, "run", forbidden_run)
+    result = CodexAdapter(str(fake), profile=CodexInvocationProfile()).execute(
+        "instruction", str(tmp_path)
+    )
+    assert result.human_required
+    assert result.transport_error == "CODEX_CONFIGURATION_INVALID"
+    assert not result.process_started
+    assert discover_invocation_profile(str(fake)) is None
+    resolution = resolve_codex_executable(str(fake))
+    assert resolution.error == "CODEX_CONFIGURATION_INVALID"
+
+
 def test_discovery_places_global_flags_before_exec(monkeypatch):
     calls = []
 

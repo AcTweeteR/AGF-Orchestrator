@@ -53,6 +53,9 @@ The project has an extensive automated regression suite covering governance, rec
 - Git
 - Optional provider tooling such as the Codex CLI when using that adapter
 
+For custom Codex transports and missing-provider errors on resume, see
+[Provider configuration](docs/PROVIDER_CONFIGURATION.md).
+
 Install from a checkout:
 
 ```bash

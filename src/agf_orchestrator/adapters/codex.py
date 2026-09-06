@@ -22,6 +22,7 @@ SECRET_PATTERNS = (
 SAFE_ENV_KEYS = {
     "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+    "CODEX_HOME",
 }
 MACOS_CODEX_EXECUTABLE = "/Applications/ChatGPT.app/Contents/Resources/codex"
 
@@ -104,15 +105,19 @@ class CodexExecutableResolution:
 
 
 def _safe_environment() -> dict[str, str]:
-    return {key: os.environ[key] for key in SAFE_ENV_KEYS if key in os.environ}
+    environment = {key: os.environ[key] for key in SAFE_ENV_KEYS if key in os.environ}
+    config_home = environment.get("CODEX_HOME")
+    if config_home is not None and not Path(config_home).is_absolute():
+        raise ValueError("CODEX_HOME must be an absolute host configuration path")
+    return environment
 
 
 def discover_invocation_profile(
     executable: str, *, timeout: float = 10.0
 ) -> CodexInvocationProfile | None:
     """Verify option placement from this executable's own parser help."""
-    environment = _safe_environment()
     try:
+        environment = _safe_environment()
         root_help = subprocess.run(
             [executable, "--help"], capture_output=True, text=True,
             timeout=timeout, shell=False, env=environment,
@@ -121,7 +126,7 @@ def discover_invocation_profile(
             [executable, "exec", "--help"], capture_output=True, text=True,
             timeout=timeout, shell=False, env=environment,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
     if root_help.returncode != 0 or exec_help.returncode != 0:
         return None
@@ -192,6 +197,13 @@ class CodexAdapter:
         sandbox: str = "workspace-write",
         output_schema: dict | None = None,
     ) -> CodexProcessResult:
+        try:
+            environment = _safe_environment()
+        except ValueError as exc:
+            return CodexProcessResult(
+                "Codex configuration is invalid", None, "", str(exc),
+                human_required=True, transport_error="CODEX_CONFIGURATION_INVALID",
+            )
         resolution = resolve_codex_executable(self.executable)
         if resolution.path is None:
             return CodexProcessResult(
@@ -242,7 +254,7 @@ class CodexAdapter:
                 text=True,
                 timeout=self.timeout,
                 shell=False,
-                env=_safe_environment(),
+                env=environment,
             )
         except subprocess.TimeoutExpired as exc:
             stdout = redact_secrets(_as_text(exc.stdout))
@@ -369,6 +381,8 @@ def _inspect_candidate(
             shell=False,
             env=_safe_environment(),
         )
+    except ValueError:
+        return _resolution_failure(source, explicit, "CODEX_CONFIGURATION_INVALID")
     except (OSError, subprocess.TimeoutExpired):
         return _resolution_failure(source, explicit, "CODEX_EXECUTABLE_VERSION_PROBE_FAILED")
     if version.returncode != 0:

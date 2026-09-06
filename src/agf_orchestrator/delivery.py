@@ -190,6 +190,7 @@ def _run_attempt(
     evidence = list(gate_evidence)
     status = ExecutionStatus.FAILED
     caller_clean = False
+    patch: PatchArtifact | None = None
     try:
         worktree = _create_worktree(context.root, context.head_sha)
         instruction = adapter.build_instruction(
@@ -268,20 +269,33 @@ def _run_attempt(
                 status = ExecutionStatus.COMPLETED
                 evidence.append("validations passed: yes")
                 evidence.append("patch artifact created outside target repository")
-                return Attempt(status, changed, validation_results, evidence, blockers, patch, True)
-            blockers.append("one or more approved validations failed")
+            else:
+                blockers.append("one or more approved validations failed")
     except (OSError, subprocess.CalledProcessError, ExecutionValidationError) as exc:
         blockers.append(redact_secrets(str(exc)))
     finally:
+        cleanup = True
         if worktree is not None:
             cleanup = _remove_worktree(repository, worktree)
             evidence.append(f"cleanup succeeded: {'yes' if cleanup else 'no'}")
+        if not cleanup:
+            blockers.append("temporary worktree cleanup failed")
         try:
             caller_clean = not _status_lines(repository)
-        except (OSError, subprocess.CalledProcessError):
+        except (OSError, subprocess.CalledProcessError) as exc:
             caller_clean = False
+            blockers.append(
+                f"caller repository status could not be verified: {redact_secrets(str(exc))}"
+            )
         evidence.append(f"caller repository clean: {'yes' if caller_clean else 'no'}")
-    return Attempt(status, changed, validation_results, evidence, blockers, None, caller_clean)
+        if not caller_clean:
+            blockers.append("caller repository was modified unexpectedly")
+        if status is ExecutionStatus.COMPLETED and (not cleanup or not caller_clean):
+            status = ExecutionStatus.FAILED
+    return Attempt(
+        status, changed, validation_results, evidence, blockers,
+        patch if status is ExecutionStatus.COMPLETED else None, caller_clean,
+    )
 
 
 def _correction_request(findings: list[ReviewFinding], task: Task, current_patch: str = "") -> str:
