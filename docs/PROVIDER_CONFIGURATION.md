@@ -10,6 +10,10 @@ The Codex adapter preserves the host's `CODEX_HOME` when launching Codex. If it
 is unset, Codex uses its default user configuration directory. The adapter
 continues to exclude arbitrary environment variables and credential values.
 Do not select a configuration home from untrusted repository or provider output.
+An explicitly configured home must be absolute. Relative, empty and unexpanded
+tilde values fail closed before any executable or help probe, because the child
+process runs in a separate worktree. Resolving a relative configuration there
+would incorrectly promote repository content to trusted user configuration.
 
 A custom Codex provider is a transport definition: endpoint, wire API and
 authentication mechanism. An execution harness or gateway can expose such an

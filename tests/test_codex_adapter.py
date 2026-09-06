@@ -321,6 +321,26 @@ def test_configured_codex_home_reaches_the_child_process(monkeypatch, tmp_path):
     assert result.final_message.strip() == 'model_provider = "example-proxy"'
 
 
+@pytest.mark.parametrize("config_home", [".", "relative/home", "../home", "", "~/home"])
+def test_relative_codex_home_blocks_before_any_child_process(monkeypatch, tmp_path, config_home):
+    monkeypatch.setenv("CODEX_HOME", config_home)
+    fake = fake_version_executable(tmp_path)
+
+    def forbidden_run(*args, **kwargs):
+        pytest.fail("Invalid configuration must block even version/help probes")
+
+    monkeypatch.setattr(codex_module.subprocess, "run", forbidden_run)
+    result = CodexAdapter(str(fake), profile=CodexInvocationProfile()).execute(
+        "instruction", str(tmp_path)
+    )
+    assert result.human_required
+    assert result.transport_error == "CODEX_CONFIGURATION_INVALID"
+    assert not result.process_started
+    assert discover_invocation_profile(str(fake)) is None
+    resolution = resolve_codex_executable(str(fake))
+    assert resolution.error == "CODEX_CONFIGURATION_INVALID"
+
+
 def test_discovery_places_global_flags_before_exec(monkeypatch):
     calls = []
 

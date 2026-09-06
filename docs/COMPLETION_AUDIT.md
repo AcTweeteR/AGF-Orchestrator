@@ -49,6 +49,11 @@ UNKNOWN means evidence is missing. No roadmap item is closed by this report.
   commits and 998 unique blobs at the time of that audit.
 - FACT: remote main's unmodified code produced **794 passing tests** locally.
   CI uses Python 3.12; local results are not a substitute for its checks.
+- FACT: a node-ID comparison explains the 876 versus 799 totals: the initial
+  checkout has 73 documentation tests and nine code-intelligence tests absent
+  from main; the initial PR #185 candidate adds four delivery cases and one
+  adapter case. Thus `876 = 794 + 82` and `799 = 794 + 5`. No tests were removed
+  to obtain the lower total; these are different branch contents.
 - FACT: tests cover scope, validation, delivery, recovery, policy and evidence
   failure paths. Fixture-based provider success is not live-provider evidence.
 
@@ -91,6 +96,12 @@ UNKNOWN means evidence is missing. No roadmap item is closed by this report.
    passed afterward. Preserving the host-selected configuration home does not
    forward arbitrary environment variables or introduce provider selection in
    the core. Independent Reviewer: APPROVE, no findings.
+   Subsequent GitHub review found a P1: relative `CODEX_HOME` could become a
+   trusted config location inside the child worktree. Five regression cases
+   reproduced this; relative/empty/unexpanded-tilde values now fail closed
+   before any Codex subprocess. Independent Reviewer and Compliance Officer
+   approved the follow-up; 32 adapter tests and 804 full-suite tests passed.
+   Commit-specific CI remains required.
 3. **FCC resume configuration.** An installed launcher selects a temporary
    provider definition, while sessions retain its ID. Codex 0.149.1 reproduced
    the missing-provider failure through `config/read`, without inference.
