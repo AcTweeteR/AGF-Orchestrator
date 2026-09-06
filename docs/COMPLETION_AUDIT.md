@@ -19,6 +19,12 @@ UNKNOWN means evidence is missing. No roadmap item is closed by this report.
 - FACT: issue #161 still lists default-branch, protection and initial-release
   actions that have already occurred. Other checklist items need separate
   evidence before reconciliation. There were no open milestones.
+- FACT: GitHub reports four open dependency advisories: cryptography (high),
+  wheel (high) and setuptools (high and medium). Fix versions reported by the
+  advisories are cryptography 49.0.0, wheel 0.46.2 and setuptools 78.1.1/83.0.0.
+  PRs #184, #176 and #177 address these dependencies, but main remains exposed
+  according to the dependency alerts. Their current CI is green; combined
+  compatibility and complete build/CI pin reconciliation still need review.
 
 ## B. Architecture observed
 
