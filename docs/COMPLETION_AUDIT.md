@@ -263,3 +263,11 @@ checks. The pre-final-commit public-history audit passed for 499 commits and
 1,060 unique blobs; CI repeats that audit against the pushed history. The
 runtime has no configured typecheck gate. These results do not replace CI on
 Python 3.12 or authorize human-reserved integration.
+
+
+The first PR #188 CI run (`34124126202`) passed 1,111 tests and failed the
+configuration-home forwarding test on a filesystem/Python clock race. The
+follow-up fixes that test's invocation clock to a deterministic epoch; it does
+not relax production freshness checks. All 32 adapter tests pass locally.
+Docs and CodeQL passed on the first candidate; CI must pass on the follow-up
+commit before human integration.

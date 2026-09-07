@@ -297,6 +297,10 @@ def test_safe_environment_allowlist_excludes_secret_variables(monkeypatch, tmp_p
 
 
 def test_configured_codex_home_reaches_the_child_process(monkeypatch, tmp_path):
+    # This regression tests environment forwarding. Filesystem clock granularity
+    # must not turn a fast shell fixture into an unrelated freshness failure.
+    monkeypatch.setattr("agf_orchestrator.adapters.codex.time.time_ns",
+                        lambda: 1_700_000_000_000_000_000)
     config_home = tmp_path / "configured-home"
     config_home.mkdir()
     (config_home / "config.toml").write_text('model_provider = "example-proxy"\n')
