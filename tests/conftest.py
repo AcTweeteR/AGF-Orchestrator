@@ -2,6 +2,14 @@ import os
 from pathlib import Path
 
 import pytest
+from provider_test_support import verify_envelope
+
+from agf_orchestrator import documentation, provider_intelligence
+
+# Module-level fixtures in the provider tests are created during collection;
+# install the generated test trust root before that collection happens.
+provider_intelligence.verify_envelope = verify_envelope
+documentation.verify_envelope = verify_envelope
 
 
 @pytest.fixture(autouse=True)
@@ -25,3 +33,9 @@ def isolate_llm_environment():
 def isolate_external_agf_state(monkeypatch, tmp_path):
     """Keep tests away from the owner's canonical external state root."""
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+
+@pytest.fixture(autouse=True)
+def install_test_owner_verifier(monkeypatch):
+    """Use a generated Ed25519 owner fixture only inside the test harness."""
+    monkeypatch.setattr(provider_intelligence, "verify_envelope", verify_envelope)
