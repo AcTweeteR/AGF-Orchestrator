@@ -93,14 +93,38 @@ other external reality. Local reversible mutation remains governed by the
 existing worktree and delivery controls; this decision does not authorize any
 rollback or external action.
 
-### E12-T11 — Serena code-intelligence provider — PLANNED
+### E12-T11 — Serena code-intelligence provider — Review
 
-- provider-neutral `CodeIntelligenceProvider` boundary;
+Source: `oraios/serena`.
+
+Objective: let eligible providers obtain symbol/reference-aware repository intelligence and precise edit targets without making Serena an authority source.
+
+Scope:
+- provider-neutral advisory evidence boundary implemented in `agf_orchestrator.code_intelligence`;
+- persistence reuses `SessionStore` artifacts; provider eligibility reuses `CapabilityProfile` and `CapabilitySelector`;
+- define a provider-neutral `CodeIntelligenceProvider` capability boundary;
 - optional Serena adapter/profile;
-- symbol/reference-aware repository intelligence and bounded precise-edit support;
-- project/revision/freshness binding;
-- fail closed on required ambiguous/stale intelligence;
-- no path/risk/authority expansion.
+- operations such as symbol lookup, reference discovery and bounded code-navigation evidence;
+- precise-edit assistance only after normal AGF task/risk/path/provider eligibility;
+- freshness/project/repository binding on returned intelligence;
+- fallback to existing repository understanding when Serena is unavailable and the capability is optional; block when code intelligence is explicitly required.
+
+Acceptance:
+- Serena cannot expand allowed paths or authorize edits;
+- all symbol/reference results are project/revision bound and attributable;
+- stale/indexed-against-wrong-revision intelligence cannot authorize current work;
+- missing/ambiguous symbol evidence fails closed where required;
+- disposable comparison shows reduced unnecessary file/context loading without weakening correctness gates.
+
+Current implementation evidence:
+- symbol, definition, references, navigation and bounded edit-target operations are represented as evidence, without direct editing;
+- project, canonical repository, revision/index revision, requested operation/query and provenance bindings are hash-validated;
+- stale, ambiguous, unavailable, malformed, mismatched and path-blocked outcomes remain distinct;
+- empty scopes, malformed repository identities, traversal and non-recursive glob escapes fail closed;
+- deterministic fixture comparison measures repository paths versus evidence-selected paths;
+- no mandatory concrete-provider dependency is introduced; a concrete provider remains an optional adapter/profile under existing capability selection.
+- final review corrected empty-scope acceptance, operation/query replay, non-valid efficiency evidence, malformed repository identity, and recursive glob handling;
+- final gates: 803 full-suite tests, 39 focused boundary tests, Ruff PASS and `git diff --check` PASS; review threads resolved and CI PASS.
 
 ### E12-T12 — Governed `wshobson/agents` catalog adapter — PLANNED
 
