@@ -67,11 +67,17 @@ Caller-controlled code attempts to inspect or mutate issuance state that is
 kept in the same Python process, including through globals, reflection,
 context propagation, or copied capabilities.
 
-**Controls:** provider-binding issuance is handled by a separate
-owner-controlled local process over bounded IPC. That process owns issuance
-state and signing capability; the orchestrator never falls back to in-process
-signing. IPC failure, malformed messages, and stale/replayed requests fail
-closed.
+**Required controls:** provider-binding issuance must use an owner-controlled
+signer whose private signing capability is unavailable to the runtime. IPC
+failure, malformed messages, and stale/replayed requests must fail closed.
+
+**Current implementation limit:** the callback worker uses a forked process
+and bounded IPC. This isolates callback execution and single-use issuance
+state, but does not establish a separate operating-system privilege boundary
+or exclusive possession of signing material. No operational owner signer is
+bundled; the concrete attestor in the tests is a test fixture. Production
+integration must establish the required owner boundary independently. Missing
+attestation fails closed and a fixture signature is not production evidence.
 
 A durable claim depends on an in-memory marker or object identity that is lost
 or substituted after restart.

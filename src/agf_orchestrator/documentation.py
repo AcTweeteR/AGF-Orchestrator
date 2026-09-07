@@ -1207,8 +1207,10 @@ def _issue_in_owner_process(subject: dict[str, Any], attestor: Any) -> dict[str,
         args=(child, json.loads(json.dumps(subject)), attestor),
         daemon=True,
     )
+    started = False
     try:
         process.start()
+        started = True
         child.close()
         parent.send_bytes(b"issue")
         if not parent.poll(10):
@@ -1227,9 +1229,11 @@ def _issue_in_owner_process(subject: dict[str, Any], attestor: Any) -> dict[str,
         return response
     finally:
         parent.close()
-        if process.is_alive():
-            process.terminate()
-        process.join(timeout=2)
+        child.close()
+        if started:
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=2)
 
 
 def _seal_provider_binding(

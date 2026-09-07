@@ -46,6 +46,14 @@ engine, and its unavailability fails closed.
 
 ## Owner authority and runtime authorization
 
+Implementation status: the current callback worker uses a fork and bounded
+IPC, which does not by itself satisfy the owner privilege-separation decision
+above. The repository has no operational owner-signing service/client wired
+into the CLI or session flow. Its test attestor proves deterministic envelope
+handling only. Production activation and an external signer remain required;
+the runtime must not import the fixture or acquire owner signing material to
+complete that integration.
+
 Owner authority determines whether a provider may be eligible according to
 canonical owner-controlled state. Current runtime authorization determines
 whether that provider may be invoked now. A new invocation requires both:

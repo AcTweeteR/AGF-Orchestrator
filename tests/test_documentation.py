@@ -264,7 +264,9 @@ DEFAULT_BINDING = None
 
 
 @pytest.fixture(autouse=True)
-def isolated_default_binding(monkeypatch, tmp_path, isolate_external_agf_state, install_test_owner_verifier):
+def isolated_default_binding(
+    monkeypatch, tmp_path, isolate_external_agf_state, install_test_owner_verifier,
+):
     """Issue test bindings only after isolation, never during module import."""
     state_root = (tmp_path / "documentation-state").resolve()
     monkeypatch.setitem(globals(), "_DOCUMENTATION_STATE_ROOT", state_root)
@@ -880,6 +882,21 @@ def test_signed_runtime_denial_is_rejected_by_binding_verifier():
     )
     with pytest.raises(DocumentationError, match="runtime authorization"):
         denied.validate(now=NOW, eligibility_authority=issued.authority)
+
+
+def test_owner_process_start_failure_remains_unavailable(monkeypatch):
+    from multiprocessing.process import BaseProcess
+
+    def unavailable_start(self):
+        raise OSError("process capacity exhausted")
+
+    monkeypatch.setattr(BaseProcess, "start", unavailable_start)
+    result = resolve_provider(
+        profile(), project_id=PROJECT, now=NOW, available=True, authenticated=True,
+        policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
+    )
+    assert result.status is DocumentationStatus.PROVIDER_INELIGIBLE
+    assert result.binding is None
 
 
 def test_provider_binding_issuance_is_not_persisted_in_documentation_evidence():

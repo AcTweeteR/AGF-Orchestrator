@@ -7,7 +7,6 @@ from provider_test_support import verify_envelope
 from agf_orchestrator import documentation, provider_intelligence
 
 
-
 @pytest.fixture(autouse=True)
 def isolate_llm_environment():
     """Prevent a developer's ignored .env from leaking between tests."""

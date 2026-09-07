@@ -218,8 +218,10 @@ def test_fresh_output_last_message_verifies_and_is_bounded(tmp_path):
     approved = tmp_path / "approved"
     approved.mkdir()
     path = approved / "final.txt"
-    started = time.time_ns()
+    started = 1_700_000_000_000_000_000
     path.write_text('{"status":"APPROVE"}')
+    fresh = started + 1_000_000_000
+    os.utime(path, ns=(fresh, fresh))
     message, error, evidence = _read_verified_final_message(path, approved, started)
     assert error is None
     assert message == '{"status":"APPROVE"}'
