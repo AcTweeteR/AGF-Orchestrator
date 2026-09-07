@@ -102,4 +102,4 @@ This demo proves that a fresh user can install the project, run its regression s
 
 It does **not** grant live execution, delivery, merge, deployment, or provider authority. Those capabilities have separate requirements and are intentionally not activated by this walkthrough.
 
-For the wider execution and delivery model, continue with [EXECUTION_MODEL.md](EXECUTION_MODEL.md), [AUTONOMOUS_DIRECTOR.md](AUTONOMOUS_DIRECTOR.md), and the root [README](../README.md).
+For the wider execution and delivery model, continue with [EXECUTION_MODEL.md](EXECUTION_MODEL.md), [AUTONOMOUS_DIRECTOR.md](AUTONOMOUS_DIRECTOR.md), and the [repository README](https://github.com/AcTweeteR/AGF-Orchestrator#readme).

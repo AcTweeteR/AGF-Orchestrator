@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use AGF-Orchestrator in research, evaluation, or tooling, please cite this software release."
+title: "AGF-Orchestrator"
+type: software
+authors:
+  - family-names: "AcTweeteR"
+version: 0.1.0
+date-released: 2026-08-26
+license: Apache-2.0
+repository-code: "https://github.com/AcTweeteR/AGF-Orchestrator"
+url: "https://github.com/AcTweeteR/AGF-Orchestrator"
+abstract: >-
+  AGF-Orchestrator is a provider-neutral governance and orchestration runtime
+  for autonomous software-development agents. It separates authority from
+  execution and coordinates work under explicit policy, evidence, review,
+  Compliance, recovery, provenance, and human-control boundaries.
+keywords:
+  - autonomous agents
+  - coding agents
+  - agent governance
+  - orchestration
+  - AI safety
+  - software engineering
