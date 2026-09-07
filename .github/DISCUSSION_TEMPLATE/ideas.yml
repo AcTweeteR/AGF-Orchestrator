@@ -1,0 +1,40 @@
+title: "[Idea] "
+labels:
+  - discussion
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve AGF-Orchestrator. Ideas are exploratory and do not create authority, roadmap commitment, or implementation approval.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: What problem, limitation, or opportunity are you trying to address?
+      placeholder: Describe the user or governance need, not only the proposed implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed direction
+      description: Describe the idea and the outcome you would like to see.
+    validations:
+      required: true
+
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Governance and trust-boundary impact
+      description: Could this affect authority, policy, external actions, credentials, privacy, allowed paths, review, Compliance, or HUMAN_REQUIRED behavior?
+      placeholder: State "None known" if you do not believe it changes a trust boundary.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional alternatives, related projects, prior art, or trade-offs.

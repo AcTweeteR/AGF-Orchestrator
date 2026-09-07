@@ -5,6 +5,7 @@ import pytest
 from agf_orchestrator.capability_profiles import CapabilityStatus
 from agf_orchestrator.capability_selection import CapabilityCandidate, SelectionGates
 from agf_orchestrator.provider_intelligence import (
+    ARCHITECT_GATE_NAMES,
     ARCHITECT_REQUIREMENTS,
     ProviderIntelligenceError,
     ProviderIntelligenceStore,
@@ -72,6 +73,73 @@ def test_state_is_durable_and_restarts_with_verified_hash(tmp_path):
     store.save(value)
 
 
+def test_owner_state_is_separate_per_decision_domain(tmp_path):
+    root = ProviderIntelligenceStore(tmp_path, signing_key=TEST_KEY, staging=True)
+    architect = root.for_project(PROJECT, decision_domain="architect")
+    documentation = root.for_project(PROJECT, decision_domain="documentation")
+    architect_value = sign_state(state(), TEST_KEY, staging=True)
+    documentation_value = sign_state(
+        state(
+            decision_domain="documentation",
+            requirements=("documentation",),
+            provider_interfaces=(("provider-codex", "documentation"),),
+        ),
+        TEST_KEY,
+        staging=True,
+    )
+    architect.save(architect_value)
+    documentation.save(documentation_value)
+    assert architect.load().decision_domain == "architect"
+    assert documentation.load().decision_domain == "documentation"
+    assert architect.path != documentation.path
+
+
+def test_unknown_decision_domain_is_rejected(tmp_path):
+    store = ProviderIntelligenceStore(tmp_path, signing_key=TEST_KEY, staging=True)
+    with pytest.raises(ProviderIntelligenceError):
+        store.for_project(PROJECT, decision_domain="unknown-domain")
+
+
+def test_non_architect_domains_use_common_gate_schema_without_architect_evidence():
+    generic = tuple((name, f"owner-evidence:{name}:True") for name in ARCHITECT_GATE_NAMES)
+    value = state(
+        decision_domain="documentation",
+        requirements=("documentation",),
+        provider_interfaces=(("provider-codex", "documentation"),),
+        gate_evidence=generic,
+    )
+    value.validate(now=NOW, target_sha=TARGET)
+
+
+def test_architect_gate_evidence_remains_domain_specific():
+    with pytest.raises(ProviderIntelligenceError):
+        state(gate_evidence=GATE_EVIDENCE[:-1]).validate()
+
+
+def test_architect_rejects_candidate_scoped_gate_evidence():
+    scoped = (
+        (
+            "provider-codex",
+            candidate().profile.profile_sha256,
+            tuple((name, True) for name in ARCHITECT_GATE_NAMES),
+        ),
+    )
+    with pytest.raises(ProviderIntelligenceError, match="candidate-scoped"):
+        state(provider_gate_evidence_by_candidate=scoped).validate()
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [[], ["provider-codex"], ["provider-codex", "0" * 64],
+     ["provider-codex", "0" * 64, [] , "extra"]],
+)
+def test_malformed_scoped_gate_evidence_is_typed(malformed):
+    payload = state().to_dict()
+    payload["provider_gate_evidence_by_candidate"] = [malformed]
+    with pytest.raises(ProviderIntelligenceError):
+        state_from_dict(payload)
+
+
 def test_tampered_profile_or_state_hash_fails_closed(tmp_path):
     value = state()
     payload = value.to_dict()
@@ -103,6 +171,27 @@ def test_unknown_required_capability_remains_ineligible():
     )
 
 
+@pytest.mark.parametrize("value", [True, False, None])
+def test_nullable_selection_gates_are_structurally_preserved(value):
+    gates = SelectionGates(value, True, True, True, True, True)
+    value_state = state(
+        decision_domain="documentation", requirements=("documentation",),
+        gates=gates, gate_evidence=GATE_EVIDENCE,
+    )
+    value_state.validate(now=NOW, target_sha=TARGET)
+
+
+@pytest.mark.parametrize("value", [1, 0, 1.0, 0.0, "true", [], {}, ()])
+def test_non_boolean_selection_gates_are_rejected_at_state_boundary(value):
+    gates = SelectionGates(value, True, True, True, True, True)
+    value_state = state(
+        decision_domain="documentation", requirements=("documentation",),
+        gates=gates, gate_evidence=GATE_EVIDENCE,
+    )
+    with pytest.raises(ProviderIntelligenceError, match="selection gate types"):
+        value_state.validate(now=NOW, target_sha=TARGET)
+
+
 def test_target_binding_and_stale_state_are_rejected():
     value = state()
     with pytest.raises(ProviderIntelligenceError, match="target SHA"):
@@ -116,6 +205,31 @@ def test_state_schema_rejects_unknown_or_malformed_payload():
     payload["unexpected"] = True
     with pytest.raises(ProviderIntelligenceError):
         state_from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    "posture",
+    [[[]], [["provider-codex"]], [["provider-codex", "payload", "extra"]],
+     [123, "payload"], ["provider-codex", None], "not-a-list"],
+)
+def test_malformed_provider_security_posture_is_typed(posture):
+    payload = state().to_dict()
+    payload["provider_security_posture"] = posture
+    with pytest.raises(ProviderIntelligenceError):
+        state_from_dict(payload)
+
+
+def test_store_load_translates_malformed_security_posture(tmp_path):
+    value = sign_state(state(), TEST_KEY, staging=True)
+    payload = value.to_dict()
+    payload["provider_security_posture"] = [["provider-codex"]]
+    store = ProviderIntelligenceStore(tmp_path, signing_key=TEST_KEY, staging=True).for_project(
+        PROJECT
+    )
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ProviderIntelligenceError):
+        store.load()
 
 
 def _persisted_state(

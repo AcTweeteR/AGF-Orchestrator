@@ -38,6 +38,9 @@ ARCHITECT_REQUIREMENTS = (
     "reasoning",
     "context-capacity",
 )
+SUPPORTED_DECISION_DOMAINS = frozenset(
+    {"architect", "code-intelligence", "knowledge", "documentation"}
+)
 APPROVED_PROVIDER_INTERFACES = frozenset({"codex", "openhands"})
 ARCHITECT_GATE_NAMES = (
     "policy_eligible",
@@ -51,6 +54,98 @@ ARCHITECT_GATE_NAMES = (
 
 class ProviderIntelligenceError(ValueError):
     """Raised when provider evidence is missing, stale, tampered, or unsafe."""
+
+
+def _validate_gate_pairs(pairs: object, allowed_names: set[str], label: str) -> None:
+    if not isinstance(pairs, (tuple, list)):
+        raise ProviderIntelligenceError(f"{label} is invalid")
+    for item in pairs:
+        if (
+            not isinstance(item, (tuple, list))
+            or len(item) != 2
+            or not isinstance(item[0], str)
+            or item[0] not in allowed_names
+            or not isinstance(item[1], bool)
+        ):
+            raise ProviderIntelligenceError(f"{label} is invalid")
+
+
+def _validated_gate_evidence(pairs: object) -> dict[str, str]:
+    if not isinstance(pairs, (tuple, list)):
+        raise ProviderIntelligenceError("gate evidence is invalid")
+    result: dict[str, str] = {}
+    for item in pairs:
+        if (
+            not isinstance(item, (tuple, list))
+            or len(item) != 2
+            or not isinstance(item[0], str)
+            or not isinstance(item[1], str)
+            or not item[1].strip()
+            or item[0] in result
+        ):
+            raise ProviderIntelligenceError("gate evidence is invalid")
+        result[item[0]] = item[1]
+    if set(result) != set(ARCHITECT_GATE_NAMES):
+        raise ProviderIntelligenceError("gate evidence is incomplete")
+    return result
+
+
+def _parse_scoped_gate_evidence(value: object) -> tuple[tuple[Any, ...], ...]:
+    if not isinstance(value, (tuple, list)):
+        raise ProviderIntelligenceError("provider-scoped gate evidence is invalid")
+    parsed: list[tuple[Any, ...]] = []
+    for item in value:
+        if not isinstance(item, (tuple, list)) or len(item) != 3:
+            raise ProviderIntelligenceError("provider-scoped gate evidence is invalid")
+        provider_id, profile_sha256, facts = item
+        if not isinstance(facts, (tuple, list)):
+            raise ProviderIntelligenceError("provider-scoped gate evidence is invalid")
+        parsed.append(
+            (
+                provider_id,
+                profile_sha256,
+                tuple(
+                    tuple(fact) if isinstance(fact, (tuple, list)) else fact
+                    for fact in facts
+                ),
+            )
+        )
+    return tuple(parsed)
+
+
+def _validate_architect_gate_evidence(
+    gate_evidence: dict[str, str], gates: SelectionGates
+) -> None:
+    if not gate_evidence["policy_eligible"].startswith("active-policy:"):
+        raise ProviderIntelligenceError("policy gate evidence is not authority-bound")
+    for name, prefix in (
+        ("privacy_eligible", "codex-safe-environment-v1;read-only-canary;"),
+        ("independence_eligible", "architect-advisory;reviewer-separate-stage;"),
+    ):
+        value = gate_evidence[name]
+        if not value.startswith(prefix) or value.removeprefix(prefix) not in {"True", "False"}:
+            raise ProviderIntelligenceError(f"{name} evidence is invalid")
+        if (value.endswith("True")) != bool(getattr(gates, name)):
+            raise ProviderIntelligenceError(f"{name} evidence disagrees with gate")
+    budget = gate_evidence["budget_eligible"]
+    if not budget.startswith("bounded-timeout-seconds:"):
+        raise ProviderIntelligenceError("budget gate evidence is invalid")
+    try:
+        timeout_text, budget_value = budget.removeprefix("bounded-timeout-seconds:").split(";", 1)
+        if float(timeout_text) <= 0 or budget_value not in {"True", "False"}:
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise ProviderIntelligenceError("budget gate evidence is invalid") from exc
+    if (budget_value == "True") != bool(gates.budget_eligible):
+        raise ProviderIntelligenceError("budget evidence disagrees with gate")
+    if gate_evidence["health_eligible"] != f"invocation-verified:{gates.health_eligible}":
+        raise ProviderIntelligenceError("health gate evidence disagrees with gate")
+    empirical = gate_evidence["empirical_evidence_eligible"]
+    if not empirical.startswith("deterministic-canary-sha256:"):
+        raise ProviderIntelligenceError("empirical gate evidence is invalid")
+    canary_hash = empirical.removeprefix("deterministic-canary-sha256:")
+    if len(canary_hash) != 64 or any(char not in "0123456789abcdef" for char in canary_hash):
+        raise ProviderIntelligenceError("empirical gate evidence is invalid")
 
 
 def _utc_timestamp(value: str) -> datetime:
@@ -142,9 +237,15 @@ class ProviderIntelligenceState:
     signing_key_id: str
     signature: Any
     state_sha256: str
+    provider_gate_evidence: tuple[tuple[str, bool], ...] = ()
+    decision_domain: str = "architect"
+    provider_security_posture: tuple[tuple[str, str], ...] = ()
+    provider_gate_evidence_by_candidate: tuple[
+        tuple[str, str, tuple[tuple[str, bool], ...]], ...
+    ] = ()
 
     def _unsigned(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "algorithm_version": self.algorithm_version,
             "project_id": self.project_id,
@@ -178,12 +279,38 @@ class ProviderIntelligenceState:
             "evidence_bundle_hash": self.evidence_bundle_hash,
             "signing_key_id": self.signing_key_id,
         }
+        if self.provider_gate_evidence:
+            payload["provider_gate_evidence"] = [list(item) for item in self.provider_gate_evidence]
+        if self.decision_domain != "architect":
+            payload["decision_domain"] = self.decision_domain
+        if self.provider_security_posture:
+            payload["provider_security_posture"] = [
+                list(item) for item in self.provider_security_posture
+            ]
+        if self.provider_gate_evidence_by_candidate:
+            payload["provider_gate_evidence_by_candidate"] = [
+                [provider_id, profile_sha256, [list(item) for item in gates]]
+                for provider_id, profile_sha256, gates in self.provider_gate_evidence_by_candidate
+            ]
+        return payload
 
     def to_dict(self) -> dict[str, Any]:
         return {**self._unsigned(), "signature": self.signature, "state_sha256": self.state_sha256}
 
     def validate(self, *, now: str | None = None, target_sha: str | None = None) -> None:
-        if self.schema_version != "1.0" or self.algorithm_version != "architect-gates-v1":
+        if (
+            self.schema_version != "1.0"
+            or not isinstance(self.decision_domain, str)
+            or not self.decision_domain.strip()
+            or len(self.decision_domain) > 80
+        ):
+            raise ProviderIntelligenceError("provider intelligence schema/version is invalid")
+        expected_algorithm = (
+            "architect-gates-v1"
+            if self.decision_domain == "architect"
+            else "provider-eligibility-v1"
+        )
+        if self.algorithm_version != expected_algorithm:
             raise ProviderIntelligenceError("provider intelligence schema/version is invalid")
         if (
             not self.project_id.startswith("project-")
@@ -194,12 +321,89 @@ class ProviderIntelligenceState:
             raise ProviderIntelligenceError("provider intelligence binding is invalid")
         if target_sha is not None and self.target_sha != target_sha:
             raise ProviderIntelligenceError("provider intelligence target SHA is stale")
-        if self.requirements != ARCHITECT_REQUIREMENTS:
+        if not self.requirements or any(
+            not isinstance(item, str) or not item.strip() or len(item) > 128
+            for item in self.requirements
+        ) or len(set(self.requirements)) != len(self.requirements):
+            raise ProviderIntelligenceError("provider requirements are invalid")
+        if self.decision_domain == "architect" and self.requirements != ARCHITECT_REQUIREMENTS:
             raise ProviderIntelligenceError("Architect requirements are not canonical")
+        if self.decision_domain != "architect" and tuple(sorted(self.requirements)) != (
+            self.requirements
+        ):
+            raise ProviderIntelligenceError("provider requirements are not canonicalized")
         if self.requirements_hash != _hash(list(self.requirements)):
             raise ProviderIntelligenceError("Architect requirements hash is invalid")
         if self.policy_generation < 1:
             raise ProviderIntelligenceError("policy generation is invalid")
+        _validate_gate_pairs(
+            self.provider_gate_evidence,
+            {"network_eligible", "authentication_eligible"},
+            "provider gate evidence",
+        )
+        if len({item[0] for item in self.provider_gate_evidence}) != len(
+            self.provider_gate_evidence
+        ):
+            raise ProviderIntelligenceError("provider gate evidence is invalid")
+        if self.decision_domain == "architect" and self.provider_gate_evidence_by_candidate:
+            raise ProviderIntelligenceError(
+                "Architect state cannot contain candidate-scoped gate evidence"
+            )
+        for name in (
+            "policy_eligible", "privacy_eligible", "independence_eligible",
+            "budget_eligible", "health_eligible", "empirical_evidence_eligible",
+        ):
+            value = getattr(self.gates, name)
+            if value is not None and type(value) is not bool:
+                raise ProviderIntelligenceError("selection gate types are invalid")
+        if type(self.gates.allow_fallback) is not bool:
+            raise ProviderIntelligenceError("selection gate types are invalid")
+        candidate_keys = {
+            (candidate.profile.provider_id, candidate.profile.profile_sha256)
+            for candidate in self.candidates
+        }
+        scoped_keys = set()
+        for item in self.provider_gate_evidence_by_candidate:
+            if not isinstance(item, (tuple, list)) or len(item) != 3:
+                raise ProviderIntelligenceError("provider-scoped gate evidence is invalid")
+            provider_id, profile_sha256, facts = item
+            key = (provider_id, profile_sha256)
+            if (
+                not isinstance(provider_id, str)
+                or not provider_id
+                or not isinstance(profile_sha256, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", profile_sha256)
+            ):
+                raise ProviderIntelligenceError("provider-scoped gate identity is invalid")
+            if key in scoped_keys or key not in candidate_keys:
+                raise ProviderIntelligenceError("provider-scoped gate identity is invalid")
+            scoped_keys.add(key)
+            _validate_gate_pairs(
+                facts,
+                {
+                    "policy_eligible", "privacy_eligible", "network_eligible",
+                    "authentication_eligible", "health_eligible", "budget_eligible",
+                    "empirical_evidence_eligible", "independence_eligible",
+                },
+                "provider-scoped gate evidence",
+            )
+            if not facts or len({item[0] for item in facts}) != len(facts):
+                raise ProviderIntelligenceError("provider-scoped gate evidence is invalid")
+        if self.decision_domain != "architect" and len(self.candidates) > 1:
+            if scoped_keys != candidate_keys:
+                raise ProviderIntelligenceError(
+                    "provider-scoped gate evidence is required for multiple candidates"
+                )
+        if any(
+            not isinstance(provider_id, str)
+            or not provider_id
+            or not isinstance(posture, str)
+            or len(posture) > 4096
+            for provider_id, posture in self.provider_security_posture
+        ) or len({provider_id for provider_id, _ in self.provider_security_posture}) != len(
+            self.provider_security_posture
+        ):
+            raise ProviderIntelligenceError("provider security posture is invalid")
         if self.state_sha256 != _hash(self._unsigned()):
             raise ProviderIntelligenceError("provider intelligence state hash is invalid")
         observed_at = _utc_timestamp(self.observed_at)
@@ -208,8 +412,7 @@ class ProviderIntelligenceState:
             raise ProviderIntelligenceError("provider intelligence expiry is invalid")
         if now is not None and _utc_timestamp(now) >= expires_at:
             raise ProviderIntelligenceError("provider intelligence evidence is stale")
-        if self.evidence_bundle_hash != _hash(
-            {
+        evidence_bundle = {
                 "requirements_hash": self.requirements_hash,
                 "candidates": [candidate.profile.profile_sha256 for candidate in self.candidates],
                 "provider_interfaces": [list(item) for item in self.provider_interfaces],
@@ -217,8 +420,24 @@ class ProviderIntelligenceState:
                 "gates": self.to_dict()["gates"],
                 "policy_generation": self.policy_generation,
                 "target_sha": self.target_sha,
-            }
-        ):
+        }
+        if self.provider_gate_evidence:
+            evidence_bundle["provider_gate_evidence"] = [
+                list(item) for item in self.provider_gate_evidence
+            ]
+        if self.provider_security_posture:
+            evidence_bundle["provider_security_posture"] = [
+                list(item) for item in self.provider_security_posture
+            ]
+        if self.provider_gate_evidence_by_candidate:
+            evidence_bundle["provider_gate_evidence_by_candidate"] = [
+                [provider_id, profile_sha256, [list(fact) for fact in facts]]
+                for provider_id, profile_sha256, facts
+                in self.provider_gate_evidence_by_candidate
+            ]
+        if self.decision_domain != "architect":
+            evidence_bundle["decision_domain"] = self.decision_domain
+        if self.evidence_bundle_hash != _hash(evidence_bundle):
             raise ProviderIntelligenceError("provider evidence bundle hash is invalid")
         if not self.signing_key_id or not isinstance(self.signature, (str, dict)):
             raise ProviderIntelligenceError("provider intelligence signature metadata is invalid")
@@ -242,50 +461,21 @@ class ProviderIntelligenceState:
             raise ProviderIntelligenceError("provider interface binding is invalid")
         if len(interface_ids) != len(set(interface_ids)):
             raise ProviderIntelligenceError("provider interface bindings are duplicated")
-        if any(
+        if self.decision_domain == "architect" and any(
             interface not in APPROVED_PROVIDER_INTERFACES
             for _, interface in self.provider_interfaces
         ):
             raise ProviderIntelligenceError("provider interface is not approved")
+        if self.decision_domain != "architect" and any(
+            not isinstance(interface, str) or not interface.strip() or len(interface) > 80
+            for _, interface in self.provider_interfaces
+        ):
+            raise ProviderIntelligenceError("provider interface is invalid")
         if set(interface_ids) != candidate_ids:
             raise ProviderIntelligenceError("provider interface bindings are incomplete")
-        gate_evidence = dict(self.gate_evidence)
-        if set(gate_evidence) != set(ARCHITECT_GATE_NAMES) or any(
-            not isinstance(value, str) or not value.strip() for value in gate_evidence.values()
-        ):
-            raise ProviderIntelligenceError("Architect gate evidence is incomplete")
-        if not gate_evidence["policy_eligible"].startswith("active-policy:"):
-            raise ProviderIntelligenceError("policy gate evidence is not authority-bound")
-        for name, prefix in (
-            ("privacy_eligible", "codex-safe-environment-v1;read-only-canary;"),
-            ("independence_eligible", "architect-advisory;reviewer-separate-stage;"),
-        ):
-            value = gate_evidence[name]
-            if not value.startswith(prefix) or value.removeprefix(prefix) not in {"True", "False"}:
-                raise ProviderIntelligenceError(f"{name} evidence is invalid")
-            if (value.endswith("True")) != bool(getattr(self.gates, name)):
-                raise ProviderIntelligenceError(f"{name} evidence disagrees with gate")
-        budget = gate_evidence["budget_eligible"]
-        if not budget.startswith("bounded-timeout-seconds:"):
-            raise ProviderIntelligenceError("budget gate evidence is invalid")
-        try:
-            timeout_text, budget_value = budget.removeprefix("bounded-timeout-seconds:").split(
-                ";", 1
-            )
-            if float(timeout_text) <= 0 or budget_value not in {"True", "False"}:
-                raise ValueError
-        except (TypeError, ValueError) as exc:
-            raise ProviderIntelligenceError("budget gate evidence is invalid") from exc
-        if (budget_value == "True") != bool(self.gates.budget_eligible):
-            raise ProviderIntelligenceError("budget evidence disagrees with gate")
-        if gate_evidence["health_eligible"] != f"invocation-verified:{self.gates.health_eligible}":
-            raise ProviderIntelligenceError("health gate evidence disagrees with gate")
-        empirical = gate_evidence["empirical_evidence_eligible"]
-        if not empirical.startswith("deterministic-canary-sha256:"):
-            raise ProviderIntelligenceError("empirical gate evidence is invalid")
-        canary_hash = empirical.removeprefix("deterministic-canary-sha256:")
-        if len(canary_hash) != 64 or any(char not in "0123456789abcdef" for char in canary_hash):
-            raise ProviderIntelligenceError("empirical gate evidence is invalid")
+        gate_evidence = _validated_gate_evidence(self.gate_evidence)
+        if self.decision_domain == "architect":
+            _validate_architect_gate_evidence(gate_evidence, self.gates)
 
 
 def make_profile(
@@ -347,8 +537,28 @@ def state_from_dict(payload: dict[str, Any]) -> ProviderIntelligenceState:
         "signing_key_id",
         "signature",
     }
-    if set(payload) != required:
+    optional = {
+        "provider_gate_evidence", "decision_domain", "provider_security_posture",
+        "provider_gate_evidence_by_candidate",
+    }
+    if not set(payload).issubset(required | optional) or not required.issubset(payload):
         raise ProviderIntelligenceError("provider intelligence state schema is invalid")
+
+    def parse_security_posture(value: Any) -> tuple[tuple[str, str], ...]:
+        if not isinstance(value, (list, tuple)):
+            raise ProviderIntelligenceError("provider security posture is invalid")
+        parsed: list[tuple[str, str]] = []
+        for item in value:
+            if (
+                not isinstance(item, (list, tuple))
+                or len(item) != 2
+                or not isinstance(item[0], str)
+                or not isinstance(item[1], str)
+            ):
+                raise ProviderIntelligenceError("provider security posture is invalid")
+            parsed.append((item[0], item[1]))
+        return tuple(parsed)
+
     try:
         candidates = tuple(
             CapabilityCandidate(
@@ -379,10 +589,21 @@ def state_from_dict(payload: dict[str, Any]) -> ProviderIntelligenceState:
             payload["signing_key_id"],
             payload["signature"],
             payload["state_sha256"],
+            tuple(tuple(item) for item in payload.get("provider_gate_evidence", ())),
+            payload.get("decision_domain", "architect"),
+            parse_security_posture(payload.get("provider_security_posture", ())),
+            _parse_scoped_gate_evidence(
+                payload.get("provider_gate_evidence_by_candidate", ())
+            ),
         )
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise ProviderIntelligenceError("provider intelligence state schema is invalid") from exc
-    state.validate()
+    try:
+        state.validate()
+    except ProviderIntelligenceError:
+        raise
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
+        raise ProviderIntelligenceError("provider intelligence state schema is invalid") from exc
     return state
 
 
@@ -401,11 +622,17 @@ def build_state(
     policy_generation: int,
     signing_key_id: str = "owner-key-1",
     signature: str = "0" * 64,
+    provider_gate_evidence: tuple[tuple[str, bool], ...] = (),
+    requirements: tuple[str, ...] | None = None,
+    decision_domain: str = "architect",
+    provider_security_posture: tuple[tuple[str, str], ...] = (),
+    provider_gate_evidence_by_candidate: tuple[
+        tuple[str, str, tuple[tuple[str, bool], ...]], ...
+    ] = (),
 ) -> ProviderIntelligenceState:
-    requirements = ARCHITECT_REQUIREMENTS
+    requirements = tuple(requirements or ARCHITECT_REQUIREMENTS)
     requirements_hash = _hash(list(requirements))
-    evidence_bundle_hash = _hash(
-        {
+    evidence_bundle = {
             "requirements_hash": requirements_hash,
             "candidates": [candidate.profile.profile_sha256 for candidate in candidates],
             "provider_interfaces": [list(item) for item in provider_interfaces],
@@ -421,11 +648,26 @@ def build_state(
             },
             "policy_generation": policy_generation,
             "target_sha": target_sha,
-        }
-    )
+    }
+    if provider_gate_evidence:
+        evidence_bundle["provider_gate_evidence"] = [
+            list(item) for item in provider_gate_evidence
+        ]
+    if provider_security_posture:
+        evidence_bundle["provider_security_posture"] = [
+            list(item) for item in provider_security_posture
+        ]
+    if provider_gate_evidence_by_candidate:
+        evidence_bundle["provider_gate_evidence_by_candidate"] = [
+            [provider_id, profile_sha256, [list(item) for item in facts]]
+            for provider_id, profile_sha256, facts in provider_gate_evidence_by_candidate
+        ]
+    if decision_domain != "architect":
+        evidence_bundle["decision_domain"] = decision_domain
+    evidence_bundle_hash = _hash(evidence_bundle)
     unsigned = ProviderIntelligenceState(
         "1.0",
-        "architect-gates-v1",
+        "architect-gates-v1" if decision_domain == "architect" else "provider-eligibility-v1",
         project_id,
         constitution_id,
         constitution_record_hash,
@@ -443,6 +685,10 @@ def build_state(
         signing_key_id,
         signature,
         "0" * 64,
+        provider_gate_evidence,
+        decision_domain,
+        provider_security_posture,
+        provider_gate_evidence_by_candidate,
     )
     return ProviderIntelligenceState(
         **{**unsigned.__dict__, "state_sha256": _hash(unsigned._unsigned())}
@@ -471,17 +717,41 @@ class ProviderIntelligenceStore:
             )
         self.signing_key = signing_key
         self.staging = staging
+        self._verification_mode = (
+            "staging-hmac" if staging or signing_key is not None else "owner-envelope"
+        )
         self.path = root / "capability-intelligence"
         self.expected_project_id: str | None = None
+        self.expected_decision_domain: str | None = None
 
-    def for_project(self, project_id: str) -> "ProviderIntelligenceStore":
+    @property
+    def owner_verifying(self) -> bool:
+        """Whether this concrete store uses AGF's pinned owner envelope."""
+        return (
+            type(self) is ProviderIntelligenceStore
+            and self._verification_mode == "owner-envelope"
+            and self.signing_key is None
+            and self.staging is False
+        )
+
+    def for_project(
+        self, project_id: str, decision_domain: str = "architect"
+    ) -> "ProviderIntelligenceStore":
         if not isinstance(project_id, str) or not re.fullmatch(r"project-[0-9a-f]{16}", project_id):
             raise ProviderIntelligenceError("provider project identity is invalid")
+        if not isinstance(decision_domain, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9-]{0,79}", decision_domain
+        ):
+            raise ProviderIntelligenceError("provider decision domain is invalid")
+        if decision_domain not in SUPPORTED_DECISION_DOMAINS:
+            raise ProviderIntelligenceError("provider decision domain is not registered")
         store = ProviderIntelligenceStore(
             self.root, signing_key=self.signing_key, staging=self.staging
         )
-        store.path = self.root / "capability-intelligence" / project_id / "architect.json"
+        filename = "architect.json" if decision_domain == "architect" else f"{decision_domain}.json"
+        store.path = self.root / "capability-intelligence" / project_id / filename
         store.expected_project_id = project_id
+        store.expected_decision_domain = decision_domain
         return store
 
     def _ensure_safe_path(self) -> None:
@@ -516,6 +786,11 @@ class ProviderIntelligenceStore:
         state = state_from_dict(payload)
         if self.expected_project_id is not None and state.project_id != self.expected_project_id:
             raise ProviderIntelligenceError("provider intelligence project binding differs")
+        if (
+            self.expected_decision_domain is not None
+            and state.decision_domain != self.expected_decision_domain
+        ):
+            raise ProviderIntelligenceError("provider intelligence decision domain differs")
         now = (
             None
             if allow_expired
@@ -542,6 +817,11 @@ class ProviderIntelligenceStore:
     def save(self, state: ProviderIntelligenceState) -> None:
         if self.expected_project_id is not None and state.project_id != self.expected_project_id:
             raise ProviderIntelligenceError("provider intelligence project binding differs")
+        if (
+            self.expected_decision_domain is not None
+            and state.decision_domain != self.expected_decision_domain
+        ):
+            raise ProviderIntelligenceError("provider intelligence decision domain differs")
         now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         state.validate(now=now)
         self._ensure_safe_path()

@@ -21,7 +21,7 @@ These are useful as sources of ideas or optional integrations, but none is trust
 
 ## Decision
 
-AGF will add four provider-neutral extension boundaries under the existing Constitution, policy, risk, scheduler, evidence, Provider Intelligence and external-action controls.
+AGF will add six provider-neutral extension boundaries under the existing Constitution, policy, risk, scheduler, evidence, Provider Intelligence and external-action controls.
 
 ### 1. Governed procedures
 
@@ -51,7 +51,39 @@ MCP servers are modeled as optional tool/knowledge providers. Their profiles may
 
 MCP does not become an authority source. Mutating external operations remain subject to the existing external-action and policy boundaries. Credential use, browser automation, upload of project material, paid actions and privacy-sensitive transfers require the applicable existing authorization/policy evidence.
 
-A NotebookLM MCP integration may be supplied only as an optional profile/example. Its default classification is external service, network required, authenticated Google session, browser automation, unofficial integration and privacy review required. Unavailability or integration drift degrades to unavailable/UNKNOWN rather than inferred success.
+An external knowledge-provider integration may be supplied only as an optional
+profile/example. Its default classification is external service, network
+required, authenticated session, browser automation, integration provenance
+requiring review, and privacy review required. Unavailability or integration
+drift degrades to unavailable/UNKNOWN rather than inferred success.
+
+### 5. Code-intelligence providers
+
+A code-intelligence provider may return project/repository/revision-bound
+symbols, references, relationships and bounded navigation or edit-target
+evidence. Concrete providers are optional implementations, not required
+runtime dependencies.
+
+Code intelligence is advisory evidence only. It cannot authorize edits,
+select work, expand allowed paths, lower risk, select itself or any other
+provider, clear a kill switch, authorize delivery/merge, or satisfy
+HUMAN_REQUIRED. Evidence indexed against a different project, repository or
+revision is stale and fails closed when code intelligence is required.
+
+### 6. Browser-validation providers
+
+A browser-validation provider may execute an explicitly planned,
+project/task/environment/test-intent-bound workflow and return bounded
+assertion, URL, step, screenshot, snapshot or log evidence. Browser automation
+implementations are optional and provider-neutral.
+
+Browser evidence is not authority and does not authorize mutation. Host,
+environment, account/session, authentication, privacy and network policy must
+be explicit and verified. Mutating browser actions remain under the existing
+external-action policy; unintended or production targets fail closed.
+A static test PASS cannot substitute for required browser validation, and
+failed, partial, contradictory or UNKNOWN browser evidence cannot become
+PASS by inference.
 
 ## Reuse of existing AGF components
 
@@ -74,7 +106,7 @@ All governance and selection logic defined here belongs in AGF-Orchestrator. AGF
 
 ## Implementation sequence
 
-Issue #164 defines bounded tasks E12-T1 through E12-T9. Each task is implemented and validated independently. CRITICAL changes remain HUMAN_REQUIRED under the active policy.
+Issue #164 defines bounded tasks E12-T1 through E12-T16. Each task is implemented and validated independently; completed work uses the canonical `Done` lifecycle state, while residual or follow-up work is tracked separately as `Backlog`, `Planned`, `Ready`, `Executing`, `Review`, `Compliance`, or `Release`. CRITICAL changes remain HUMAN_REQUIRED under the active policy.
 
 ## Consequences
 

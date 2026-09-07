@@ -218,8 +218,10 @@ def test_fresh_output_last_message_verifies_and_is_bounded(tmp_path):
     approved = tmp_path / "approved"
     approved.mkdir()
     path = approved / "final.txt"
-    started = time.time_ns()
+    started = 1_700_000_000_000_000_000
     path.write_text('{"status":"APPROVE"}')
+    fresh = started + 1_000_000_000
+    os.utime(path, ns=(fresh, fresh))
     message, error, evidence = _read_verified_final_message(path, approved, started)
     assert error is None
     assert message == '{"status":"APPROVE"}'
@@ -295,6 +297,10 @@ def test_safe_environment_allowlist_excludes_secret_variables(monkeypatch, tmp_p
 
 
 def test_configured_codex_home_reaches_the_child_process(monkeypatch, tmp_path):
+    # This regression tests environment forwarding. Filesystem clock granularity
+    # must not turn a fast shell fixture into an unrelated freshness failure.
+    monkeypatch.setattr("agf_orchestrator.adapters.codex.time.time_ns",
+                        lambda: 1_700_000_000_000_000_000)
     config_home = tmp_path / "configured-home"
     config_home.mkdir()
     (config_home / "config.toml").write_text('model_provider = "example-proxy"\n')

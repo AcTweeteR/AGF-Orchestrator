@@ -24,6 +24,17 @@ class SelectionGates:
     empirical_evidence_eligible: bool | None = None
     allow_fallback: bool = True
 
+    def validate(self) -> None:
+        for name in (
+            "policy_eligible", "privacy_eligible", "independence_eligible",
+            "budget_eligible", "health_eligible", "empirical_evidence_eligible",
+        ):
+            value = getattr(self, name)
+            if value is not None and type(value) is not bool:
+                raise CapabilitySelectionError(f"{name} gate is invalid")
+        if type(self.allow_fallback) is not bool:
+            raise CapabilitySelectionError("fallback gate is invalid")
+
     def failed(self) -> tuple[str, ...]:
         return tuple(
             name if passed is False else f"missing:{name}"
@@ -68,6 +79,15 @@ class CapabilitySelector:
 
     diagnostic_only_provider_ids = frozenset({"provider-qwen", "qwen3.5:9b-q4_K_M"})
 
+    @staticmethod
+    def order_candidates(
+        candidates: Iterable[CapabilityCandidate],
+    ) -> tuple[CapabilityCandidate, ...]:
+        return tuple(sorted(
+            tuple(candidates),
+            key=lambda item: (item.priority, item.profile.provider_id, item.profile.profile_id),
+        ))
+
     def select(
         self,
         candidates: Iterable[CapabilityCandidate],
@@ -76,31 +96,36 @@ class CapabilitySelector:
         required_capabilities: Iterable[str],
         now: str,
         gates: SelectionGates | None = None,
+        precomputed_rejections: dict[str, str] | None = None,
     ) -> SelectionResult:
         active_gates = gates or SelectionGates()
+        active_gates.validate()
         required = tuple(sorted(set(required_capabilities)))
         if not required:
             raise CapabilitySelectionError("required_capabilities must not be empty")
-        ordered = sorted(
-            tuple(candidates),
-            key=lambda item: (item.priority, item.profile.provider_id, item.profile.profile_id),
-        )
+        ordered = self.order_candidates(candidates)
         considered: list[str] = []
         rejected: list[str] = []
+        selected: tuple[str, str, bool] | None = None
         for index, candidate in enumerate(ordered):
             provider = candidate.profile.provider_id
             considered.append(provider)
-            reason = self._rejection_reason(candidate, project_id, required, now, active_gates)
+            reason = (precomputed_rejections or {}).get(provider)
+            if reason is None:
+                reason = self._rejection_reason(candidate, project_id, required, now, active_gates)
             if reason is not None:
                 rejected.append(f"{provider}: {reason}")
                 continue
             if index > 0 and not active_gates.allow_fallback:
                 rejected.append(f"{provider}: fallback is not permitted")
                 continue
+            if selected is None:
+                selected = (provider, candidate.profile.profile_id, index > 0)
+        if selected is not None:
             return SelectionResult(
-                provider_id=provider,
-                profile_id=candidate.profile.profile_id,
-                fallback_used=index > 0,
+                provider_id=selected[0],
+                profile_id=selected[1],
+                fallback_used=selected[2],
                 considered_candidates=tuple(considered),
                 rejected_reasons=tuple(rejected),
             )

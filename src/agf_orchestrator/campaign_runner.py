@@ -18,7 +18,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Callable, Protocol
 
-from .locking import project_lock
+from .locking import FileLock, LockError, project_lock
 
 
 class CampaignRunnerError(RuntimeError):
@@ -473,6 +473,31 @@ class PersistentCampaignRunner:
         work: CampaignWork,
         *,
         wake_guard: Callable[[CampaignState], None] | None = None,
+    ) -> CampaignState:
+        # A time lease cannot prove a slow worker has stopped. Keep an OS lock
+        # across the invocation; process exit releases it without breaking locks.
+        lock = FileLock(
+            self.store.state_dir / "locks"
+            / f"campaign-{self.store.project_id}-{self.store.campaign_id}.lock",
+            "campaign-tick",
+        )
+        try:
+            lock.acquire()
+        except LockError as exc:
+            if not str(exc).startswith("lock is held:"):
+                raise
+            return self.store.load()
+        try:
+            return self._tick_locked(probe, work, wake_guard=wake_guard)
+        finally:
+            lock.release()
+
+    def _tick_locked(
+        self,
+        probe: CampaignProbe,
+        work: CampaignWork,
+        *,
+        wake_guard: Callable[[CampaignState], None] | None,
     ) -> CampaignState:
         state = self.store.load()
         if state.status in TERMINAL_STATUSES:
