@@ -4,6 +4,8 @@ import copy
 import hashlib
 import json
 import os
+import subprocess
+import sys
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -130,10 +132,7 @@ def profile(
     )
 
 
-_DOCUMENTATION_STATE_ROOT = Path(
-    tempfile.mkdtemp(prefix="agf-doc-authority-global-")
-).resolve()
-os.environ["AGF_STATE_DIR"] = str(_DOCUMENTATION_STATE_ROOT)
+_DOCUMENTATION_STATE_ROOT = None
 _DOCUMENTATION_PROVIDER_IDS = (
     "knowledge-docs", "knowledge-provider-a", "knowledge-provider-b",
     "knowledge-provider-database-directory", "knowledge-provider-database-symlink",
@@ -261,11 +260,45 @@ def test_documentation_rejects_duck_typed_authority():
         )
 
 
-DEFAULT_BINDING = resolve_provider(
-    profile(), project_id=PROJECT, now=NOW, available=True, authenticated=True,
-    policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
-).binding
-assert isinstance(DEFAULT_BINDING, ProviderBinding)
+DEFAULT_BINDING = None
+
+
+@pytest.fixture(autouse=True)
+def isolated_default_binding(monkeypatch, tmp_path, isolate_external_agf_state, install_test_owner_verifier):
+    """Issue test bindings only after isolation, never during module import."""
+    state_root = (tmp_path / "documentation-state").resolve()
+    monkeypatch.setitem(globals(), "_DOCUMENTATION_STATE_ROOT", state_root)
+    monkeypatch.setenv("AGF_STATE_DIR", str(state_root))
+    binding = resolve_provider(
+        profile(), project_id=PROJECT, now=NOW, available=True, authenticated=True,
+        policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
+    ).binding
+    assert isinstance(binding, ProviderBinding)
+    monkeypatch.setitem(globals(), "DEFAULT_BINDING", binding)
+
+
+def test_test_module_import_does_not_issue_bindings(tmp_path):
+    state = tmp_path / "untouched-owner-state"
+    result = subprocess.run(
+        [
+            sys.executable, "-c",
+            "import os, runpy, sys; from pathlib import Path; "
+            "runpy.run_path(sys.argv[1]); "
+            "assert os.environ['AGF_STATE_DIR'] == sys.argv[2]; "
+            "assert not Path(sys.argv[2]).exists()",
+            str(Path(__file__).resolve()), str(state),
+        ],
+        env={
+            **os.environ,
+            "AGF_STATE_DIR": str(state),
+            "PYTHONPATH": os.pathsep.join([str(Path(__file__).resolve().parents[1] / "src"),
+                                str(Path(__file__).resolve().parent)]),
+        },
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not state.exists()
+
 
 
 def test_revisionless_library_resolution_has_explicit_non_replayable_scope():
