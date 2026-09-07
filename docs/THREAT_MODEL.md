@@ -71,13 +71,14 @@ context propagation, or copied capabilities.
 signer whose private signing capability is unavailable to the runtime. IPC
 failure, malformed messages, and stale/replayed requests must fail closed.
 
-**Current implementation limit:** the callback worker uses a forked process
-and bounded IPC. This isolates callback execution and single-use issuance
-state, but does not establish a separate operating-system privilege boundary
-or exclusive possession of signing material. No operational owner signer is
-bundled; the concrete attestor in the tests is a test fixture. Production
-integration must establish the required owner boundary independently. Missing
-attestation fails closed and a fixture signature is not production evidence.
+**Current implementation limit:** the runtime now sends bounded data to a
+separately operated local socket endpoint and verifies the returned envelope
+against the exact subject and existing trust root. It does not execute caller
+callbacks, hold signing state or spawn a signer. No production owner-signing
+service is bundled or activated. Its operator must independently validate
+requests and establish OS privilege separation; socket location alone provides
+neither. The test server and generated keys are fixtures only. See the
+[owner issuance protocol](OWNER_ISSUANCE_PROTOCOL.md).
 
 A durable claim depends on an in-memory marker or object identity that is lost
 or substituted after restart.

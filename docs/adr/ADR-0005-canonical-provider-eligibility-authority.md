@@ -46,13 +46,18 @@ engine, and its unavailability fails closed.
 
 ## Owner authority and runtime authorization
 
-Implementation status: the current callback worker uses a fork and bounded
-IPC, which does not by itself satisfy the owner privilege-separation decision
-above. The repository has no operational owner-signing service/client wired
-into the CLI or session flow. Its test attestor proves deterministic envelope
-handling only. Production activation and an external signer remain required;
-the runtime must not import the fixture or acquire owner signing material to
-complete that integration.
+Implementation status (2026-09-07): the runtime is a data-only local socket
+client. It no longer creates an issuance process or executes a signing
+callback. Legacy caller callbacks fail closed. The client verifies the exact
+returned subject with the existing owner trust chain; endpoint location alone
+is not authentication. See the [owner issuance protocol](../OWNER_ISSUANCE_PROTOCOL.md).
+
+No operational owner-signing service is bundled or activated, and the client
+is not wired into the CLI/session flow. The external operator must enforce
+privilege separation and independently establish authorization facts before
+signing. The test endpoint uses a generated fixture key, not production
+owner authority. Runtime code must not import that fixture or acquire owner
+signing material. This implementation is subject to protected human integration.
 
 Owner authority determines whether a provider may be eligible according to
 canonical owner-controlled state. Current runtime authorization determines
@@ -130,7 +135,7 @@ rejected, and decision lifetime is bounded by the source state lifetime.
 ## Consequences for integrations
 
 T14 and later integrations consume this authority rather than creating a
-parallel eligibility mechanism. Documentation adapters such as Context7 are
+parallel eligibility mechanism. Documentation adapters are
 advisory evidence sources: they cannot authorize themselves, lower policy or
 risk, expand `allowed_paths`, authorize delivery or merge, satisfy
 `HUMAN_REQUIRED`, or create owner authority. The same boundary applies to

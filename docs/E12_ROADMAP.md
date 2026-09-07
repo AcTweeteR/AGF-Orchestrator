@@ -126,7 +126,7 @@ Current implementation evidence:
 - final review corrected empty-scope acceptance, operation/query replay, non-valid efficiency evidence, malformed repository identity, and recursive glob handling;
 - final gates: 803 full-suite tests, 39 focused boundary tests, Ruff PASS and `git diff --check` PASS; review threads resolved and CI PASS.
 
-### E12-T12 — Governed `wshobson/agents` catalog adapter — PLANNED
+### E12-T12 — Governed `wshobson/agents` catalog adapter — Planned
 
 - ingest third-party entries as UNVERIFIED procedure candidates;
 - require separate AGF governance envelopes;
@@ -134,7 +134,7 @@ Current implementation evidence:
 - deduplicate and fail closed on conflicts;
 - no bulk import becomes automatically selectable.
 
-### E12-T13 — Playwright browser/real-workflow validation provider — PLANNED
+### E12-T13 — Playwright browser/real-workflow validation provider — Planned
 
 - provider-neutral `BrowserValidationProvider` boundary;
 - project/task/environment-bound browser sessions;
@@ -199,7 +199,7 @@ Current implementation evidence:
 - unsupported constraint shapes and terminal provider statuses fail closed without being relabeled as version ambiguity;
 - existing `KnowledgeProviderProfile`, network/privacy classification and knowledge-provider eligibility are reused; no Context7 runtime dependency is introduced.
 
-### E12-T15 — Superpowers workflow-pattern review — PLANNED
+### E12-T15 — Superpowers workflow-pattern review — Planned
 
 - review plan/build/verify, debugging, testing and review discipline;
 - map only demonstrated gaps into existing ProcedureProfile/LoopPattern concepts;
@@ -207,7 +207,7 @@ Current implementation evidence:
 - no second scheduler/governor/state machine;
 - no runtime dependency.
 
-### E12-T16 — Combined governed development-intelligence pilot — PLANNED
+### E12-T16 — Combined governed development-intelligence pilot — Planned
 
 Disposable flow:
 
@@ -215,7 +215,7 @@ Disposable flow:
 
 Required canaries include wrong project/revision/environment, stale evidence, privacy/auth mismatch, model-gateway fallback outside eligibility, research-backend semantics drift, active kill switch, exhausted budget, unavailable provider/tool and contradictory evidence.
 
-### E12-T17 — Pluggable execution-harness boundary and DeepSeek Harness pilot — PLANNED
+### E12-T17 — Pluggable execution-harness boundary and DeepSeek Harness pilot — Planned
 
 Detailed scope:
 - provider-neutral `ExecutionHarnessProvider` distinct from model/provider selection;
@@ -227,7 +227,7 @@ Detailed scope:
 - fail closed on developer-preview API drift or missing capabilities;
 - no DeepSeek Harness runtime dependency for core AGF operation.
 
-### E12-T18 — Governed Model Gateway boundary and OmniRoute pilot — PLANNED
+### E12-T18 — Governed Model Gateway boundary and OmniRoute pilot — Planned
 
 Detailed design: `docs/E12_T18_MODEL_GATEWAY.md`.
 
@@ -241,7 +241,7 @@ Detailed design: `docs/E12_T18_MODEL_GATEWAY.md`.
 - disposable OmniRoute comparison against direct routing;
 - no OmniRoute runtime dependency for core AGF operation.
 
-### E12-T19 — Governed External Research / Internet Reach Provider — PLANNED
+### E12-T19 — Governed External Research / Internet Reach Provider — Planned
 
 Detailed design: `docs/E12_T19_EXTERNAL_RESEARCH.md`.
 

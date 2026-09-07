@@ -1,6 +1,4 @@
 import asyncio
-import contextvars
-import copy
 import hashlib
 import json
 import os
@@ -13,7 +11,7 @@ from pathlib import Path
 import pytest
 from provider_test_support import (
     canonical_test_authority,
-    sign_binding_subject,
+    owner_endpoint,
     sign_binding_subject_payload,
 )
 from provider_test_support import sign_state as sign_owner_state
@@ -55,7 +53,7 @@ from agf_orchestrator.documentation import (
     seal_claim,
 )
 from agf_orchestrator.documentation import (
-    resolve_provider as _resolve_provider,
+    resolve_provider as _production_resolve_provider,
 )
 from agf_orchestrator.provider_eligibility import (
     canonical_knowledge_security_posture,
@@ -236,10 +234,20 @@ def _documentation_authority(profile_value, kwargs):
     return canonical_test_authority(store)
 
 
+def _resolve_provider(profile_value, **kwargs):
+    handler = kwargs.pop("issuance_attestor", None)
+    if handler is None:
+        return _production_resolve_provider(profile_value, **kwargs)
+    with owner_endpoint(handler) as endpoint:
+        return _production_resolve_provider(
+            profile_value, issuance_endpoint=endpoint, **kwargs
+        )
+
+
 def resolve_provider(profile_value, **kwargs):
     if kwargs.get("revision_scope", "revision-bound") == "revision-bound":
         kwargs.setdefault("target_sha", REVISION)
-    kwargs.setdefault("issuance_attestor", sign_binding_subject)
+    kwargs.setdefault("issuance_attestor", sign_binding_subject_payload)
     return _resolve_provider(
         profile_value,
         eligibility_authority=_documentation_authority(profile_value, kwargs),
@@ -615,7 +623,7 @@ def test_runtime_denials_restrict_owner_authorization_without_granting_it(tmp_pa
 
     offline_result = _resolve_provider(
         profile(), **{**base, "network_allowed": False,
-                      "issuance_attestor": sign_binding_subject}
+                      "issuance_attestor": sign_binding_subject_payload}
     )
     assert offline_result.status is DocumentationStatus.VALID
 
@@ -742,54 +750,47 @@ def test_provider_binding_requires_authenticated_agf_issuance():
         ).assess(request(provider_binding=tampered), now=NOW)
 
 
-def test_attestor_rejects_unbound_caller_subjects():
-    with pytest.raises(TypeError, match="governed issuance request"):
-        sign_binding_subject({"available": True})
+def test_runtime_rejects_caller_signing_callbacks_without_invoking_them():
+    called = []
+    result = _production_resolve_provider(
+        profile(), project_id=PROJECT, now=NOW, available=True, authenticated=True,
+        policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
+        eligibility_authority=binding_for("knowledge-docs").authority, target_sha=REVISION,
+        issuance_attestor=lambda subject: called.append(subject),
+    )
+    assert result.status is DocumentationStatus.PROVIDER_INELIGIBLE
+    assert called == []
 
 
-def test_issuance_registry_is_not_created_in_the_caller_process():
-    def owner_callback(operation):
-        copied_context = contextvars.copy_context()
-        envelope = sign_binding_subject(operation)
-        with pytest.raises(DocumentationError, match="unavailable"):
-            copied_context.run(operation.consume)
-        return envelope
-
+def test_issuance_registry_is_absent_from_the_runtime():
     result = resolve_provider(
-        profile(provider_id="knowledge-provider-issued"), project_id=PROJECT, now=NOW,
-        available=True, authenticated=True, policy_authorized=True,
-        privacy_eligible=True, network_allowed=True, required=True,
-        issuance_attestor=owner_callback,
+        profile(), project_id=PROJECT, now=NOW, available=True, authenticated=True,
+        policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
     )
     assert result.status is DocumentationStatus.VALID
     import agf_orchestrator.documentation as documentation_module
 
-    assert documentation_module._OWNER_ISSUANCE_STATES == {}
+    assert not hasattr(documentation_module, "_OWNER_ISSUANCE_STATES")
+    assert not hasattr(documentation_module, "_BoundProviderIssuance")
 
 
-def test_issuance_operation_is_exact_and_non_reentrant():
-    def reentrant(operation):
-        envelope = sign_binding_subject(operation)
-        with pytest.raises(DocumentationError, match="unavailable"):
-            sign_binding_subject(operation)
-        return envelope
+def test_owner_endpoint_cannot_substitute_a_different_signed_subject():
+    def substitutes(subject):
+        return sign_binding_subject_payload({**subject, "provider_id": "knowledge-provider-b"})
 
     result = resolve_provider(
-        profile(provider_id="knowledge-provider-issued"), project_id=PROJECT, now=NOW,
-        available=True, authenticated=True, policy_authorized=True,
-        privacy_eligible=True, network_allowed=True, required=True,
-        issuance_attestor=reentrant,
+        profile(), project_id=PROJECT, now=NOW, available=True, authenticated=True,
+        policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
+        issuance_attestor=substitutes,
     )
-    assert result.status is DocumentationStatus.VALID
+    assert result.status is DocumentationStatus.PROVIDER_INELIGIBLE
 
 
-def test_issuance_process_does_not_expose_operation_to_async_caller_code():
+def test_owner_endpoint_works_from_an_async_caller():
     async def scenario():
         result = resolve_provider(
-            profile(provider_id="knowledge-provider-issued"), project_id=PROJECT, now=NOW,
-            available=True, authenticated=True, policy_authorized=True,
-            privacy_eligible=True, network_allowed=True, required=True,
-            issuance_attestor=sign_binding_subject,
+            profile(), project_id=PROJECT, now=NOW, available=True, authenticated=True,
+            policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
         )
         assert result.status is DocumentationStatus.VALID
         await asyncio.sleep(0)
@@ -797,25 +798,16 @@ def test_issuance_process_does_not_expose_operation_to_async_caller_code():
     asyncio.run(scenario())
 
 
-def test_issuance_state_is_not_mutable_through_the_capability():
-    def tampers(operation):
-        assert not hasattr(operation, "__dict__")
-        with pytest.raises(AttributeError):
-            setattr(operation, "__used", False)
-        with pytest.raises(AttributeError):
-            setattr(operation, "active", True)
-        clone = copy.copy(operation)
-        with pytest.raises(DocumentationError, match="unavailable"):
-            sign_binding_subject(clone)
-        return sign_binding_subject(operation)
+def test_owner_endpoint_cannot_supply_a_self_hashed_unsigned_response():
+    def unsigned(subject):
+        return {"payload_hash": hashlib.sha256(json.dumps(subject).encode()).hexdigest()}
 
     result = resolve_provider(
-        profile(provider_id="knowledge-provider-issued"), project_id=PROJECT, now=NOW,
-        available=True, authenticated=True, policy_authorized=True,
-        privacy_eligible=True, network_allowed=True, required=True,
-        issuance_attestor=tampers,
+        profile(), project_id=PROJECT, now=NOW, available=True, authenticated=True,
+        policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
+        issuance_attestor=unsigned,
     )
-    assert result.status is DocumentationStatus.VALID
+    assert result.status is DocumentationStatus.PROVIDER_INELIGIBLE
 
 
 def test_public_binding_data_cannot_forge_authenticated_issuance():
@@ -884,16 +876,12 @@ def test_signed_runtime_denial_is_rejected_by_binding_verifier():
         denied.validate(now=NOW, eligibility_authority=issued.authority)
 
 
-def test_owner_process_start_failure_remains_unavailable(monkeypatch):
-    from multiprocessing.process import BaseProcess
-
-    def unavailable_start(self):
-        raise OSError("process capacity exhausted")
-
-    monkeypatch.setattr(BaseProcess, "start", unavailable_start)
-    result = resolve_provider(
+def test_owner_socket_unavailable_returns_typed_denial(tmp_path):
+    result = _production_resolve_provider(
         profile(), project_id=PROJECT, now=NOW, available=True, authenticated=True,
         policy_authorized=True, privacy_eligible=True, network_allowed=True, required=True,
+        eligibility_authority=binding_for("knowledge-docs").authority, target_sha=REVISION,
+        issuance_endpoint=str(tmp_path / "missing.sock"),
     )
     assert result.status is DocumentationStatus.PROVIDER_INELIGIBLE
     assert result.binding is None
@@ -1954,3 +1942,11 @@ def test_npm_bare_partial_versions_are_ranges(constraint, resolved, expected):
     assert evidence(
         dependency=item.dependency, documentation_version=resolved
     ).assess(item, now=NOW) is expected
+
+
+@pytest.mark.parametrize("endpoint", ["relative.sock", lambda _subject: {}])
+def test_owner_endpoint_rejects_nonabsolute_or_callable_destinations(endpoint):
+    from agf_orchestrator.documentation import _request_owner_attestation
+
+    with pytest.raises(DocumentationError, match="absolute socket path"):
+        _request_owner_attestation({}, endpoint)

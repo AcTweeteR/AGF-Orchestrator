@@ -12,7 +12,7 @@ body:
     attributes:
       label: Integration or project
       description: Name and public URL of the integration, if available.
-      placeholder: Example: provider/project-name
+      placeholder: "Example: provider/project-name"
     validations:
       required: true
 

@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-import multiprocessing
 import re
+import socket
+import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import parse_qsl, urlsplit
 
@@ -1122,118 +1124,53 @@ class ProviderBinding:
             raise DocumentationError("provider binding hash does not match content")
 
 
-class _BoundProviderIssuance:
-    """One-shot attestation operation bound to one immutable subject.
+def _request_owner_attestation(subject: dict[str, Any], endpoint: str) -> dict[str, Any]:
+    """Exchange bounded data with an independently operated owner endpoint.
 
-    The injected owner-controller hook receives this operation, never a
-    caller-selected subject or ambient signing context.  It can request the
-    one expected attestation synchronously; the operation is revoked as soon
-    as the callback returns.  This is API confinement, not a claim of Python
-    memory isolation.
+    Endpoint location is not authority. The caller verifies the returned owner
+    signature against the exact expected subject using the existing trust root.
+    No executable, callback or signing key is accepted by this client.
     """
+    if type(endpoint) is not str or not Path(endpoint).is_absolute():
+        raise DocumentationError("owner issuance endpoint must be an absolute socket path")
+    if not hasattr(socket, "AF_UNIX"):
+        raise DocumentationError("owner issuance transport is unavailable")
+    request = json.dumps(
+        {"schema_version": "1.0", "operation": "attest-provider-binding", "subject": subject},
+        allow_nan=False, separators=(",", ":"),
+    ).encode()
+    if len(request) > 64 * 1024:
+        raise DocumentationError("owner issuance request exceeds size limit")
+    deadline = time.monotonic() + 10
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(10)
+        connection.connect(endpoint)
+        connection.settimeout(max(0.001, deadline - time.monotonic()))
+        connection.sendall(len(request).to_bytes(4, "big") + request)
 
-    __slots__ = ()
+        def receive_exact(size: int) -> bytes:
+            result = bytearray()
+            while len(result) < size:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("owner issuance response timed out")
+                connection.settimeout(remaining)
+                chunk = connection.recv(size - len(result))
+                if not chunk:
+                    raise DocumentationError("owner issuance response is incomplete")
+                result.extend(chunk)
+            return bytes(result)
 
-    @property
-    def subject(self) -> dict[str, Any]:
-        """Return a detached observation, never the signed subject object."""
-        return _issuance_subject(self)
-
-    def consume(self) -> dict[str, Any]:
-        """Consume the one exact subject during the synchronous callback."""
-        return _consume_issuance(self)
-
-    def revoke(self) -> None:
-        _revoke_issuance(self)
-
-
-# This registry exists only in the owner-controlled attestor process.  It is
-# never created in, or shared with, the orchestrator/caller process.
-_OWNER_ISSUANCE_STATES: dict[_BoundProviderIssuance, dict[str, Any]] = {}
-
-
-def _issuance_subject(operation: _BoundProviderIssuance) -> dict[str, Any]:
-    state = _OWNER_ISSUANCE_STATES.get(operation)
-    if state is None or state["used"] is True or state["active"] is not True:
-        raise DocumentationError("provider issuance operation is unavailable")
-    return json.loads(json.dumps(state["subject"]))
-
-
-def _consume_issuance(operation: _BoundProviderIssuance) -> dict[str, Any]:
-    state = _OWNER_ISSUANCE_STATES.get(operation)
-    if state is None or state["used"] is True or state["active"] is not True:
-        raise DocumentationError("provider issuance operation is unavailable")
-    state["used"] = True
-    return json.loads(json.dumps(state["subject"]))
-
-
-def _revoke_issuance(operation: _BoundProviderIssuance) -> None:
-    _OWNER_ISSUANCE_STATES.pop(operation, None)
-
-
-def _owner_issuance_worker(connection, subject: dict[str, Any], attestor: Any) -> None:
-    """Serve one issuance in a separate owner-controlled process."""
-    operation = _BoundProviderIssuance()
-    _OWNER_ISSUANCE_STATES[operation] = {
-        "subject": json.loads(json.dumps(subject)),
-        "active": True,
-        "used": False,
-    }
-    try:
-        request = connection.recv_bytes(64)
-        if request != b"issue":
-            raise DocumentationError("owner issuance request is invalid")
-        envelope = attestor(operation)
-        if not isinstance(envelope, dict):
-            raise TypeError("owner issuance attestor returned an invalid envelope")
-        connection.send_bytes(json.dumps(envelope, separators=(",", ":")).encode())
-    except (TimeoutError, ConnectionError, OSError) as exc:
-        connection.send_bytes(
-            json.dumps({"__error__": "unavailable", "message": str(exc)}).encode()
-        )
-    except (DocumentationError, TypeError, ValueError) as exc:
-        connection.send_bytes(json.dumps({"__error__": "invalid", "message": str(exc)}).encode())
-    finally:
-        _revoke_issuance(operation)
-        connection.close()
-
-
-def _issue_in_owner_process(subject: dict[str, Any], attestor: Any) -> dict[str, Any]:
-    """Request one exact attestation over restricted local IPC."""
-    context = multiprocessing.get_context("fork")
-    parent, child = context.Pipe(duplex=True)
-    process = context.Process(
-        target=_owner_issuance_worker,
-        args=(child, json.loads(json.dumps(subject)), attestor),
-        daemon=True,
-    )
-    started = False
-    try:
-        process.start()
-        started = True
-        child.close()
-        parent.send_bytes(b"issue")
-        if not parent.poll(10):
-            raise TimeoutError("owner issuance attestor is unavailable")
+        size = int.from_bytes(receive_exact(4), "big")
+        if not 0 < size <= 64 * 1024:
+            raise DocumentationError("owner issuance response exceeds size limit")
         try:
-            response = json.loads(parent.recv_bytes(64 * 1024))
-        except (EOFError, OSError) as exc:
-            raise DocumentationError("owner issuance process failed") from exc
-        if not isinstance(response, dict):
-            raise DocumentationError("owner issuance response is invalid")
-        error = response.get("__error__")
-        if error == "unavailable":
-            raise OSError(response.get("message", "owner issuance attestor is unavailable"))
-        if error == "invalid":
-            raise DocumentationError(response.get("message", "owner issuance response is invalid"))
-        return response
-    finally:
-        parent.close()
-        child.close()
-        if started:
-            if process.is_alive():
-                process.terminate()
-            process.join(timeout=2)
+            response = json.loads(receive_exact(size))
+        except (UnicodeError, ValueError, RecursionError) as exc:
+            raise DocumentationError("owner issuance response is invalid") from exc
+    if not isinstance(response, dict):
+        raise DocumentationError("owner issuance response is invalid")
+    return response
 
 
 def _seal_provider_binding(
@@ -1242,6 +1179,7 @@ def _seal_provider_binding(
     decision: Any,
     eligibility_authority: ProviderEligibilityAuthority | None = None,
     issuance_attestor: Any | None = None,
+    issuance_endpoint: str | None = None,
     runtime_constraints: ProviderRuntimeConstraints | None = None,
 ) -> ProviderBinding:
     authority = _canonical_authority(eligibility_authority)
@@ -1287,8 +1225,10 @@ def _seal_provider_binding(
             )
         ],
     }
-    if not callable(issuance_attestor):
-        raise DocumentationError("owner issuance attestor is unavailable")
+    if issuance_attestor is not None:
+        raise DocumentationError("caller-controlled issuance callbacks are not supported")
+    if issuance_endpoint is None:
+        raise DocumentationError("owner issuance endpoint is unavailable")
     effective_runtime = {
         "available": runtime_constraints.available,
         "authenticated": (
@@ -1316,7 +1256,7 @@ def _seal_provider_binding(
     ).hexdigest()
     expected_subject = json.loads(json.dumps(subject))
     try:
-        issuance_attestation = _issue_in_owner_process(subject, issuance_attestor)
+        issuance_attestation = _request_owner_attestation(subject, issuance_endpoint)
         if not isinstance(issuance_attestation, dict):
             raise TypeError
         expected_subject_hash = hashlib.sha256(
@@ -1758,6 +1698,7 @@ def resolve_provider(
     target_sha: str | None = None,
     revision_scope: str = "revision-bound",
     issuance_attestor: Any | None = None,
+    issuance_endpoint: str | None = None,
 ) -> ProviderResolution:
     try:
         profile.validate(now=now)
@@ -1798,6 +1739,7 @@ def resolve_provider(
         binding = _seal_provider_binding(
             profile, decision=decision, eligibility_authority=authority,
             issuance_attestor=issuance_attestor,
+            issuance_endpoint=issuance_endpoint,
             runtime_constraints=runtime,
         )
     except DocumentationError as exc:

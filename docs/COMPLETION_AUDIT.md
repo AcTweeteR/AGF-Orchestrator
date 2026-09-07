@@ -134,3 +134,132 @@ merge or certify the overall mission complete.
    evidence. Run final independent code-first audit and all required gates.
 
 AGF is not declared SUCCESS or NO_JUSTIFIED_WORK by this checkpoint.
+
+
+## Integration checkpoint — 2026-09-07
+
+This checkpoint supersedes the current-state claims above while retaining the
+initial baseline as historical evidence. It does not certify mission completion.
+
+- FACT: GitHub reports #185 merged to main at `0f286086`, #187 merged to main
+  at `776d56aa`, and #186 merged to the documentation branch at `c12d0f5a`.
+  The expected commits are ancestors of their target branches. The latest
+  main validation run, `34059993879`, passed; the documentation target run,
+  `34060000192`, passed. Main immediately after #185 had one failing freshness
+  test (`34059987528`); its real-clock timestamp race is corrected in this
+  candidate using deterministic file timestamps, preserving the stale-output gate.
+- FACT: dependency alerts now report all four advisories fixed. Superseded
+  dependency PRs #176, #177 and #184 are closed. Issues #161 and #164 remain
+  open; neither a release nor the presence of capability modules closes them.
+- FACT: the integration candidate preserves the ancestry of #169, #170, #171,
+  #172 (including #186), #173 and #179. It reconciles their roadmap conflicts
+  without dropping the newer harness, gateway and research scope. These PRs
+  remain pending until reviewed integration reaches their intended target.
+- FACT: documentation test collection no longer creates authority state or
+  replaces verification functions globally. The canonical prerequisite's
+  richer tests use per-test authority fixtures; the subprocess import test
+  verifies no import-time state mutation. The earlier 876/799 comparison is
+  explained in section C; later totals include additional merged tests.
+- FACT: owner-worker startup failure now preserves the original typed failure
+  instead of masking it with `join` on an unstarted process. Both IPC endpoints
+  are closed; lack of an operational owner attestor still fails closed.
+- FACT: an expired campaign lease allowed a second runner to invoke work while
+  the first callback remained active. A deterministic reproduction failed before
+  correction. A per-campaign OS lock now spans the complete tick, including
+  probes, invocation and persistence. A real child-process exit test verifies
+  that restart respects the outstanding lease, then continues with the same
+  lineage. This is local POSIX exclusion, not distributed or exactly-once
+  execution; external side effects require reconciliation after interruption.
+- FACT: independent Reviewer approved the startup, isolation, freshness and
+  campaign-lock corrections. Compliance passed the final controls inspected,
+  including 19 independently executed campaign tests; Reviewer independently
+  ran 32 runner/daemon tests. The protected workflow changes retain human merge.
+- FACT: the documentation site builds with `mkdocs build --strict`. Publication
+  permissions belong only to the main-push deployment job; PR builds do not
+  receive Pages write or OIDC permissions. The workflow publishes documentation
+  on applicable main pushes after human integration.
+
+### Live transport evidence and limits
+
+- FACT: with the loopback FCC service available, an actual Codex 0.149.1
+  invocation through the AGF Codex adapter returned `AGF_FCC_CANARY_OK`, exit 0,
+  with verified final-message transport in a read-only sandbox.
+- FACT: a subsequent actual CLI resume of the same persisted session returned
+  `AGF_FCC_RESUME_OK`, exit 0, without missing-provider errors. FCC's existing
+  catalog converter generated the isolated Codex catalog; this removed the
+  model-list decoding error without adding catalog conversion to AGF.
+- FACT: these diagnostic invocations used a locally configured model that the
+  existing provider-validation record does not qualify as primary or fallback
+  for governed engineering. Text success does not promote provider eligibility.
+- FACT: the owner-level configuration repair retains the provider default,
+  session history and backup; no credentials or host-specific configuration
+  are committed here. The failure can recur for any persisted custom provider
+  whose definition exists only in ephemeral invocation overrides.
+- UNKNOWN: a full live AGF engineering campaign has not been demonstrated.
+  Read-only text inference and CLI resume do not establish planning, bounded
+  modification, independent review, correction or campaign completion.
+
+### Independent code-first mission audit
+
+Removing the roadmap does not make the implementation complete. Independent
+inspection confirms these remaining implementation gaps:
+
+1. Executor and delivery block every nonempty dependency list rather than
+   verifying completed predecessor evidence.
+2. Directory scope matching differs between Executor and delivery/review/
+   Compliance; changing acceptance requires an explicit consistent contract.
+3. Session handling maps `NO_JUSTIFIED_WORK` to `BLOCKED`, so the mission's
+   terminal outcomes are not yet represented distinctly throughout the flow.
+4. Objective completion criteria are stored and validated structurally, but
+   have no evidence-based evaluator connected to global completion.
+5. Session resume authorizes a phase; it does not execute that phase. The
+   generic campaign driver depends on an external work command. A complete
+   governed continuation path still needs implementation and demonstration.
+6. Canonical eligibility has a data-only external owner client, but no
+   operational owner signer or CLI/session wiring. The old callback process
+   was removed after the open #173 finding was independently reproduced;
+   see the owner issuance protocol for remaining operator obligations.
+
+The first five items are engineering work, not missing credentials. Separately,
+production authority activation and protected integration remain owner actions.
+Do not bootstrap authority from test fixtures or claim that nominal module
+coverage completes the mission. Continue after human integration with these
+contracts, their regression tests, and a genuinely owner-provisioned live target.
+
+
+### Subsequent review corrections
+
+The pending GitHub review exposed a confirmed P1 in #173: a caller-supplied
+callback ran with issuance state and could obtain an extra signed subject.
+Verifying only the envelope returned to the parent did not detect that side
+effect. The runtime callback/registry/fork mechanism is now removed. A bounded
+data-only socket client consumes an independently issued owner envelope and
+verifies its exact subject through the existing trust root. Legacy callbacks
+are rejected without execution. This supersedes the startup workaround above;
+the runtime no longer needs `fork` or child-process permission for issuance.
+The external service remains an owner integration requirement, not an activated
+feature. The adapted 195 documentation tests and 12 additional real local IPC
+tests pass; test signing material remains entirely in fixtures.
+
+An actual failed transport probe timed out without a final message. Restoring
+the valid isolated configuration and resuming the original Codex session
+returned `AGF_FCC_RECOVERED_OK`, exit 0. This is transport recovery evidence,
+not a complete AGF engineering campaign.
+
+
+Reviewer subsequently approved the data-only owner client after 29 independent
+relevant tests, including real local sockets. Compliance passed the client and
+protocol without authorizing activation. The historical #172 findings have
+matching version, freshness, claim, secret-screening and replay regressions in
+the combined suite; obsolete standalone issuance-database paths were removed.
+The final integration PR must remain subject to commit-specific CI and human
+merge. No pending implementation gap is closed solely by this reconciliation.
+
+
+Final local integration validation: **1,112 tests passed** (Python 3.14,
+120.14 seconds), Ruff passed, strict documentation build passed, all eight
+GitHub YAML files parsed, and the complete integration diff passed whitespace
+checks. The pre-final-commit public-history audit passed for 499 commits and
+1,060 unique blobs; CI repeats that audit against the pushed history. The
+runtime has no configured typecheck gate. These results do not replace CI on
+Python 3.12 or authorize human-reserved integration.

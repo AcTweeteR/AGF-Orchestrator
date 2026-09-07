@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+from contextlib import contextmanager
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -59,13 +60,6 @@ def verify_envelope(payload: object, envelope: dict[str, object]) -> None:
     )
 
 
-def sign_binding_subject(request) -> dict[str, str]:
-    """Fixture-only owner controller for authenticated binding issuance."""
-    if type(request).__name__ != "_BoundProviderIssuance":
-        raise TypeError("owner attestor requires a governed issuance request")
-    return _sign_binding_subject_payload(request.consume())
-
-
 def _sign_binding_subject_payload(subject: dict[str, object]) -> dict[str, str]:
     payload_bytes = canonical_bytes(subject)
     return {
@@ -96,3 +90,65 @@ def canonical_test_authority(store):
             os.environ.pop("AGF_STATE_DIR", None)
         else:
             os.environ["AGF_STATE_DIR"] = previous
+
+
+# This is a disposable test owner endpoint. It is not shipped as an operational
+# signer, and its generated key is trusted only by test verification fixtures.
+
+
+@contextmanager
+def owner_endpoint(handler=sign_binding_subject_payload, *, response_bytes=None):
+    import multiprocessing
+    import socket
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory(prefix="agf-owner-", dir="/tmp") as root:
+        endpoint = str(Path(root) / "owner.sock")
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(endpoint)
+        listener.listen(1)
+        listener.settimeout(2)
+
+        def serve():
+            def read_exact(connection, size):
+                data = b""
+                while len(data) < size:
+                    chunk = connection.recv(size - len(data))
+                    if not chunk:
+                        raise ValueError("incomplete fixture request")
+                    data += chunk
+                return data
+
+            try:
+                with listener.accept()[0] as connection:
+                    connection.settimeout(2)
+                    size = int.from_bytes(read_exact(connection, 4), "big")
+                    assert 0 < size <= 64 * 1024
+                    request = json.loads(read_exact(connection, size))
+                    assert request["operation"] == "attest-provider-binding"
+                    assert request["schema_version"] == "1.0"
+                    try:
+                        response = handler(request["subject"])
+                    except Exception:
+                        response = {"error": "test owner unavailable"}
+                    raw = json.dumps(response).encode()
+                    connection.sendall(
+                        response_bytes if response_bytes is not None
+                        else len(raw).to_bytes(4, "big") + raw
+                    )
+            except (TimeoutError, OSError):
+                pass  # The runtime can reject before connecting.
+            finally:
+                listener.close()
+
+        process = multiprocessing.get_context("fork").Process(target=serve)
+        process.start()
+        listener.close()
+        try:
+            yield endpoint
+        finally:
+            process.join(timeout=0.05)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2)

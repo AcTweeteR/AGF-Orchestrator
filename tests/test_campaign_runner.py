@@ -1,3 +1,5 @@
+import multiprocessing
+import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -257,3 +259,63 @@ def test_retry_reset_is_bounded_auditable_and_requires_repair_state(tmp_path):
     assert reset.events[-1].event_type == "RETRY_RESET"
     with pytest.raises(CampaignRunnerError):
         runner.reset_retry("second reset is not idempotent")
+
+
+def test_expired_lease_does_not_duplicate_still_running_work(tmp_path):
+    store, clock = build(tmp_path)
+    first = PersistentCampaignRunner(store, now=clock)
+    second = PersistentCampaignRunner(store, now=clock)
+    calls = []
+
+    def work(state):
+        calls.append("first")
+        clock.advance(first.lease_seconds + 1)
+        observed = second.tick(
+            lambda _state: True,
+            lambda _state: calls.append("duplicate") or StepResult("COMPLETE"),
+        )
+        assert observed.lease_owner == first.worker_id
+        return StepResult("COMPLETE")
+
+    final = first.tick(lambda _state: True, work)
+    assert calls == ["first"]
+    assert final.status is CampaignStatus.COMPLETE
+
+
+def test_crashed_worker_releases_lock_and_restart_preserves_lineage(tmp_path):
+    store, clock = build(tmp_path)
+    before = store.load()
+
+    def crash():
+        runner = PersistentCampaignRunner(store, now=clock)
+        runner.tick(lambda _state: True, lambda _state: os._exit(17))
+
+    process = multiprocessing.get_context("fork").Process(target=crash)
+    process.start()
+    process.join(timeout=5)
+    try:
+        assert not process.is_alive()
+        assert process.exitcode == 17
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+    interrupted = store.load()
+    assert interrupted.status is CampaignStatus.RUNNING
+    assert interrupted.lease_owner is not None
+    calls = []
+    restarted = PersistentCampaignRunner(store, now=clock)
+    restarted.tick(lambda _state: True, lambda state: calls.append(state))
+    assert calls == []  # A crash does not bypass the outstanding lease.
+    clock.advance(restarted.lease_seconds + 1)
+    recovered = restarted.tick(
+        lambda _state: True,
+        lambda state: calls.append(state) or StepResult("COMPLETE"),
+    )
+    assert len(calls) == 1
+    assert recovered.status is CampaignStatus.COMPLETE
+    assert recovered.session_id == before.session_id
+    assert recovered.lineage_binding == before.lineage_binding
+    assert [event.event_type for event in recovered.events] == [
+        "WORK_CLAIM", "WORK_CLAIM", "STEP",
+    ]
