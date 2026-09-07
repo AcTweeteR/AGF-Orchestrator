@@ -55,14 +55,43 @@ Extend AGF-Orchestrator with reusable governed procedures, external capability a
 
 ## Remaining execution backlog
 
-### E12-T10 — Session resilience, workspace trust and evidence ergonomics — PLANNED
+### E12-T10 — Session resilience, workspace trust and evidence ergonomics — Review
 
-- wrong-workspace resume protection;
-- checkpoint/recovery lineage and stale-checkpoint rejection;
-- governed undo/redo evaluation;
-- evidence archives and run scorecards from existing evidence;
-- doctor/preflight coverage for recovery/workspace/rollback state;
-- protected governance plane inspired by `oh-my-cli` without runtime dependency.
+Inspired by `qwen-code-dev-bot/oh-my-cli`, but implemented in AGF-native form.
+
+Scope:
+- read-only `WorkspaceTrust`, doctor findings, bounded evidence archives and evidence-derived scorecards are implemented in `agf_orchestrator.resilience`;
+- compare existing AGF recovery/session/evidence behavior against `oh-my-cli`;
+- workspace trust-boundary checks preventing resumed work against the wrong repository/workspace;
+- checkpoint/recovery with explicit lineage and stale-checkpoint rejection;
+- evaluate governed undo/redo for reversible local mutations;
+- exportable evidence archives derived from existing AGF evidence;
+- run scorecards derived from evidence rather than model opinion;
+- extend doctor/preflight for workspace mismatch, checkpoint staleness, broken recovery lineage and missing rollback capability;
+- protect Constitution, policy roots, kill-switch authority, credential policy, merge authority and audit truth from autonomous/provider mutation.
+
+Acceptance:
+- wrong-workspace resume fails closed;
+- stale/foreign checkpoints cannot continue a mission;
+- undo/redo never rewrites external reality or bypasses external-result reconciliation;
+- evidence archives are bounded, attributable, deterministic and secret-safe;
+- no `oh-my-cli` runtime dependency.
+
+Delivered evidence so far:
+- workspace identity mismatch and unverifiable identity fail closed or remain `UNKNOWN`;
+- archives are deterministic, size-bounded and reject secret-shaped evidence;
+- scorecards contain only persisted session/evidence-derived facts;
+- focused resilience and CLI tests pass;
+- `session doctor` and `session archive` are read-only, project/session-bound
+  and machine-readable with `--json`.
+
+Undo/redo evaluation: `NO_JUSTIFIED_IMPLEMENTATION` is the current bounded
+decision. AGF already has Git/worktree isolation, immutable artifacts and
+external-result reconciliation. A second undo/redo store would duplicate Git,
+could obscure remote provenance, and could not reverse pushes, PRs, merges or
+other external reality. Local reversible mutation remains governed by the
+existing worktree and delivery controls; this decision does not authorize any
+rollback or external action.
 
 ### E12-T11 — Serena code-intelligence provider — PLANNED
 
