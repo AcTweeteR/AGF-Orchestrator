@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .path_scope import paths_in_scope
+
 
 class DeliveryReconciliationError(ValueError):
     """Raised when delivery intent or observed target state is not provable."""
@@ -121,8 +123,8 @@ class DeliveryIntent:
             raise DeliveryReconciliationError("delivery intent evidence generation is invalid")
         if self.state not in {"EXTERNAL_ACTION_REQUIRED", "OBSERVED", "VERIFIED", "COMPLETED"}:
             raise DeliveryReconciliationError("delivery intent state is invalid")
-        if not self.allowed_paths or not self.changed_files or not set(self.changed_files).issubset(
-            set(self.allowed_paths)
+        if not self.allowed_paths or not self.changed_files or not paths_in_scope(
+            self.changed_files, self.allowed_paths
         ):
             raise DeliveryReconciliationError("delivery intent path binding is invalid")
         if self.content_sha256 != _sha(self._payload()):
@@ -311,7 +313,7 @@ class DeliveryIntentStore:
             or diff_sha != intent.diff_sha256
         ):
             raise DeliveryReconciliationError("observed target tree or diff differs")
-        if not set(changed).issubset(set(intent.allowed_paths)):
+        if not paths_in_scope(changed, intent.allowed_paths):
             raise DeliveryReconciliationError("observed target changed paths exceed intent")
         if receipt_path.is_symlink():
             raise DeliveryReconciliationError("delivery receipt must not be a symlink")

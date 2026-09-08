@@ -10,6 +10,7 @@ from typing import Protocol
 from .adapters.codex import CodexAdapter
 from .engineering_memory_evidence import MemoryEvidenceError, validate_query_evidence
 from .models import ExecutionPlan, Task
+from .path_scope import path_in_scope
 from .review_models import ReviewFinding, ReviewReport, ReviewStatus, finding_identity
 from .risk_engine import risk_evidence
 from .risk_models import RiskValidationError
@@ -239,7 +240,9 @@ class DeterministicReviewer:
         previous_findings=None, correction_round=0, memory_evidence=None, risk_assessment=None,
     ):
         findings: list[ReviewFinding] = []
-        unauthorized = sorted(set(changed_files) - set(task.allowed_paths))
+        unauthorized = sorted(
+            path for path in changed_files if not path_in_scope(path, task.allowed_paths)
+        )
         if unauthorized:
             findings.append(ReviewFinding(
                 "REV-SCOPE", "SCOPE", "blocker", "Changed paths exceed task allowed_paths.",

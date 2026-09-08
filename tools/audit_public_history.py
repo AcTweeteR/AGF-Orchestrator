@@ -103,7 +103,7 @@ def scan_blob(sha: str, path: str) -> list[str]:
     findings: list[str] = []
     size = object_size(sha)
     if size > 10 * 1024 * 1024:
-        findings.append(f"oversized-blob {sha} {path or '<no-path>'} size={size}")
+        findings.append(f"oversized-blob {sha} size={size}")
         return findings
 
     data = run("git", "cat-file", "blob", sha)
@@ -114,13 +114,13 @@ def scan_blob(sha: str, path: str) -> list[str]:
         for match in pattern.finditer(data):
             if name != "private-key" and looks_obviously_synthetic_credential(match.group(0)):
                 continue
-            findings.append(f"{name} {sha} {path or '<no-path>'}")
+            findings.append(f"{name} {sha}")
             break
 
     for match in ASSIGNMENT_RE.finditer(data):
         value = match.group(1).strip()
         if looks_like_real_secret(value):
-            findings.append(f"high-entropy-secret-assignment {sha} {path or '<no-path>'}")
+            findings.append(f"high-entropy-secret-assignment {sha}")
             break
 
     return findings
@@ -143,7 +143,7 @@ def main() -> int:
             path,
             re.I,
         ):
-            findings.append(f"sensitive-filename {sha} {path}")
+            findings.append(f"sensitive-filename {sha}")
         if object_type(sha) != "blob" or sha in blob_shas:
             continue
         blob_shas.add(sha)

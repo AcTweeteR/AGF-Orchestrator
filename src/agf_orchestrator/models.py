@@ -12,6 +12,7 @@ from .remote_identity import RemoteIdentityError, canonical_remote_identity
 
 class PlanStatus(StrEnum):
     READY = "READY"
+    NO_JUSTIFIED_WORK = "NO_JUSTIFIED_WORK"
     BLOCKED = "BLOCKED"
     HUMAN_REQUIRED = "HUMAN_REQUIRED"
 
@@ -127,6 +128,12 @@ class ExecutionPlan:
                 raise PlanValidationError(
                     "READY plans cannot contain unresolved human intervention"
                 )
+        if self.status is PlanStatus.NO_JUSTIFIED_WORK:
+            if self.tasks or self.human_intervention or self.dependencies or self.parallel_groups:
+                raise PlanValidationError("no-work plan contains executable work or blockers")
+            if (self.architecture_impact.get("planning_outcome") != "NO_JUSTIFIED_WORK"
+                    or not self.scope.get("assessment_hash")):
+                raise PlanValidationError("no-work plans require bound assessment evidence")
         for group in self.parallel_groups:
             if not group or not set(group).issubset(task_id_set):
                 raise PlanValidationError("parallel_groups reference unknown or empty tasks")
@@ -171,6 +178,8 @@ class ExecutionPlan:
         edges = {task_id: set() for task_id in task_ids}
         for task in self.tasks:
             edges[task.task_id].update(task.dependencies)
+        for dependency in self.dependencies:
+            edges[dependency["task_id"]].add(dependency["depends_on"])
         visiting: set[str] = set()
         visited: set[str] = set()
 

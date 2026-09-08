@@ -9,3 +9,5 @@ Architecture decision records (ADRs) capture durable choices about boundaries, a
 - [ADR-0003: Critical-only human merge policy](ADR-0003-critical-only-human-merge-policy.md)
 - [ADR-0004: Governed capability extensions](ADR-0004-governed-capability-extensions.md)
 - [ADR-0005: Canonical provider-eligibility authority](ADR-0005-canonical-provider-eligibility-authority.md)
+
+- [ADR-0006: Governed completion contracts](ADR-0006-governed-completion-contracts.md) — proposed execution scopes and no-work disposition.

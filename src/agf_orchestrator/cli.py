@@ -115,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     execute = commands.add_parser("execute", help="execute one approved task under safety gates")
     execute.add_argument("--plan", required=True, help="validated execution plan JSON")
     execute.add_argument("--task", required=True, help="selected task ID")
+    execute.add_argument("--session", help="managed session for dependency evidence")
     execute.add_argument("--repository", help="target Git repository")
     execute.add_argument("--project", help="registered project name or ID")
     execute.add_argument("--adapter", choices=["codex", "openhands", "ollama"], default="codex")
@@ -1028,7 +1029,8 @@ def run_execute(args: argparse.Namespace) -> int:
             else CodexAdapter(executable=args.codex_path, timeout=args.timeout)
         )
         result = Executor(adapter=adapter).execute(
-            plan, args.task, str(target_root), dry_run=not args.execute
+            plan, args.task, str(target_root), dry_run=not args.execute,
+            session_id=getattr(args, "session", None)
         )
         if args.output:
             write_execution_result(result, args.output)

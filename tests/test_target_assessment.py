@@ -170,3 +170,49 @@ def test_stale_architecture_evidence_is_rejected(tmp_path):
     current = context(root)
     with pytest.raises(AssessmentError, match="baseline SHA"):
         derive_architecture("document", current, evidence, proposal={"tasks": []})
+
+
+def test_explicit_no_work_has_distinct_non_execution_plan(tmp_path):
+    from agf_orchestrator.architect_planning import (
+        architect_response_hash,
+        build_architect_request,
+    )
+
+    root = repo(tmp_path)
+    repository = context(root)
+    evidence = assess(repository)
+    request = build_architect_request(
+        "assess remaining work", repository, evidence,
+        registered_project=SimpleNamespace(
+            project_id=evidence.project_id, repository_root=repository.root,
+            origin_url=repository.origin,
+        ),
+    )
+    response = {
+        "assessment_summary": "Reviewed the bounded repository",
+        "proposed_outcome": "NO_JUSTIFIED_WORK", "rationale": "No justified change found",
+        "confidence": 0.9, "proposed_tasks": [], "architecture_implications": [],
+        "preliminary_risk_indicators": [], "evidence_references": [evidence.evidence_hash],
+        "unresolved_unknowns": [],
+    }
+    decision = derive_architecture(
+        "assess remaining work", repository, evidence,
+        provider_selection={"planning_outcome": "NO_JUSTIFIED_WORK", "status": "SELECTED",
+                            "response_hash": architect_response_hash(response)},
+        architect_request=request, architect_response=response,
+    )
+    plan = Director().create_assessed_plan("assess remaining work", repository, evidence, decision)
+    assert plan.status is PlanStatus.NO_JUSTIFIED_WORK
+    assert not plan.tasks and not plan.human_intervention
+    assert plan.scope["assessment_hash"] == evidence.evidence_hash
+    with pytest.raises(AssessmentError):
+        replace(decision, requires_architect=True).validate(evidence)
+
+
+def test_no_work_metadata_without_architect_response_remains_blocked(tmp_path):
+    repository = context(repo(tmp_path))
+    decision = derive_architecture(
+        "assess remaining work", repository, assess(repository),
+        provider_selection={"planning_outcome": "NO_JUSTIFIED_WORK"},
+    )
+    assert decision.status == "BLOCKED"

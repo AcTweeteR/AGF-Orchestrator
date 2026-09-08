@@ -172,7 +172,7 @@ class ArchitectureDecision:
             raise AssessmentError("architecture evidence is stale")
         if self.assessment_hash != assessment.evidence_hash:
             raise AssessmentError("architecture assessment hash does not match")
-        if self.status not in {"approved", "BLOCKED"}:
+        if self.status not in {"approved", "BLOCKED", "NO_JUSTIFIED_WORK"}:
             raise AssessmentError("architecture status is invalid")
         if self.scope_authorization_id is not None and not self.scope_authorization_id.startswith(
             "scope-"
@@ -182,6 +182,10 @@ class ArchitectureDecision:
             raise AssessmentError("architecture scope identity is invalid")
         if self.planning_outcome not in {"BOUNDED_IMPLEMENTATION", "NO_JUSTIFIED_WORK", "BLOCKED"}:
             raise AssessmentError("architecture planning outcome is invalid")
+        if self.status == "NO_JUSTIFIED_WORK":
+            if (self.planning_outcome != "NO_JUSTIFIED_WORK" or self.tasks
+                    or self.requires_architect or not assessment.clean):
+                raise AssessmentError("no-work architecture has unresolved work or blockers")
         if self.status == "approved":
             if self.requires_architect or not self.tasks:
                 raise AssessmentError("approved architecture must produce executable tasks")
@@ -344,6 +348,8 @@ def derive_architecture(
     *,
     proposal: dict[str, Any] | None = None,
     provider_selection: dict[str, Any] | None = None,
+    architect_request=None,
+    architect_response: str | dict[str, Any] | None = None,
     scope_authorization_id: str | None = None,
     scope_id: str | None = None,
 ) -> ArchitectureDecision:
@@ -365,6 +371,44 @@ def derive_architecture(
         )
     if proposal is None:
         outcome = str(provider.get("planning_outcome", "BLOCKED"))
+        response_payload = None
+        if outcome == "NO_JUSTIFIED_WORK":
+            from .architect_planning import (
+                ArchitectPlanningError,
+                architect_request_hash,
+                architect_response_hash,
+                validate_architect_response,
+            )
+
+            try:
+                if (architect_request is None or architect_response is None
+                        or architect_request.assessment != assessment
+                        or architect_request.repository != repository
+                        or architect_request.objective != " ".join(goal.split())
+                        or architect_request_hash(architect_request.to_dict())
+                        != architect_request.request_hash
+                        or provider.get("status") != "SELECTED"
+                        or provider.get("response_hash")
+                        != architect_response_hash(architect_response)):
+                    raise ArchitectPlanningError("no-work assessment bindings are missing")
+                if validate_architect_response(architect_response, architect_request) is not None:
+                    raise ArchitectPlanningError("no-work response proposes implementation")
+                response_payload = (
+                    json.loads(architect_response) if isinstance(architect_response, str)
+                    else architect_response
+                )
+            except (ArchitectPlanningError, ValueError, TypeError):
+                outcome = "BLOCKED"
+        if outcome == "NO_JUSTIFIED_WORK" and response_payload is not None:
+            decision = ArchitectureDecision(
+                "1.0", "NO_JUSTIFIED_WORK", False,
+                response_payload["rationale"],
+                " ".join(goal.split()), assessment.project_id, assessment.baseline_sha,
+                assessment.evidence_hash, branch, (), (), (),
+                tuple(response_payload["evidence_references"]), (), (), provider, outcome,
+            )
+            decision.validate(assessment)
+            return decision
         return ArchitectureDecision(
             "1.0", "BLOCKED", True,
             "No target-specific implementation proposal is justified by assessment evidence.",
