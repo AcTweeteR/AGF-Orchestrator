@@ -38,17 +38,35 @@ def verify_task_dependencies(
     Historical delivery proves only predecessor availability. Present execution
     policy, risk and all other gates remain the responsibility of the caller.
     """
+    required_ids = set(task.dependencies) | {
+        edge["depends_on"] for edge in plan.dependencies if edge["task_id"] == task.task_id
+    }
+    return _read_verified(session_id, plan, required_ids, repository)
+
+
+def verify_integrated_plan(session_id, plan, repository, *, state_dir=None) -> list[str]:
+    """Audit all retained plan work without interpreting it as Objective completion."""
+    if not plan.tasks:
+        raise DependencyEvidenceError("an empty plan is not integration evidence")
+    return _read_verified(
+        session_id, plan, {task.task_id for task in plan.tasks}, repository,
+        state_dir=state_dir, all_tasks=True,
+    )
+
+
+def _read_verified(session_id, plan, required_ids, repository, *, state_dir=None, all_tasks=False):
     if not session_id:
         raise DependencyEvidenceError("dependencies require a persisted session")
     try:
-        return _verify(session_id, plan, task, repository)
+        return _verify(session_id, plan, required_ids, repository,
+                       state_dir=state_dir, all_tasks=all_tasks)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError,
             SessionStoreError, ProjectRegistryError) as exc:
         raise DependencyEvidenceError("dependency evidence is missing or inconsistent") from exc
 
 
-def _verify(session_id: str, plan: ExecutionPlan, task: Task, repository: str) -> list[str]:
-    sessions = SessionStore()
+def _verify(session_id, plan, required_ids, repository, *, state_dir=None, all_tasks=False):
+    sessions = SessionStore(state_dir)
     session = sessions.load(session_id)
     project = ProjectRegistry(sessions.state_dir).get(session.project_id)
     if (session.status not in {SessionStatus.READY, SessionStatus.EXECUTING}
@@ -78,10 +96,8 @@ def _verify(session_id: str, plan: ExecutionPlan, task: Task, repository: str) -
     path, current = read_plan(session.plan_path, session.artifact_hashes["plan"])
     if _hash(current) != _hash(plan.to_dict()):
         raise DependencyEvidenceError("dependency caller plan is not the current session plan")
-    required_ids = set(task.dependencies) | {
-        edge["depends_on"] for edge in plan.dependencies if edge["task_id"] == task.task_id
-    }
     required = {item.task_id: item for item in plan.tasks if item.task_id in required_ids}
+    current_tasks = {item["task_id"]: item for item in plan.to_dict()["tasks"]}
     if set(required) != required_ids:
         raise DependencyEvidenceError("unknown dependency")
     intents = DeliveryIntentStore(sessions.state_dir)
@@ -96,6 +112,22 @@ def _verify(session_id: str, plan: ExecutionPlan, task: Task, repository: str) -
         if not predecessor:
             break
         previous_path, previous = read_plan(predecessor, scope["predecessor_plan_sha256"])
+        if all_tasks and not {item["task_id"] for item in previous["tasks"]} <= required_ids:
+            raise DependencyEvidenceError("historical plan work was silently removed")
+        if all_tasks:
+            for historical_task in previous["tasks"]:
+                task_id = historical_task["task_id"]
+                historical_edges = {
+                    edge["depends_on"] for edge in previous["dependencies"]
+                    if edge["task_id"] == task_id
+                }
+                retained_edges = {
+                    edge["depends_on"] for edge in plan.dependencies
+                    if edge["task_id"] == task_id
+                }
+                if (historical_task != current_tasks[task_id]
+                        or historical_edges != retained_edges):
+                    raise DependencyEvidenceError("historical work definition was superseded")
         if ({key: value for key, value in previous["repository"].items() if key != "head_sha"}
                 != {key: value for key, value in current["repository"].items()
                     if key != "head_sha"}):

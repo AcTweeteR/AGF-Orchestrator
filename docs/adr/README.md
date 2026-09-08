@@ -11,3 +11,4 @@ Architecture decision records (ADRs) capture durable choices about boundaries, a
 - [ADR-0005: Canonical provider-eligibility authority](ADR-0005-canonical-provider-eligibility-authority.md)
 
 - [ADR-0006: Governed completion contracts](ADR-0006-governed-completion-contracts.md) — proposed execution scopes and no-work disposition.
+- [ADR-0007: Objective acceptance boundary](ADR-0007-objective-acceptance-boundary.md) — proposed existing-root approval and criterion-mapping contract; not active.

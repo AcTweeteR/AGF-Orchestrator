@@ -138,10 +138,19 @@ agf-orchestrator project list --json
 agf-orchestrator project verify --project my-project --json
 agf-orchestrator session start --project my-project --goal "Bounded objective"
 agf-orchestrator session resume --project my-project --session SESSION_ID
+agf-orchestrator session audit-completion --session SESSION_ID --json
 agf-orchestrator inbox --json
 ```
 
 Sessions preserve transition history and evidence bindings, detect target or artifact drift, and surface human-attention states instead of silently advancing through ambiguity.
+
+`audit-completion` is a read-only prerequisite diagnostic and returns exit code 2
+while completion remains unproved. It checks integrated plan work against canonical
+delivery evidence; it cannot authenticate Objective acceptance yet. Even fully
+integrated work remains `HUMAN_REQUIRED` until the proposed
+[Objective acceptance boundary](docs/adr/ADR-0007-objective-acceptance-boundary.md)
+is decided and implemented. Public status transitions cannot mark a session
+`COMPLETED` from an actor label or caller-supplied evidence text.
 
 For dependent tasks, pass `--session SESSION_ID` to `execute` or `deliver` and
 use that session's current plan. A predecessor becomes available only after

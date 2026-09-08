@@ -331,3 +331,43 @@ reference set. No tests were removed to obtain this result. The obsolete test
 expectation that dependency execution was unavailable now checks the required
 persisted-session gate; positive dependency behavior has separate integration
 tests. This gate does not replace CI on the published commit or human integration.
+
+## Post-merge continuation of #195
+
+PR #195 is integrated at `7766d55`. Post-merge CI `34190159978` passed all
+1,145 tests and the history audit (498 commits, 1,096 unique blobs in the CI
+reference set). CodeQL `34190160005` and Docs `34190159965` also passed.
+CodeQL alert #1 remained on main despite its absence on the PR reference.
+Independent inspection confirmed a false positive: fixed labels and Git object
+IDs reach output; matched bytes and filenames do not. Both privacy tests passed
+independently. Only that alert was dismissed; the CodeQL rule remains enabled.
+
+The next audit reproduced a public PR_READY-to-COMPLETED transition without
+Objective acceptance evidence. The correction blocks that API and adds the
+read-only `session audit-completion` command. Canonical integrated deliveries
+establish plan-work integration, including retained lineage; they cannot
+authenticate Objective approval or criterion coverage. Removing historical work
+or changing its definition or prerequisite edges fails full-plan verification.
+The diagnostic never returns SUCCESS and leaves session state unchanged.
+
+Objective `status=APPROVED` is currently only a JSON value. No installed component
+authenticates it, and no approved mapping connects free-text criteria to evidence.
+Adding one without an owner decision would invent authority. The concrete
+proposal is [ADR-0007](adr/ADR-0007-objective-acceptance-boundary.md): extend the
+existing owner-controlled generation with an Objective/criterion-mapping
+component, retain the existing root, preserve legacy operations and keep
+activation external. It is not active; this change does not implement that source.
+
+Authenticated closure, full autonomous continuation, live governed engineering
+E2E and final independent acceptance audit remain open. The diagnostic and tests
+are not substitutes for those capabilities. Existing FCC canary/resume/recovery
+evidence remains valid within its diagnostic scope.
+
+Validation of this correction: 1,152 local tests passed; Ruff, strict MkDocs and
+diff checks passed. The local public-history audit passed over 510 commits and
+1,113 blobs. Independent Reviewer approved after 62 focused tests; Compliance
+Officer passed after 18 focused tests. A reproduced finding about reusing a task
+ID while changing historical criteria was corrected and retained as a regression
+test. Read-only inspection of a real registered project session returned BLOCKED
+with unverified integration and unknown Objective acceptance, without changing
+its state. This is negative-path evidence, not a full engineering E2E.

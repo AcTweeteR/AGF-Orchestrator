@@ -365,6 +365,8 @@ class SessionManager:
             raise SessionManagerError("invalid event actor")
         if to_status is SessionStatus.NO_JUSTIFIED_WORK:
             raise SessionManagerError("no-work disposition requires bound assessment evidence")
+        if to_status is SessionStatus.COMPLETED:
+            raise SessionManagerError("completion requires verified Objective acceptance evidence")
         operation_id = operation_id or f"transition:{to_status.value}"
         with session_lock(self.store.state_dir, session_id, f"transition:{to_status.value}"):
             session = self.store.load(session_id)
