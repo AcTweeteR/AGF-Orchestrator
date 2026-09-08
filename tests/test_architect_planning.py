@@ -464,6 +464,9 @@ def test_malformed_response_and_no_work_are_deterministic(tmp_path):
         "evidence_references": ["README.md"],
     })
     assert validate_architect_response(no_work, request) is None
+    with pytest.raises(ArchitectPlanningError, match="unresolved unknowns"):
+        validate_architect_response({**no_work, "unresolved_unknowns": ["missing validation"]},
+                                    request)
 
 
 def test_malformed_structured_response_is_rejected_strictly(tmp_path):

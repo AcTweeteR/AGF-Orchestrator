@@ -484,7 +484,7 @@ def test_ready_dependency_is_blocked_until_execution_state_exists(tmp_path):
     plan.validate()
     result = Executor().execute(plan, "task-001", str(tmp_path))
     assert result.status is ExecutionStatus.BLOCKED
-    assert "completion cannot yet be verified" in result.blocking_issues[0]
+    assert "dependencies require a persisted session" in result.blocking_issues[0]
 
 
 def test_nonexistent_task_is_blocked(tmp_path):

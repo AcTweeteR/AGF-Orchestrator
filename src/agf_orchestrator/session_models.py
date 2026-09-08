@@ -19,6 +19,7 @@ class SessionStatus(StrEnum):
     BLOCKED = "BLOCKED"
     RETRY_REQUIRED = "RETRY_REQUIRED"
     HUMAN_REQUIRED = "HUMAN_REQUIRED"
+    NO_JUSTIFIED_WORK = "NO_JUSTIFIED_WORK"
     COMPLETED = "COMPLETED"
     CANCELLED = "CANCELLED"
     FAILED = "FAILED"
@@ -35,11 +36,13 @@ ACTOR_VALUES = {
     "HUMAN",
     "SYSTEM",
 }
-TERMINAL_STATUSES = {SessionStatus.COMPLETED, SessionStatus.CANCELLED}
+TERMINAL_STATUSES = {
+    SessionStatus.COMPLETED, SessionStatus.CANCELLED, SessionStatus.NO_JUSTIFIED_WORK,
+}
 ACTIVE_STATUSES = set(SessionStatus) - TERMINAL_STATUSES
 ALLOWED_TRANSITIONS = {
-    SessionStatus.PLANNING: {SessionStatus.READY},
-    SessionStatus.READY: {SessionStatus.EXECUTING},
+    SessionStatus.PLANNING: {SessionStatus.READY, SessionStatus.NO_JUSTIFIED_WORK},
+    SessionStatus.READY: {SessionStatus.EXECUTING, SessionStatus.NO_JUSTIFIED_WORK},
     SessionStatus.EXECUTING: {SessionStatus.REVIEWING},
     SessionStatus.REVIEWING: {SessionStatus.CORRECTING, SessionStatus.COMPLIANCE},
     SessionStatus.CORRECTING: {SessionStatus.REVIEWING},
@@ -58,9 +61,11 @@ for _status in ACTIVE_STATUSES:
         }
     )
 ALLOWED_TRANSITIONS[SessionStatus.RETRY_REQUIRED].update(
-    {SessionStatus.READY, SessionStatus.BLOCKED}
+    {SessionStatus.READY, SessionStatus.BLOCKED, SessionStatus.NO_JUSTIFIED_WORK}
 )
-ALLOWED_TRANSITIONS[SessionStatus.BLOCKED].add(SessionStatus.RETRY_REQUIRED)
+ALLOWED_TRANSITIONS[SessionStatus.BLOCKED].update(
+    {SessionStatus.RETRY_REQUIRED, SessionStatus.NO_JUSTIFIED_WORK}
+)
 ALLOWED_TRANSITIONS[SessionStatus.STALE].add(SessionStatus.READY)
 
 

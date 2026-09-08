@@ -16,8 +16,10 @@ from .adapters.codex import CodexAdapter, CodexProcessResult, redact_secrets
 from .adapters.openhands import parse_openhands_output
 from .execution_models import ExecutionResult, ExecutionStatus
 from .models import ExecutionPlan, PlanStatus, Task, plan_from_dict
+from .path_scope import path_in_scope, scope_is_valid
 from .preflight import PreflightError, collect_repository
 from .remote_identity import RemoteIdentityError, canonical_remote_identity
+from .task_dependencies import DependencyEvidenceError, verify_task_dependencies
 from .validation_commands import validate_commands
 
 
@@ -88,6 +90,8 @@ def _find_task(plan: ExecutionPlan, task_id: str) -> Task:
 def _normalize_allowed_paths(paths: list[str], repository: str) -> list[str]:
     if not paths:
         raise ExecutionValidationError("task allowed_paths must not be empty")
+    if not scope_is_valid(paths):
+        raise ExecutionValidationError("allowed paths must use canonical relative paths")
     root = Path(repository).resolve()
     normalized: list[str] = []
     for raw in paths:
@@ -104,7 +108,7 @@ def _normalize_allowed_paths(paths: list[str], repository: str) -> list[str]:
         resolved = (root / Path(*parts)).resolve()
         if resolved == root or root not in resolved.parents:
             raise ExecutionValidationError(f"allowed path resolves outside repository: {raw}")
-        normalized_path = "/".join(parts)
+        normalized_path = "/".join(parts) + ("/" if value.endswith("/") else "")
         if normalized_path not in normalized:
             normalized.append(normalized_path)
     return normalized
@@ -116,6 +120,7 @@ def _validate_gates(
     repository: str,
     *,
     allow_default_branch: bool = False,
+    session_id: str | None = None,
 ):
     evidence: list[str] = []
     evidence.append(
@@ -183,11 +188,11 @@ def _validate_gates(
     if architecture.get("requires_architect") or architecture.get("status") != "approved":
         raise GateFailure("architecture decision is not approved", evidence)
     checked("architecture approved")
-    if task.dependencies:
-        raise GateFailure(
-            "dependency completion cannot yet be verified; non-empty dependencies are blocked",
-            evidence,
-        )
+    if task.dependencies or any(edge["task_id"] == task.task_id for edge in plan.dependencies):
+        try:
+            evidence.extend(verify_task_dependencies(session_id, plan, task, repository))
+        except DependencyEvidenceError as exc:
+            raise GateFailure(str(exc), evidence) from exc
     checked("dependencies satisfied")
     return context, allowed_paths, evidence
 
@@ -313,6 +318,7 @@ class Executor:
         repository: str,
         *,
         dry_run: bool = True,
+        session_id: str | None = None,
     ) -> ExecutionResult:
         started = _now()
         execution_id = _execution_id(plan.plan_id, task_id)
@@ -321,7 +327,9 @@ class Executor:
         except ExecutionValidationError as exc:
             return self._blocked(plan, task_id, repository, started, execution_id, str(exc), [])
         try:
-            context, allowed_paths, gate_evidence = _validate_gates(plan, task, repository)
+            context, allowed_paths, gate_evidence = _validate_gates(
+                plan, task, repository, session_id=session_id
+            )
         except GateFailure as exc:
             status = (
                 ExecutionStatus.HUMAN_REQUIRED
@@ -612,12 +620,7 @@ class Executor:
 
 
 def _path_allowed(path: str, allowed_paths: list[str]) -> bool:
-    candidate = PurePosixPath(path.replace("\\", "/"))
-    return any(
-        candidate == PurePosixPath(allowed) or PurePosixPath(allowed) in candidate.parents
-        for allowed in allowed_paths
-    )
-
+    return path_in_scope(path, allowed_paths)
 
 def write_execution_result(result: ExecutionResult, output: str | Path) -> None:
     """Atomically write a report, cleaning any temporary file on failure."""

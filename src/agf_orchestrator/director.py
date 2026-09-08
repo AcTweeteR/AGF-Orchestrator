@@ -80,7 +80,11 @@ class Director:
         assessment.validate(repository)
         architecture.validate(assessment)
         tasks = architecture_to_tasks(architecture) if architecture.status == "approved" else []
-        plan_status = PlanStatus.READY if architecture.status == "approved" else PlanStatus.BLOCKED
+        plan_status = (
+            PlanStatus.READY if architecture.status == "approved"
+            else PlanStatus.NO_JUSTIFIED_WORK if architecture.status == "NO_JUSTIFIED_WORK"
+            else PlanStatus.BLOCKED
+        )
         scope = {
             "in": [architecture.bounded_objective],
             "out": list(architecture.prohibited_paths),
@@ -104,8 +108,8 @@ class Director:
             assumptions=["Assessment and architecture evidence are bound to the baseline SHA."],
             risks=list(architecture.risk_indicators),
             architecture_impact={
-                "status": "approved" if architecture.status == "approved" else "blocked",
-                "requires_architect": False if architecture.status == "approved" else True,
+                "status": architecture.status,
+                "requires_architect": architecture.requires_architect,
                 "assessment_hash": assessment.evidence_hash,
                 "provider_selection": architecture.provider_selection,
                 "planning_outcome": architecture.planning_outcome,
@@ -115,7 +119,9 @@ class Director:
             parallel_groups=[[task.task_id for task in tasks]] if tasks else [],
             required_reviews=["Reviewer", "Compliance Officer"],
             required_evidence=list(architecture.required_evidence),
-            human_intervention=[] if plan_status is PlanStatus.READY else [architecture.rationale],
+            human_intervention=(
+                [architecture.rationale] if plan_status is PlanStatus.BLOCKED else []
+            ),
             status=plan_status,
         )
         plan.validate()

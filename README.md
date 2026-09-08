@@ -143,6 +143,19 @@ agf-orchestrator inbox --json
 
 Sessions preserve transition history and evidence bindings, detect target or artifact drift, and surface human-attention states instead of silently advancing through ambiguity.
 
+For dependent tasks, pass `--session SESSION_ID` to `execute` or `deliver` and
+use that session's current plan. A predecessor becomes available only after
+its delivery is integrated and reconciled into canonical session evidence.
+READY task labels and unmerged branches do not satisfy dependencies.
+
+Task `allowed_paths` entries name exact files; a directory requires an explicit
+trailing slash, such as `src/`. The assessed planner currently proposes evidenced
+files only. A validated no-work assessment persists the distinct terminal session
+state `NO_JUSTIFIED_WORK`; it does not certify Objective completion. Campaign
+propagation and global evidence-based closure remain pending. See
+[the completion contracts](docs/adr/ADR-0006-governed-completion-contracts.md)
+and [the completion audit](docs/COMPLETION_AUDIT.md).
+
 ## Architecture and governance
 
 Start with these documents:

@@ -47,6 +47,7 @@ from .historical_evidence import (
 from .merge_models import GateEvidence, GateStatus, MergeDecision, RiskClass
 from .merge_policy import REQUIRED_GATES, MergePolicyEngine, merge_policy_from_verified_active
 from .models import ExecutionPlan, Task
+from .path_scope import path_in_scope, paths_in_scope
 from .preflight import PreflightError, collect_repository
 from .review_models import (
     ComplianceStatus,
@@ -137,7 +138,7 @@ def _patch_policy(patch: str, changed_files: list[str], allowed: list[str]) -> l
         path == ".git" or path.startswith(".git/") for path in changed_files
     ):
         blockers.append(".git changes are not supported")
-    if not set(changed_files).issubset(set(allowed)):
+    if not paths_in_scope(changed_files, allowed):
         blockers.append("patch paths exceed allowed_paths")
     return blockers
 
@@ -177,9 +178,10 @@ def _run_attempt(
     artifact_dir: Path,
     correction: str | None,
     validation_timeout: float,
+    session_id: str | None = None,
 ) -> Attempt:
     context, allowed_paths, gate_evidence = _validate_gates(
-        plan, task, repository, allow_default_branch=True
+        plan, task, repository, allow_default_branch=True, session_id=session_id
     )
     validation_commands = validate_commands(task.validation_commands, context.root)
     worktree: str | None = None
@@ -244,7 +246,7 @@ def _run_attempt(
         after = _status_lines(worktree)
         changed = _changed_paths([], after)
         evidence.append("changed-file scope checked")
-        unauthorized = [path for path in changed if path not in allowed_paths]
+        unauthorized = [path for path in changed if not path_in_scope(path, allowed_paths)]
         if process.human_required:
             status = ExecutionStatus.HUMAN_REQUIRED
             if process.transport_error and adapter.name == "openhands":
@@ -445,7 +447,7 @@ def _integrity_bound_decision(
         "risk": risk_assessment.level.name not in {"CRITICAL", "UNKNOWN"},
         "caller_clean": attempt.caller_clean,
         "base_sha": plan.repository.head_sha == base_sha,
-        "authorized_paths": set(attempt.changed_files).issubset(set(task.allowed_paths)),
+        "authorized_paths": paths_in_scope(attempt.changed_files, task.allowed_paths),
         "remote_state": remote_evidence.classification is RemoteBranchClassification.ABSENT,
         "delivery_branch": branch not in {"main", "master"}
         and not branch.startswith(("main/", "master/")),
@@ -736,6 +738,7 @@ class DeliveryPipeline:
                     if review is None
                     else _correction_request(review.findings, task, previous_patch),
                     self.validation_timeout,
+                    session_id=session_id,
                 )
                 if (
                     attempt.execution_status is not ExecutionStatus.COMPLETED

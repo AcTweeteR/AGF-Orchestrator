@@ -987,3 +987,53 @@ def test_lineage_repair_requires_active_policy_independently(tmp_path, monkeypat
     manager.assess(session.session_id)
     with pytest.raises(SessionManagerError, match="authority"):
         manager.repair_lineage(session.session_id)
+
+
+@pytest.mark.parametrize("invalid", [None, "unknowns", "evidence"])
+def test_no_work_assessment_is_persisted_terminal_and_not_a_blocker(tmp_path, invalid):
+    from tests.test_architect_planning import response
+
+    root, state = registered(tmp_path)
+    project_id = ProjectRegistry(state).get("alpha").project_id
+    provider_profile = replace(profile("provider-a"), project_id=project_id)
+    provider_profile = replace(
+        provider_profile, profile_sha256=capability_profile_hash(provider_profile)
+    )
+    candidates = (CapabilityCandidate(provider_profile, 0),)
+    gates = SelectionGates(True, True, True, True, True, True)
+
+    class NoWorkProvider:
+        provider_id = "provider-a"
+
+        def propose(self, request):
+            return {**response(), "proposed_outcome": "NO_JUSTIFIED_WORK",
+                    "proposed_tasks": [],
+                    "evidence_references": [] if invalid == "evidence" else ["x"],
+                    "unresolved_unknowns": ["missing verification"] if invalid == "unknowns"
+                    else []}
+
+    provider = NoWorkProvider()
+    architect = ProviderArchitect(
+        candidates, {"provider-a": provider}, now="2026-08-10T12:00:00Z",
+        project_id=project_id, gates=gates,
+    )
+    manager = SessionManager(
+        state, architect=architect, architect_candidates=candidates,
+        architect_providers={"provider-a": provider}, architect_gates=gates,
+    )
+    session = manager.start("alpha", "Assess remaining justified work")
+    with pytest.raises(SessionManagerError, match="assessment evidence"):
+        manager.transition(session.session_id, SessionStatus.NO_JUSTIFIED_WORK)
+    result = manager.assess(session.session_id)
+    if invalid:
+        assert result.status is SessionStatus.BLOCKED
+        assert architect.last_response is None
+        assert architect.planning_outcome != "NO_JUSTIFIED_WORK"
+        return
+    assert result.status is SessionStatus.NO_JUSTIFIED_WORK
+    assert result.blocking_issues == []
+    restarted = SessionManager(state)
+    assert restarted.get(session.session_id).to_dict() == result.to_dict()
+    with pytest.raises(SessionManagerError, match="terminal"):
+        restarted.resume(session.session_id, execute=True, confirm_execution=True)
+    assert json.loads(Path(result.plan_path).read_text())["status"] == "NO_JUSTIFIED_WORK"

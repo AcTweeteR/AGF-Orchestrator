@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from .merge_models import MergeDecision, MergeValidationError
 from .merge_policy import REQUIRED_GATES
 from .models import ExecutionPlan, Task
+from .path_scope import paths_in_scope
 from .review_models import ComplianceReport, ComplianceStatus, ReviewReport, ReviewStatus
 from .risk_engine import risk_evidence
 from .risk_models import RiskAssessment, RiskValidationError
@@ -48,7 +49,7 @@ class ComplianceChecker:
             blockers.append("task is not READY")
         else:
             checks.append("task status READY")
-        if not set(changed_files).issubset(set(task.allowed_paths)):
+        if not paths_in_scope(changed_files, task.allowed_paths):
             blockers.append("changed paths exceed allowed paths")
         else:
             checks.append("allowed paths conform")

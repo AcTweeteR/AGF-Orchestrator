@@ -271,3 +271,63 @@ follow-up fixes that test's invocation clock to a deterministic epoch; it does
 not relax production freshness checks. All 32 adapter tests pass locally.
 Docs and CodeQL passed on the first candidate; CI must pass on the follow-up
 commit before human integration.
+
+
+## Post-merge continuation of #188
+
+GitHub confirms #188 merged to main at `c3cf7f2`. CI `34125039038`, CodeQL
+`34125039064` and the documentation build/deployment `34125039015` passed.
+All six incorporated branch heads were verified as ancestors of main. The
+remaining intermediate PRs #170–#173 were closed as incorporated; #169 and
+#179 had closed on integration. New dependency updates #189–#194 are separate
+candidates and have not been accepted solely because they are automated.
+
+CodeQL reported alert #1 in the public-history auditor. Independent inspection
+found that matched credential bytes were never printed, but Git filenames
+were printed and can themselves contain sensitive information. The continuation
+candidate omits filenames from public findings, preserving category and blob
+SHA for local investigation without weakening detection.
+
+The continuation candidate uses the explicit path contract and distinct
+no-work disposition in [ADR-0006](adr/ADR-0006-governed-completion-contracts.md).
+These corrections remain subject to final tests, independent review and human
+integration. The original checkout remains unchanged. No full mission E2E or
+objective completion is asserted by these changes.
+
+The dependency reader now admits execution from canonical integrated delivery
+evidence. Real temporary Git repositories demonstrate an integrated predecessor,
+isolated successor execution, two predecessor reconciliations and restart.
+Negative cases cover missing integration, changed definitions and prerequisite
+edges, cross-session reuse, tampered plans/intents/receipts and target drift.
+The execution provider in these tests is simulated; this is not the live E2E.
+
+Independent Compliance review reproduced two unsafe no-work entrances during
+development: campaign text without assessment, and architecture selection metadata
+without a validated response. The candidate removes the first entrance and requires
+the bound request/response for the second. Invalid provider attempts cannot retain
+a no-work disposition. Reviewer approved the corrected lot with 113 independent
+focused tests; Compliance approved with 89 focused tests. Complete-suite and
+remote CI evidence are recorded separately before integration.
+
+The six new dependency PRs have passing checks and their diffs were inspected.
+They contain routine version updates; all four Dependabot security alerts remain
+fixed. #189 and #191 change packaging pins but omit the explicit CI bootstrap
+pins, so those updates require coordinated handling. #194 updates several major
+Action versions and requires supply-chain/runtime review. These PRs remain open
+and are not silently incorporated into the behavioral correction.
+
+Independent of roadmap labels, code inspection still finds no operational
+Objective-to-evidence closure evaluator and no complete governed continuation
+driver connecting session assessment, task selection, delivery, reconciliation
+and final disposition. The live owner-issued provider endpoint and qualified
+engineering-provider proof remain prerequisites for the complete live mission.
+Existing FCC canary/resume/recovery evidence remains valid within its diagnostic
+scope and does not fill those gaps.
+
+Final local gate for this candidate: **1,145 tests passed** on Python 3.14;
+Ruff, strict documentation build and whitespace validation passed. The public
+history auditor passed over 508 commits and 1,086 unique blobs in the local
+reference set. No tests were removed to obtain this result. The obsolete test
+expectation that dependency execution was unavailable now checks the required
+persisted-session gate; positive dependency behavior has separate integration
+tests. This gate does not replace CI on the published commit or human integration.

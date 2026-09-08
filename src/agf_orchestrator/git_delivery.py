@@ -28,6 +28,7 @@ from .merge_models import (
 )
 from .merge_policy import REQUIRED_GATES
 from .models import Task
+from .path_scope import paths_in_scope
 from .policy_authority import PolicyActivationError
 from .policy_state_store import PolicyStateError, PolicyStateStore
 from .risk_models import risk_from_dict
@@ -356,7 +357,7 @@ class GitDelivery:
                 raise GitDeliveryError("reviewed patch does not apply cleanly")
             _git(worktree, "apply", patch_path)
             changed_files = _changed_paths([], _status_lines(worktree))
-            if not set(changed_files).issubset(set(task.allowed_paths)):
+            if not paths_in_scope(changed_files, task.allowed_paths):
                 raise GitDeliveryError("applied patch changed paths outside allowed_paths")
             validation_evidence, passed, blockers = _run_validations(
                 task.validation_commands, worktree, validation_timeout

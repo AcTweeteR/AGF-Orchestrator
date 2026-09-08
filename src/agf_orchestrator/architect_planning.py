@@ -879,8 +879,6 @@ class ProviderArchitect:
             try:
                 raw = provider.propose(request)
                 response_payload = json.loads(raw) if isinstance(raw, str) else raw
-                if isinstance(response_payload, dict):
-                    self.planning_outcome = response_payload.get("proposed_outcome")
                 result = validate_architect_response(raw, request)
             except (ProviderInvocationError, ArchitectPlanningError, json.JSONDecodeError) as exc:
                 attempt["outcome"] = (
@@ -900,6 +898,7 @@ class ProviderArchitect:
                     "reason": str(exc),
                 })
                 continue
+            self.planning_outcome = response_payload["proposed_outcome"]
             self.response_hash = architect_response_hash(raw)
             attempt["outcome"] = "VALIDATED_RESPONSE"
             attempt["response_hash"] = self.response_hash
@@ -959,6 +958,8 @@ def validate_architect_response(
     if payload["proposed_outcome"] == "NO_JUSTIFIED_WORK":
         if payload["proposed_tasks"]:
             raise ArchitectPlanningError("no-work decision must contain no tasks")
+        if payload["unresolved_unknowns"]:
+            raise ArchitectPlanningError("no-work decision has unresolved unknowns")
         if not payload["rationale"] or not payload["evidence_references"]:
             raise ArchitectPlanningError("no-work decision lacks rationale or evidence")
         return None
