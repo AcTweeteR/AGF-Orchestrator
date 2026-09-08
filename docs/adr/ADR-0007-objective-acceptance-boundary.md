@@ -1,6 +1,6 @@
 # ADR-0007: Objective acceptance boundary
 
-- Status: Proposed; owner decision required; not active
+- Status: Design approved by owner for implementation; activation not authorized
 - Scope: Final completion mission, Objective acceptance and autonomous continuation
 - Decision owner: Human for Objective intent and authority; Architect for implementation contracts
 
@@ -17,14 +17,14 @@ without acceptance proof. The accompanying correction rejects that request,
 including actor labels and evidence strings supplied by callers. Historical
 terminal records remain readable; their label is not a new acceptance proof.
 
-## Proposed owner decision
+## Approved owner decision
 
-Approve implementation of an Objective acceptance component within the existing
+The owner approved implementation of an Objective acceptance component within the existing
 owner-controlled authority-generation mechanism, using the existing pinned key.
 Do not introduce another root, runtime signer, caller-controlled approval flag
 or second policy engine.
 
-Its signed, immutable content would bind:
+Its signed, immutable content binds:
 
 - schema/version, project ID and canonical repository identity;
 - exact normalized Objective payload and content hash;
@@ -46,7 +46,7 @@ closure. The external owner controller alone publishes the signed component and
 selects a compatible generation. An ADR, merged code, fixture signature or
 approved PR does not perform activation.
 
-## Required runtime implementation after the decision
+## Runtime contract
 
 An evaluator reads the installed generation and canonical session artifacts. It
 verifies complete plan lineage, required integrated deliveries, retained task
@@ -73,9 +73,9 @@ evidence. It rejects silently removed historical work, missing integration,
 tampered artifacts and inconsistent baselines. It does not change session state,
 execute validation commands, approve an Objective or return SUCCESS.
 
-Even when all plan work is integrated, it reports HUMAN_REQUIRED because the
-authenticated Objective contract and criterion acceptance are absent. This is
-a diagnostic of the prerequisite gap, not the proposed evaluator. Campaign
+Even when all plan work is integrated, the read-only audit reports HUMAN_REQUIRED.
+It recognizes an authenticated installed Objective contract when available, but
+does not execute its validators or establish criterion acceptance. Campaign
 COMPLETE remains an operation-level result and is not consumed as Objective
 acceptance. Full continuation and live engineering E2E remain pending.
 
@@ -88,7 +88,9 @@ must also prove valid current evidence, atomic closure, crash/restart, idempoten
 reconciliation and full governed continuation. Independent Reviewer and Compliance
 Officer acceptance remain mandatory.
 
-The requested owner decision is approval or rejection of this existing-root
-Objective component and explicit criterion-mapping design. Approval to implement
-is separate from installing a signed activation record or live pilot credentials.
-Neither installation nor credential changes are part of this proposal.
+The owner explicitly approved this existing-root Objective component and criterion
+mapping for implementation. Approval does not authorize a new trust root, runtime
+signer, caller-controlled approval flags, another policy engine, a new active
+authority generation, or installation of keys or credentials. Activation remains
+an external owner decision. See [runtime acceptance](../OBJECTIVE_ACCEPTANCE.md)
+for the implemented closure interface and remaining continuation work.

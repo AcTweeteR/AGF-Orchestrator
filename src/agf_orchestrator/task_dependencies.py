@@ -44,32 +44,40 @@ def verify_task_dependencies(
     return _read_verified(session_id, plan, required_ids, repository)
 
 
-def verify_integrated_plan(session_id, plan, repository, *, state_dir=None) -> list[str]:
+def verify_integrated_plan(session_id, plan, repository, *, state_dir=None,
+                           policy_hash=None, constitution_id=None) -> list[str]:
     """Audit all retained plan work without interpreting it as Objective completion."""
     if not plan.tasks:
         raise DependencyEvidenceError("an empty plan is not integration evidence")
     return _read_verified(
         session_id, plan, {task.task_id for task in plan.tasks}, repository,
         state_dir=state_dir, all_tasks=True,
+        policy_hash=policy_hash, constitution_id=constitution_id,
     )
 
 
-def _read_verified(session_id, plan, required_ids, repository, *, state_dir=None, all_tasks=False):
+def _read_verified(session_id, plan, required_ids, repository, *, state_dir=None, all_tasks=False,
+                   policy_hash=None, constitution_id=None):
     if not session_id:
         raise DependencyEvidenceError("dependencies require a persisted session")
     try:
         return _verify(session_id, plan, required_ids, repository,
-                       state_dir=state_dir, all_tasks=all_tasks)
+                       state_dir=state_dir, all_tasks=all_tasks,
+                       policy_hash=policy_hash, constitution_id=constitution_id)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError,
             SessionStoreError, ProjectRegistryError) as exc:
         raise DependencyEvidenceError("dependency evidence is missing or inconsistent") from exc
 
 
-def _verify(session_id, plan, required_ids, repository, *, state_dir=None, all_tasks=False):
+def _verify(session_id, plan, required_ids, repository, *, state_dir=None, all_tasks=False,
+            policy_hash=None, constitution_id=None):
     sessions = SessionStore(state_dir)
     session = sessions.load(session_id)
     project = ProjectRegistry(sessions.state_dir).get(session.project_id)
-    if (session.status not in {SessionStatus.READY, SessionStatus.EXECUTING}
+    allowed_statuses = {SessionStatus.READY, SessionStatus.EXECUTING}
+    if all_tasks:
+        allowed_statuses.add(SessionStatus.COMPLETED)
+    if (session.status not in allowed_statuses
             or session.blocking_issues or session.required_human_actions
             or Path(project.repository_root).resolve() != Path(repository).resolve()
             or session.base_sha != plan.repository.head_sha):
@@ -115,6 +123,9 @@ def _verify(session_id, plan, required_ids, repository, *, state_dir=None, all_t
         if all_tasks and not {item["task_id"] for item in previous["tasks"]} <= required_ids:
             raise DependencyEvidenceError("historical plan work was silently removed")
         if all_tasks:
+            if (previous.get("objective_id") != current.get("objective_id")
+                    or previous.get("requirement_refs", []) != current.get("requirement_refs", [])):
+                raise DependencyEvidenceError("historical Objective binding was superseded")
             for historical_task in previous["tasks"]:
                 task_id = historical_task["task_id"]
                 historical_edges = {
@@ -140,6 +151,9 @@ def _verify(session_id, plan, required_ids, repository, *, state_dir=None, all_t
             intent = intents.get(session.project_id, reconciliation["delivery_id"])
             if intent is None:
                 raise DependencyEvidenceError("dependency delivery intent is missing")
+            if ((policy_hash is not None and intent.policy_hash != policy_hash)
+                    or (constitution_id is not None and intent.constitution_id != constitution_id)):
+                raise DependencyEvidenceError("integrated evidence uses a different authority")
             receipt_path = sessions.ensure_safe_path(
                 intents.receipt_path(session.project_id, intent.delivery_id)
             )

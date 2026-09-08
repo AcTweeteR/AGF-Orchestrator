@@ -146,11 +146,14 @@ Sessions preserve transition history and evidence bindings, detect target or art
 
 `audit-completion` is a read-only prerequisite diagnostic and returns exit code 2
 while completion remains unproved. It checks integrated plan work against canonical
-delivery evidence; it cannot authenticate Objective acceptance yet. Even fully
-integrated work remains `HUMAN_REQUIRED` until the proposed
-[Objective acceptance boundary](docs/adr/ADR-0007-objective-acceptance-boundary.md)
-is decided and implemented. Public status transitions cannot mark a session
-`COMPLETED` from an actor label or caller-supplied evidence text.
+delivery evidence and recognizes an authenticated Objective contract when installed.
+It never executes acceptance commands or records completion. The approved
+[Objective acceptance runtime](docs/OBJECTIVE_ACCEPTANCE.md) exposes
+`session complete --session SESSION_ID --execute --confirm-execution` for fresh,
+canonical evidence verification. Without the required owner-installed authority
+it fails closed. Public status transitions cannot mark a session `COMPLETED`
+from an actor label or caller-supplied evidence text. Full governed continuation
+and live engineering E2E remain pending.
 
 For dependent tasks, pass `--session SESSION_ID` to `execute` or `deliver` and
 use that session's current plan. A predecessor becomes available only after
