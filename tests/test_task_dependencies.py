@@ -23,7 +23,8 @@ def digest(value):
     ).hexdigest()
 
 
-def prepared(tmp_path, monkeypatch, *, integrated=True, third=False, top_level=False):
+def prepared(tmp_path, monkeypatch, *, integrated=True, third=False, top_level=False,
+             single=False, previous_criteria=None):
     root, base, candidate, remote = fixture(tmp_path)
     remote = Path(remote).as_uri()
     git(root, "remote", "set-url", "origin", remote)
@@ -43,11 +44,26 @@ def prepared(tmp_path, monkeypatch, *, integrated=True, third=False, top_level=F
     third_task = replace(second, task_id="task-003", allowed_paths=["notes.md"],
                          dependencies=[first.task_id, second.task_id])
     tasks = [first, replace(second, dependencies=[])] if top_level else [first, second]
+    if single:
+        tasks = [first]
     if third:
         tasks.append(third_task)
     edges = [{"task_id": second.task_id, "depends_on": first.task_id}] if top_level else []
     original = replace(original, tasks=tasks, dependencies=edges, parallel_groups=[],
                        architecture_impact={"status": "approved", "requires_architect": False})
+    if previous_criteria:
+        historical = replace(
+            original, tasks=[replace(first, acceptance_criteria=previous_criteria)],
+        )
+        historical.validate()
+        previous_path, previous_hash = manager.store.write_artifact(
+            session.session_id, "historical-task-definition.json",
+            json.dumps(historical.to_dict()) + "\n",
+        )
+        original = replace(original, scope={
+            **original.scope, "lineage": previous_path,
+            "predecessor_plan_sha256": previous_hash,
+        })
     original.validate()
     path, file_hash = manager.store.write_artifact(
         session.session_id, "dependency-plan.json", json.dumps(original.to_dict()) + "\n",
