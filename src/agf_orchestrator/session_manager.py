@@ -415,6 +415,63 @@ class SessionManager:
             with project_lock(self.store.state_dir, project.project_id, "session-resume"):
                 return self._resume_locked(session, project, execute, confirm_delivery)
 
+    def complete(self, session_id: str, *, execute=False, confirm_execution=False) -> dict:
+        """Record completion only from freshly computed canonical acceptance.
+
+        This is separate from public state transitions and accepts no report,
+        actor, approval boolean or caller-owned Objective artifact.
+        """
+        from .objective_completion import (
+            evaluate_objective_completion,
+            verify_current_completion_evidence,
+        )
+
+        if execute is not True or confirm_execution is not True:
+            raise SessionManagerError(
+                "completion requires explicit validation execution confirmation"
+            )
+        with session_lock(self.store.state_dir, session_id, "objective-completion"):
+            session = self.store.load(session_id)
+            project = self.registry.get(session.project_id)
+            with project_lock(self.store.state_dir, project.project_id, "objective-completion"):
+                # Re-evaluation also validates an existing terminal record against
+                # current authority and target; terminal labels are never sufficient.
+                report = evaluate_objective_completion(
+                    project, session, self.store, execute=True,
+                )
+                name = f"completion-{report['evidence_sha256']}.json"
+                path, digest = self.store.write_artifact(
+                    session_id, name, json.dumps(report, sort_keys=True, indent=2) + "\n",
+                )
+                success = report["status"] == "SATISFIED"
+                if success:
+                    verify_current_completion_evidence(project, session, self.store, report)
+                # Registry writers use a distinct lock. Keep their exclusion
+                # through the final comparison and atomic session persistence.
+                with self.registry._lock("objective-completion-save"):
+                    if success and self.registry._get_unlocked(session.project_id) != project:
+                        raise SessionManagerError(
+                            "canonical project changed before completion save"
+                        )
+                    if session.status is SessionStatus.COMPLETED:
+                        # A failed current recheck does not erase historical completion.
+                        return {"status": "SUCCESS" if success else report["status"],
+                                "objective_completed": success, "report": report}
+                    operation_id = f"completion:{report['evidence_sha256']}"
+                    if not any(event.operation_id == operation_id for event in session.events):
+                        key = "completion" if success else "completion_attempt"
+                        session.artifact_hashes[key] = digest
+                        session = self._append_event(
+                            session, session.status,
+                            SessionStatus.COMPLETED if success else session.status,
+                            "Objective acceptance verified" if success
+                            else "Objective acceptance pending",
+                            [path], session.blocking_issues, "DIRECTOR", operation_id,
+                        )
+                        self._save(session)
+                    return {"status": "SUCCESS" if success else report["status"],
+                            "objective_completed": success, "report": report}
+
     def reconcile_canonical_target(self, session_id: str) -> Session:
         """Retire a stale checkpoint and rebase planning on the verified target.
 

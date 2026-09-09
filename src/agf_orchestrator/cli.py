@@ -176,6 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
         "show", "resume", "assess", "repair-lineage", "reconcile-external",
         "reconcile-external-result", "reconcile-canonical", "cancel", "doctor", "archive",
         "audit-completion",
+        "complete",
     ):
         item = session_commands.add_parser(command)
         item.add_argument("--session", required=True)
@@ -192,6 +193,9 @@ def build_parser() -> argparse.ArgumentParser:
                 "--evidence", required=True, help="signed external advancement evidence"
             )
     resume = session_commands.choices["resume"]
+    complete = session_commands.choices["complete"]
+    complete.add_argument("--execute", action="store_true")
+    complete.add_argument("--confirm-execution", action="store_true")
     resume.add_argument("--project", help="registered project name or ID")
     resume.add_argument("--execute", action="store_true")
     resume.add_argument("--confirm-execution", action="store_true")
@@ -379,6 +383,11 @@ def run_session(args: argparse.Namespace) -> int:
             report = audit_session_completion(args.session, state_dir=manager.store.state_dir)
             _output(report, args.json)
             return 2
+        elif args.session_command == "complete":
+            result = manager.complete(args.session, execute=args.execute,
+                                      confirm_execution=args.confirm_execution)
+            _output(result, args.json)
+            return 0 if result["status"] == "SUCCESS" else 2
         elif args.session_command == "resume":
             session = manager.resume(
                 args.session,

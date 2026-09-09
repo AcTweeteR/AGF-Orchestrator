@@ -371,3 +371,74 @@ ID while changing historical criteria was corrected and retained as a regression
 test. Read-only inspection of a real registered project session returned BLOCKED
 with unverified integration and unknown Objective acceptance, without changing
 its state. This is negative-path evidence, not a full engineering E2E.
+
+
+## Post-merge continuation of #196 and approved ADR-0007 implementation
+
+GitHub confirms #196 merged at `c412b13563d441a37db7eed9afc44cc5281ec554`.
+Post-merge CI `34215238697`, CodeQL `34215238732` and Docs `34215238749`
+all passed. The subsequent read-only CodeQL query returned zero open alerts.
+The original dirty checkout is preserved; implementation uses an isolated branch
+based on that main commit. Dependency PRs #189–#194 remain separate candidates.
+
+The owner explicitly approved implementation of ADR-0007 within the existing
+trust root and authority mechanism. The approval excludes activation, key or
+credential installation, a runtime signer, caller approval flags and another
+policy engine. The versioned generation reader and
+[Objective acceptance runtime](OBJECTIVE_ACCEPTANCE.md) implement the closure
+portion of that design. They do not activate deployment authority.
+
+Independent review reproduced and corrected three premature-closure cases:
+receipts or human evidence replaced during validation; project disablement during
+validation; and relabeling the plan to an unrelated Objective with matching task
+IDs and commands. The runtime now rereads canonical evidence and the project
+registry after validation and before persistence, and enforces Objective,
+requirement and historical lineage bindings. Regression tests preserve each case.
+
+Real temporary Git integration tests exercise current validators, signed human
+acceptance, failed validators, target drift, interrupted session persistence and
+restart. Signing keys and owner activation in these tests are ephemeral fixtures.
+They do not demonstrate a live engineering provider or activate real authority.
+The existing FCC diagnostic canary, failure and resume evidence retains its
+previous limited scope.
+
+The full governed continuation driver, owner-side publication workflow for the
+Objective generation, live engineering E2E with failure/recovery/resume, remaining
+PR/issue reconciliation and the final independent mission audit remain open.
+Neither this implementation nor a successful fixture Objective closes the final
+completion mission or establishes NO_JUSTIFIED_WORK.
+
+
+Final local validation of the closure candidate: **1,177 tests passed** on
+Python 3.14 in 125.68 seconds, with real temporary Unix sockets enabled. This
+is 1,152 inherited tests plus 25 new acceptance/closure cases; no tests were
+removed or skipped to obtain green. Ruff, strict MkDocs, changed-document
+relative links and whitespace checks passed. The pre-commit history audit
+passed over 512 reachable commits and 1,123 unique blobs. Reviewer independently
+approved with 50 focused tests; Compliance approved the final binding correction
+with 36 focused tests. Commit-specific CI and human-reserved merge remain gates.
+
+
+### PR #197 remote review follow-up
+
+The first published commit passed CI (1,177 tests), CodeQL and Docs. Remote
+review subsequently identified a remaining registry race after the final evidence
+check and before session persistence. The follow-up holds the registry writer
+lock across the final project comparison and session save. Regression cases
+exercise disablement immediately after the evidence check and exclusion of a
+registry writer during the save boundary; the writer succeeds once closure
+releases the lock.
+
+A second finding concerned equivalent remote URL spellings. Objective snapshots
+and integrated intent/receipt checks now compare canonical repository identities.
+An integration regression changes the remote spelling while retaining the same
+repository, verifies the registry and completes acceptance against existing
+canonical integration evidence. These fixes remain scoped to verified closure;
+continuation and the full live mission remain pending.
+
+
+The follow-up passes **1,180 tests** locally in 126.64 seconds, including all
+1,177 previous cases and three additional regressions. Ruff, strict documentation
+and whitespace checks pass. Independent Reviewer APPROVE: 50 focused tests;
+Compliance PASS: 27 focused tests. Remote checks must be rerun on the follow-up
+commit before human integration.

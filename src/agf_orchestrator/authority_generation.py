@@ -42,6 +42,7 @@ COMPONENTS = (
     "registration",
     "provider_intelligence",
 )
+OBJECTIVE_COMPONENT = "objective_acceptance"
 
 
 def _hash(value: Any) -> str:
@@ -101,7 +102,7 @@ class AuthorityComponent:
         return self.__dict__.copy()
 
     def validate(self, project_id: str, generation_id: str, scheme: str) -> None:
-        if self.name not in COMPONENTS:
+        if self.name not in (*COMPONENTS, OBJECTIVE_COMPONENT):
             raise AuthorityGenerationError("unknown authority component")
         if self.generation_id != generation_id or self.project_id != project_id:
             raise AuthorityGenerationError("authority component binding is invalid")
@@ -142,9 +143,10 @@ class AuthorityGeneration:
     predecessor_id: str | None = None
     predecessor_hash: str | None = None
     signature: dict[str, Any] | None = None
+    schema_version: str = "1.0"
 
     def _unsigned(self) -> dict[str, Any]:
-        return {
+        value = {
             "generation_id": self.generation_id,
             "project_id": self.project_id,
             "scheme": self.scheme,
@@ -160,6 +162,10 @@ class AuthorityGeneration:
             "predecessor_id": self.predecessor_id,
             "predecessor_hash": self.predecessor_hash,
         }
+        # Preserve the signed representation of legacy generations exactly.
+        if self.schema_version != "1.0":
+            value["schema_version"] = self.schema_version
+        return value
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -169,6 +175,10 @@ class AuthorityGeneration:
         }
 
     def validate(self, *, active: bool = False) -> None:
+        if self.schema_version not in {"1.0", "2.0"}:
+            raise AuthorityGenerationError("unsupported authority generation schema")
+        if self.schema_version == "2.0" and self.scheme != "Ed25519":
+            raise AuthorityGenerationError("Objective authority requires the pinned owner scheme")
         if not self.generation_id or not self.project_id.startswith("project-"):
             raise AuthorityGenerationError("authority generation identity is invalid")
         if self.scheme not in {"HMAC-SHA256", "Ed25519"}:
@@ -197,7 +207,10 @@ class AuthorityGeneration:
             except OwnerAuthorityError as exc:
                 raise AuthorityGenerationError("authority generation signature is invalid") from exc
         items = {item.name: item for item in self.components}
-        if set(items) != set(COMPONENTS) or len(self.components) != len(COMPONENTS):
+        expected = set(COMPONENTS)
+        if self.schema_version == "2.0":
+            expected.add(OBJECTIVE_COMPONENT)
+        if set(items) != expected or len(self.components) != len(expected):
             raise AuthorityGenerationError("authority generation is incomplete")
         for item in self.components:
             item.validate(self.project_id, self.generation_id, self.scheme)
@@ -482,8 +495,11 @@ def _from_dict(payload: dict[str, Any]) -> AuthorityGeneration:
         "predecessor_hash",
         "signature",
     }
-    if not isinstance(payload, dict) or set(payload) != required:
+    if (not isinstance(payload, dict)
+            or set(payload) not in (required, required | {"schema_version"})):
         raise AuthorityGenerationError("authority generation schema is invalid")
+    if "schema_version" in payload and payload["schema_version"] != "2.0":
+        raise AuthorityGenerationError("explicit authority schema must be 2.0")
     try:
         return AuthorityGeneration(
             payload["generation_id"],
@@ -502,6 +518,7 @@ def _from_dict(payload: dict[str, Any]) -> AuthorityGeneration:
             payload["predecessor_id"],
             payload["predecessor_hash"],
             payload["signature"],
+            payload.get("schema_version", "1.0"),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise AuthorityGenerationError("authority generation schema is invalid") from exc

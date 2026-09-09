@@ -6,6 +6,7 @@ import hashlib
 import json
 
 from .models import plan_from_dict
+from .objective_acceptance import ObjectiveAcceptanceError, read_objective_acceptance
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .session_store import SessionStore, SessionStoreError
 from .task_dependencies import DependencyEvidenceError, verify_integrated_plan
@@ -16,7 +17,8 @@ def audit_session_completion(session_id: str, *, state_dir=None) -> dict:
 
     No caller report, roadmap status, APPROVED JSON field or provider statement
     can establish acceptance. An authenticated Objective contract and criterion
-    mapping are not installed yet, so this audit cannot return success.
+    mapping must come from the active generation. This audit never executes
+    validators or records completion.
     """
     store = SessionStore(state_dir)
     session = store.load(session_id)
@@ -52,8 +54,13 @@ def audit_session_completion(session_id: str, *, state_dir=None) -> dict:
             ProjectRegistryError, DependencyEvidenceError):
         result["integration"]["status"] = "UNVERIFIED"
         result["blockers"].append("current plan integration evidence is missing or inconsistent")
-    result["blockers"].extend([
-        "authenticated Objective approval contract is not installed",
-        "requirement and criterion acceptance are not established",
-    ])
+    try:
+        project = ProjectRegistry(store.state_dir).get(session.project_id)
+        acceptance = read_objective_acceptance(project, session)
+        result["objective_approval"] = "VERIFIED"
+        result["objective_sha256"] = acceptance.objective_sha256
+        result["authority_sha256"] = acceptance.generation_hash
+    except (ObjectiveAcceptanceError, ProjectRegistryError, OSError):
+        result["blockers"].append("authenticated Objective approval contract is unavailable")
+    result["blockers"].append("requirement and criterion acceptance are not established")
     return result
