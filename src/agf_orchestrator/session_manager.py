@@ -446,24 +446,31 @@ class SessionManager:
                 success = report["status"] == "SATISFIED"
                 if success:
                     verify_current_completion_evidence(project, session, self.store, report)
-                if session.status is SessionStatus.COMPLETED:
-                    # A failed current recheck does not erase historical completion.
+                # Registry writers use a distinct lock. Keep their exclusion
+                # through the final comparison and atomic session persistence.
+                with self.registry._lock("objective-completion-save"):
+                    if success and self.registry._get_unlocked(session.project_id) != project:
+                        raise SessionManagerError(
+                            "canonical project changed before completion save"
+                        )
+                    if session.status is SessionStatus.COMPLETED:
+                        # A failed current recheck does not erase historical completion.
+                        return {"status": "SUCCESS" if success else report["status"],
+                                "objective_completed": success, "report": report}
+                    operation_id = f"completion:{report['evidence_sha256']}"
+                    if not any(event.operation_id == operation_id for event in session.events):
+                        key = "completion" if success else "completion_attempt"
+                        session.artifact_hashes[key] = digest
+                        session = self._append_event(
+                            session, session.status,
+                            SessionStatus.COMPLETED if success else session.status,
+                            "Objective acceptance verified" if success
+                            else "Objective acceptance pending",
+                            [path], session.blocking_issues, "DIRECTOR", operation_id,
+                        )
+                        self._save(session)
                     return {"status": "SUCCESS" if success else report["status"],
                             "objective_completed": success, "report": report}
-                operation_id = f"completion:{report['evidence_sha256']}"
-                if not any(event.operation_id == operation_id for event in session.events):
-                    key = "completion" if success else "completion_attempt"
-                    session.artifact_hashes[key] = digest
-                    session = self._append_event(
-                        session, session.status,
-                        SessionStatus.COMPLETED if success else session.status,
-                        "Objective acceptance verified" if success
-                        else "Objective acceptance pending",
-                        [path], session.blocking_issues, "DIRECTOR", operation_id,
-                    )
-                    self._save(session)
-                return {"status": "SUCCESS" if success else report["status"],
-                        "objective_completed": success, "report": report}
 
     def reconcile_canonical_target(self, session_id: str) -> Session:
         """Retire a stale checkpoint and rebase planning on the verified target.

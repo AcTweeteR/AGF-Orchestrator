@@ -48,7 +48,10 @@ and installing that record remains an external owner action.
 
 Canonical authority, project registry, target, receipts and human signatures are
 rechecked after validation and before recording completion under session and
-project locks. Only the internal operation can persist `COMPLETED`. Public status
+project locks. The final project comparison and session persistence additionally
+hold the registry writer lock, so project disablement cannot interleave between
+those operations. Remote comparisons use canonical repository identity.
+Only the internal operation can persist `COMPLETED`. Public status
 transitions still reject it. The report is stored by content hash before the
 session update. A crash before session persistence leaves the session uncompleted;
 retry recomputes the decision. A repeated call validates current evidence again.

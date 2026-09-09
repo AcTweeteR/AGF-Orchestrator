@@ -10,6 +10,7 @@ from pathlib import Path
 from .delivery_reconciliation import DeliveryIntentStore, DeliveryReceipt
 from .models import ExecutionPlan, Task, plan_from_dict
 from .project_registry import ProjectRegistry, ProjectRegistryError
+from .remote_identity import canonical_remote_identity
 from .session_models import SessionStatus
 from .session_store import SessionStore, SessionStoreError
 
@@ -86,7 +87,9 @@ def _verify(session_id, plan, required_ids, repository, *, state_dir=None, all_t
         raise DependencyEvidenceError("dependency baseline changed")
     if _git(repository, "status", "--porcelain").strip():
         raise DependencyEvidenceError("dependency target is dirty")
-    origin = _git(repository, "config", "--get", "remote.origin.url").decode().strip()
+    origin = canonical_remote_identity(
+        _git(repository, "config", "--get", "remote.origin.url").decode().strip(),
+    )
     branch = _git(repository, "branch", "--show-current").decode().strip()
     artifacts = sessions.ensure_safe_path(sessions.artifacts_dir / session_id)
 
@@ -165,7 +168,8 @@ def _verify(session_id, plan, required_ids, repository, *, state_dir=None, all_t
                 raise DependencyEvidenceError("dependency receipt hash mismatch")
             previous_tasks = {item["task_id"]: item for item in previous["tasks"]}
             if (
-                intent.session_id != session_id or intent.repository_identity != origin
+                intent.session_id != session_id
+                or canonical_remote_identity(intent.repository_identity) != origin
                 or intent.target_branch != branch or intent.plan_id != previous["plan_id"]
                 or intent.plan_hash != _hash(previous)
                 or intent.task_id not in previous_tasks
@@ -179,7 +183,8 @@ def _verify(session_id, plan, required_ids, repository, *, state_dir=None, all_t
                 }
                 or receipt.state != "VERIFIED" or receipt.project_id != session.project_id
                 or receipt.delivery_id != intent.delivery_id
-                or receipt.repository_identity != origin or receipt.base_sha != intent.base_sha
+                or canonical_remote_identity(receipt.repository_identity) != origin
+                or receipt.base_sha != intent.base_sha
                 or receipt.observed_sha != intent.candidate_sha
                 or receipt.intent_hash != intent.content_sha256
                 or receipt.observed_tree_sha != intent.candidate_tree_sha

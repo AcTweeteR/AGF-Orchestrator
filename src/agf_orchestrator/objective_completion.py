@@ -18,6 +18,7 @@ from .objective_acceptance import (
 from .owner_authority import verify_envelope
 from .project_models import ProjectStatus
 from .project_registry import ProjectRegistry
+from .remote_identity import canonical_remote_identity
 from .session_models import SessionStatus
 from .task_dependencies import verify_integrated_plan
 
@@ -39,7 +40,8 @@ def _snapshot(project, session, store):
     root = project.repository_root
     if (_git(root, "rev-parse", "HEAD") != session.base_sha
             or _git(root, "branch", "--show-current") != project.default_branch
-            or _git(root, "config", "--get", "remote.origin.url") != project.origin_url
+            or canonical_remote_identity(_git(root, "config", "--get", "remote.origin.url"))
+            != canonical_remote_identity(project.origin_url)
             or _git(root, "status", "--porcelain")):
         raise ValueError("canonical target changed")
     path = store.ensure_safe_path(session.plan_path)

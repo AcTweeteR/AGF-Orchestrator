@@ -222,3 +222,59 @@ def test_canonical_plan_cannot_relabel_approved_objective(tmp_path, monkeypatch,
     result = manager.complete(session.session_id, execute=True, confirm_execution=True)
     assert result["status"] == "BLOCKED"
     assert manager.get(session.session_id).status is SessionStatus.READY
+
+
+def test_registry_writer_cannot_disable_between_final_check_and_save(tmp_path, monkeypatch):
+    from agf_orchestrator.locking import LockError, project_lock
+    from agf_orchestrator.project_models import ProjectStatus
+
+    _, state, manager, session, _ = ready(tmp_path, monkeypatch)
+    writer = ProjectRegistry(state)
+    monkeypatch.setattr(writer, "_lock", lambda operation: project_lock(
+        state, "registry", operation, timeout=0,
+    ))
+    save = manager._save
+
+    def attempt_concurrent_disable(value):
+        with pytest.raises(LockError):
+            writer.set_status(session.project_id, ProjectStatus.DISABLED)
+        save(value)
+
+    monkeypatch.setattr(manager, "_save", attempt_concurrent_disable)
+    result = manager.complete(session.session_id, execute=True, confirm_execution=True)
+    assert result["status"] == "SUCCESS"
+    # The writer succeeds after the completion transaction releases its lock.
+    writer.set_status(session.project_id, ProjectStatus.DISABLED)
+    assert writer.get(session.project_id).status is ProjectStatus.DISABLED
+    assert manager.get(session.session_id).status is SessionStatus.COMPLETED
+
+
+def test_equivalent_remote_spelling_preserves_canonical_acceptance(tmp_path, monkeypatch):
+    root, state, manager, session, _ = ready(tmp_path, monkeypatch)
+    origin = git(root, "config", "--get", "remote.origin.url")
+    git(root, "remote", "set-url", "origin", origin + "/")
+    assert ProjectRegistry(state).verify("alpha").status.value == "ACTIVE"
+    result = manager.complete(session.session_id, execute=True, confirm_execution=True)
+    assert result["status"] == "SUCCESS", result
+
+
+def test_disable_after_final_evidence_check_is_rejected_before_save(tmp_path, monkeypatch):
+    import agf_orchestrator.objective_completion as completion
+    from agf_orchestrator.project_models import ProjectStatus
+
+    _, state, manager, session, _ = ready(tmp_path, monkeypatch)
+    verify = completion.verify_current_completion_evidence
+    calls = 0
+
+    def disable_after_final_check(*args, **kwargs):
+        nonlocal calls
+        verify(*args, **kwargs)
+        calls += 1
+        if calls == 2:
+            ProjectRegistry(state).set_status(session.project_id, ProjectStatus.DISABLED)
+
+    monkeypatch.setattr(completion, "verify_current_completion_evidence", disable_after_final_check)
+    with pytest.raises(SessionManagerError, match="project changed before completion save"):
+        manager.complete(session.session_id, execute=True, confirm_execution=True)
+    assert calls == 2
+    assert manager.get(session.session_id).status is SessionStatus.READY

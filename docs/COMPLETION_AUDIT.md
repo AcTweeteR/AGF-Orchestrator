@@ -417,3 +417,28 @@ relative links and whitespace checks passed. The pre-commit history audit
 passed over 512 reachable commits and 1,123 unique blobs. Reviewer independently
 approved with 50 focused tests; Compliance approved the final binding correction
 with 36 focused tests. Commit-specific CI and human-reserved merge remain gates.
+
+
+### PR #197 remote review follow-up
+
+The first published commit passed CI (1,177 tests), CodeQL and Docs. Remote
+review subsequently identified a remaining registry race after the final evidence
+check and before session persistence. The follow-up holds the registry writer
+lock across the final project comparison and session save. Regression cases
+exercise disablement immediately after the evidence check and exclusion of a
+registry writer during the save boundary; the writer succeeds once closure
+releases the lock.
+
+A second finding concerned equivalent remote URL spellings. Objective snapshots
+and integrated intent/receipt checks now compare canonical repository identities.
+An integration regression changes the remote spelling while retaining the same
+repository, verifies the registry and completes acceptance against existing
+canonical integration evidence. These fixes remain scoped to verified closure;
+continuation and the full live mission remain pending.
+
+
+The follow-up passes **1,180 tests** locally in 126.64 seconds, including all
+1,177 previous cases and three additional regressions. Ruff, strict documentation
+and whitespace checks pass. Independent Reviewer APPROVE: 50 focused tests;
+Compliance PASS: 27 focused tests. Remote checks must be rerun on the follow-up
+commit before human integration.
