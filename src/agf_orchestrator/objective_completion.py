@@ -100,6 +100,7 @@ def evaluate_objective_completion(project, session, store, *, execute=False, tim
         report["integration_evidence"] = verify_integrated_plan(
             session.session_id, plan, project.repository_root, state_dir=store.state_dir,
             policy_hash=acceptance.policy_hash, constitution_id=acceptance.constitution_id,
+            approved_plan_sha256=acceptance.approved_plan_sha256,
         )
         tasks = {task.task_id: task for task in plan.tasks}
         covered = {task_id for criterion in acceptance.criteria for task_id in criterion.task_ids}
@@ -175,6 +176,7 @@ def verify_current_completion_evidence(project, session, store, report):
     proofs = verify_integrated_plan(
         session.session_id, plan, project.repository_root, state_dir=store.state_dir,
         policy_hash=acceptance.policy_hash, constitution_id=acceptance.constitution_id,
+        approved_plan_sha256=acceptance.approved_plan_sha256,
     )
     if proofs != report["integration_evidence"]:
         raise ValueError("integrated evidence changed")

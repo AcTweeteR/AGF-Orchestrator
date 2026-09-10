@@ -192,7 +192,7 @@ def test_delivery_rejects_no_human_merge_and_passes_effective_limit(tmp_path, mo
             )()
 
     monkeypatch.setattr(cli, "DeliveryPipeline", FakePipeline)
-    monkeypatch.setattr(cli, "ConstitutionAuthority", lambda: type(
+    monkeypatch.setattr("agf_orchestrator.delivery_admission.ConstitutionAuthority", lambda: type(
         "Authority", (), {"resolve": lambda self, project_id: {"status": "VERIFIED"}}
     )())
     args = [

@@ -8,6 +8,7 @@ and delivery pipeline retain their existing safety gates.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shlex
@@ -409,6 +410,9 @@ class OpenHandsAdapter:
         *,
         allow_llm_env: bool = False,
     ):
+        if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                or not math.isfinite(timeout) or timeout <= 0):
+            raise ValueError("timeout must be finite and positive")
         self.executable = executable
         self.timeout = timeout
         self.allow_llm_env = allow_llm_env

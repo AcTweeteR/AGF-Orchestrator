@@ -658,7 +658,36 @@ class DeliveryPipeline:
             raise ValueError("maximum correction rounds must be between 0 and 2")
         self.max_correction_rounds = max_correction_rounds
 
-    def deliver(
+    def deliver(self, plan, task_id, repository, *, execute, merge_decision=None,
+                project_id=None, session_id=None):
+        from .locking import project_lock
+        from .session_store import SessionStore
+
+        def invoke():
+            started = None
+            if execute and session_id:
+                from .execution_journal import record_execution_start
+
+                started = record_execution_start(session_id, plan, task_id)
+                self.max_correction_rounds = min(
+                    self.max_correction_rounds, started["remaining_attempts"] - 1,
+                )
+            result = self._deliver(plan, task_id, repository, execute=execute,
+                                 merge_decision=merge_decision, project_id=project_id,
+                                 session_id=session_id)
+            if started is not None:
+                from .execution_journal import record_execution_result
+
+                record_execution_result(started, result.to_dict())
+            return result
+
+        if execute and project_id is not None:
+            with project_lock(SessionStore().state_dir, f"delivery-{project_id}",
+                              "delivery-dispatch"):
+                return invoke()
+        return invoke()
+
+    def _deliver(
         self,
         plan: ExecutionPlan,
         task_id: str,
@@ -975,7 +1004,9 @@ class DeliveryPipeline:
                         json.dumps(intent_payload, sort_keys=True, separators=(",", ":")).encode()
                     ).hexdigest(),
                 )
-                DeliveryIntentStore(Path.home() / ".agf-orchestrator").put(intent)
+                from .session_store import SessionStore
+
+                DeliveryIntentStore(SessionStore().state_dir).put(intent)
 
             git_result = GitDelivery().deliver(
                 repository,

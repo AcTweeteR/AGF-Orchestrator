@@ -396,7 +396,13 @@ class Executor:
         ]
         blockers: list[str] = []
         status = ExecutionStatus.FAILED
+        from .execution_journal import ExecutionRecoveryRequired, record_execution_start
+        from .locking import LockError
+        from .session_store import SessionStoreError
+
         try:
+
+            record_execution_start(session_id, plan, task_id)
             worktree = _create_worktree(context.root, context.head_sha)
             evidence.append("isolated worktree: temporary path redacted")
             before = _status_lines(worktree)
@@ -514,7 +520,10 @@ class Executor:
                     if validations_passed:
                         status = ExecutionStatus.COMPLETED
                         evidence.append("validated changes remain unapplied to caller repository")
-        except (ExecutionValidationError, OSError, subprocess.CalledProcessError) as exc:
+        except (ExecutionValidationError, OSError, subprocess.CalledProcessError,
+                ExecutionRecoveryRequired, SessionStoreError, LockError) as exc:
+            if isinstance(exc, ExecutionRecoveryRequired):
+                status = ExecutionStatus.HUMAN_REQUIRED
             blockers.append(f"isolated execution failed: {redact_secrets(str(exc))}")
         finally:
             cleanup_success = True

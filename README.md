@@ -152,8 +152,11 @@ It never executes acceptance commands or records completion. The approved
 `session complete --session SESSION_ID --execute --confirm-execution` for fresh,
 canonical evidence verification. Without the required owner-installed authority
 it fails closed. Public status transitions cannot mark a session `COMPLETED`
-from an actor label or caller-supplied evidence text. Full governed continuation
-and live engineering E2E remain pending.
+from an actor label or caller-supplied evidence text. Bounded steps are available
+through `session continue --session SESSION_ID --execute --confirm-execution
+--confirm-delivery --max-steps 10 --json`; see the runtime guide for signed
+first-plan binding and recovery rules. Background continuation and live
+engineering E2E remain pending.
 
 For dependent tasks, pass `--session SESSION_ID` to `execute` or `deliver` and
 use that session's current plan. A predecessor becomes available only after

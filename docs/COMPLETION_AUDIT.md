@@ -442,3 +442,86 @@ The follow-up passes **1,180 tests** locally in 126.64 seconds, including all
 and whitespace checks pass. Independent Reviewer APPROVE: 50 focused tests;
 Compliance PASS: 27 focused tests. Remote checks must be rerun on the follow-up
 commit before human integration.
+
+
+## Post-merge #197 and bounded continuation checkpoint — 2026-09-09
+
+- FACT: #197 is merged at `48866a809f279882b9e0f436a390d4577c80fe6c`.
+  Post-merge CI `34304570698`, CodeQL `34304570693` and Docs `34304570697`
+  report success. The earlier checkout's pre-existing edits remain preserved.
+- FACT: the continuation candidate connects canonical resume, assessment,
+  dependency selection, governed delivery, external-integration waiting and
+  Objective acceptance through bounded `session continue` steps.
+- FACT: first-plan projection is bound to an owner-signed complete plan hash.
+  It adds traceability without changing scope or validators and retains draft
+  ancestry. Prior execution cannot be relabeled as unexecuted planning.
+- FACT: independent review reproduced duplicate dispatch after a direct execution
+  had started without a durable outcome. This is a required recovery correction;
+  nominal continuation tests alone did not detect it.
+- FACT: a separate closure regression verifies that prior dispatch journals block
+  acceptance even when an approved plan was subsequently installed. Unsigned
+  proposal preparation neither changes session state nor activates authority.
+- FACT: direct daemon wiring is incompatible with its project-lock ownership,
+  command-result protocol and fixed target binding. A dedicated coordinator must
+  renew target binding from verified reconciliation without admitting unknown
+  target changes. Background continuation is not claimed by the bounded CLI.
+- UNKNOWN: qualified live-provider engineering, an operational owner issuance
+  endpoint and published Objective generation, full governed failure/recovery/
+  resume, and final mission acceptance remain undemonstrated. Existing FCC
+  transport canaries retain their diagnostic scope.
+
+This checkpoint does not declare mission SUCCESS or NO_JUSTIFIED_WORK. Remaining
+owner publication, daemon integration, dependency PRs, issues and real E2E require
+separate evidence; passing fixture tests cannot close them.
+
+
+### Additional resource and recovery findings
+
+The owner reaffirmed resource economy as a final acceptance criterion. Audit
+reproduced five direct delivery invocations under an existing three-attempt
+budget. The correction now charges persisted invocation history at the shared
+entry point and reduces available correction rounds to `[2, 1, 0]`. Adapter and
+canonical budget evidence also reject NaN, infinity and nonpositive timeouts.
+These corrections reuse existing attempt and duration limits.
+
+Two further closure regressions reproduced SUCCESS after a new uncertain dispatch
+was recorded against an already integrated plan: one direct runtime journal and
+one coordinator journal written before pipeline entry. Closure now applies
+recovery checks to both rather than treating older receipts as resolution of a
+later invocation. Preserved uncertainty blocks acceptance.
+
+The selector uses canonical owner priority and eligibility, with finite fallback
+within one Architect call. The cost-ranking helper is observational and not wired
+to selection. Persistent budgets across fresh assessment retries, avoidance of an
+unnecessarily powerful effective live model, and effective routing identity are
+still unproved. These remain mission acceptance gaps, not reasons to add a new
+cost subsystem or claim success from the present fixture suite.
+
+
+### Recovery of the implementation workspace — 2026-09-10
+
+The temporary implementation worktree and validation environments were absent at
+resumption, while the original checkout and Git branch remained intact. Source
+edits were recovered in order from the task and review tool records into a
+persistent worktree. The recovered candidate passed **1,232 tests** in 161.79
+seconds on Python 3.14.6; Ruff, strict documentation and the public-history audit
+(515 commits, 1,143 unique blobs) also passed. No source or authority was restored
+from an unverified provider response. This is development-workspace recovery,
+not evidence that AGF has completed the required live mission recovery scenario.
+
+
+Independent recovery review found one additional entry-point discrepancy: an
+interrupted coordinator journal blocked `continue`, but direct delivery could
+ignore it. New dispatches now use the single runtime journal created inside the
+shared delivery lock. Historical coordinator dispatch journals remain checked by
+every entry point and by closure. Coordinator reports are evidence only and do
+not introduce a parallel retry counter. Regression cases cover both entry points.
+
+
+Final candidate validation after the entry-point correction: **1,234 tests passed**
+in 166.36 seconds, with no removals or skips to obtain green. Ruff, strict MkDocs,
+changed-document relative links and whitespace checks pass. Independent Reviewer
+inspection and Compliance review accepted the bounded changes; the final journal
+delta passed 25 independent focused tests. Remote checks and the registered human
+merge requirement remain integration gates. None of these results establishes
+mission SUCCESS or resolves the resource/routing and live E2E gaps above.
