@@ -358,3 +358,11 @@ def test_duplicate_provider_candidates_are_rejected():
     )
     with pytest.raises(ProviderIntelligenceError, match="candidate bindings"):
         value.validate()
+
+
+@pytest.mark.parametrize("timeout", ["nan", "inf", "-inf", "0", "-1"])
+def test_budget_evidence_rejects_unbounded_timeout(timeout):
+    evidence = dict(GATE_EVIDENCE)
+    evidence["budget_eligible"] = f"bounded-timeout-seconds:{timeout};True"
+    with pytest.raises(ProviderIntelligenceError, match="budget gate evidence"):
+        state(gate_evidence=tuple(evidence.items())).validate(now=NOW, target_sha=TARGET)

@@ -63,6 +63,7 @@ class ObjectiveAcceptance:
     criteria: tuple[AcceptanceCriterion, ...]
     policy_hash: str
     constitution_id: str
+    approved_plan_sha256: str | None = None
 
 
 def read_objective_acceptance(project, session) -> ObjectiveAcceptance:
@@ -78,16 +79,22 @@ def read_objective_acceptance(project, session) -> ObjectiveAcceptance:
         raise ObjectiveAcceptanceError("Objective acceptance authority is unavailable") from exc
 
 
-def _from_context(context, project, session) -> ObjectiveAcceptance:
-    payload = context.artifacts.get("objective_acceptance")
+def parse_objective_proposal(payload, project, session, generation_id):
+    """Validate content only; this function does not authenticate owner approval."""
     required = {
         "schema_version", "generation_id", "project_id", "session_id",
         "repository_identity", "goal_sha256", "objective", "objective_sha256", "criteria",
     }
+    if isinstance(payload, dict) and payload.get("schema_version") == "2.0":
+        required.add("approved_plan_sha256")
+        digest = payload.get("approved_plan_sha256")
+        if (not isinstance(digest, str) or len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)):
+            raise ObjectiveAcceptanceError("approved plan hash is invalid")
     if not isinstance(payload, dict) or set(payload) != required:
         raise ObjectiveAcceptanceError("Objective component schema is invalid")
-    if (payload["schema_version"] != "1.0"
-            or payload["generation_id"] != context.generation_id
+    if (payload["schema_version"] not in {"1.0", "2.0"}
+            or payload["generation_id"] != generation_id
             or payload["project_id"] != project.project_id
             or payload["session_id"] != session.session_id
             or session.project_id != project.project_id
@@ -128,8 +135,17 @@ def _from_context(context, project, session) -> ObjectiveAcceptance:
             identifier, item["statement_sha256"], item["method"],
             tuple(item["task_ids"]), tuple(item["validation_commands"]),
         ))
+    return objective, tuple(criteria)
+
+
+def _from_context(context, project, session) -> ObjectiveAcceptance:
+    payload = context.artifacts.get("objective_acceptance")
+    objective, criteria = parse_objective_proposal(
+        payload, project, session, context.generation_id,
+    )
     return ObjectiveAcceptance(
         objective, objective_hash(objective), content_hash(payload),
         context.generation_id, context.manifest_hash, tuple(criteria),
         context.policy_hash, context.artifacts["constitution"]["constitution_id"],
+        payload.get("approved_plan_sha256"),
     )

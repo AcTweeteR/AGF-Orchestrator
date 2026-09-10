@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .delivery_reconciliation import DeliveryIntentStore, DeliveryReceipt
 from .models import ExecutionPlan, Task, plan_from_dict
+from .objective_acceptance import content_hash
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .remote_identity import canonical_remote_identity
 from .session_models import SessionStatus
@@ -17,6 +18,16 @@ from .session_store import SessionStore, SessionStoreError
 
 class DependencyEvidenceError(ValueError):
     pass
+
+
+class MissingIntegrationEvidence(DependencyEvidenceError):
+    """Valid canonical lineage does not yet prove all requested tasks."""
+
+
+def verify_integrated_task(session_id, plan, task_id, repository, *, state_dir=None,
+                           allow_completed=False):
+    return _read_verified(session_id, plan, {task_id}, repository, state_dir=state_dir,
+                          allow_completed=allow_completed)
 
 
 def _hash(value) -> str:
@@ -46,37 +57,52 @@ def verify_task_dependencies(
 
 
 def verify_integrated_plan(session_id, plan, repository, *, state_dir=None,
-                           policy_hash=None, constitution_id=None) -> list[str]:
+                           policy_hash=None, constitution_id=None,
+                           approved_plan_sha256=None) -> list[str]:
     """Audit all retained plan work without interpreting it as Objective completion."""
     if not plan.tasks:
         raise DependencyEvidenceError("an empty plan is not integration evidence")
-    return _read_verified(
+    result = _read_verified(
         session_id, plan, {task.task_id for task in plan.tasks}, repository,
         state_dir=state_dir, all_tasks=True,
         policy_hash=policy_hash, constitution_id=constitution_id,
+        approved_plan_sha256=approved_plan_sha256,
     )
+    # All task receipts do not resolve a later, uncertain invocation. Closure
+    # must observe the same dispatch recovery gate as execution selection.
+    from .execution_journal import require_reconciled_execution
+
+    store = SessionStore(state_dir)
+    require_reconciled_execution(store, store.load(session_id), plan, allow_completed=True)
+    return result
 
 
 def _read_verified(session_id, plan, required_ids, repository, *, state_dir=None, all_tasks=False,
-                   policy_hash=None, constitution_id=None):
+                   policy_hash=None, constitution_id=None, approved_plan_sha256=None,
+                   allow_completed=False):
     if not session_id:
         raise DependencyEvidenceError("dependencies require a persisted session")
     try:
         return _verify(session_id, plan, required_ids, repository,
                        state_dir=state_dir, all_tasks=all_tasks,
-                       policy_hash=policy_hash, constitution_id=constitution_id)
+                       policy_hash=policy_hash, constitution_id=constitution_id,
+                       approved_plan_sha256=approved_plan_sha256,
+                       allow_completed=allow_completed)
+    except MissingIntegrationEvidence:
+        raise
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError,
             SessionStoreError, ProjectRegistryError) as exc:
         raise DependencyEvidenceError("dependency evidence is missing or inconsistent") from exc
 
 
 def _verify(session_id, plan, required_ids, repository, *, state_dir=None, all_tasks=False,
-            policy_hash=None, constitution_id=None):
+            policy_hash=None, constitution_id=None, approved_plan_sha256=None,
+                   allow_completed=False):
     sessions = SessionStore(state_dir)
     session = sessions.load(session_id)
     project = ProjectRegistry(sessions.state_dir).get(session.project_id)
     allowed_statuses = {SessionStatus.READY, SessionStatus.EXECUTING}
-    if all_tasks:
+    if all_tasks or allow_completed:
         allowed_statuses.add(SessionStatus.COMPLETED)
     if (session.status not in allowed_statuses
             or session.blocking_issues or session.required_human_actions
@@ -114,18 +140,31 @@ def _verify(session_id, plan, required_ids, repository, *, state_dir=None, all_t
     intents = DeliveryIntentStore(sessions.state_dir)
     proofs = {}
     seen = set()
+    baseline_seen = False
+    accepted_plans = set()
+    accepted_plan_files = set()
     for _ in range(200):
         if path in seen:
             raise DependencyEvidenceError("cyclic plan lineage")
         seen.add(path)
+        if not baseline_seen:
+            accepted_plans.add(_hash(current))
+            accepted_plan_files.add(sessions.artifact_hash(str(path)))
+        if approved_plan_sha256 and content_hash(current) == approved_plan_sha256:
+            if baseline_seen:
+                raise DependencyEvidenceError("approved baseline repeats")
+            baseline_seen = True
         scope = current["scope"]
+        if baseline_seen and scope.get("delivery_reconciliation"):
+            raise DependencyEvidenceError("execution precedes the approved baseline")
         predecessor = scope.get("lineage")
         if not predecessor:
             break
         previous_path, previous = read_plan(predecessor, scope["predecessor_plan_sha256"])
-        if all_tasks and not {item["task_id"] for item in previous["tasks"]} <= required_ids:
+        if (all_tasks and not baseline_seen
+                and not {item["task_id"] for item in previous["tasks"]} <= required_ids):
             raise DependencyEvidenceError("historical plan work was silently removed")
-        if all_tasks:
+        if all_tasks and not baseline_seen:
             if (previous.get("objective_id") != current.get("objective_id")
                     or previous.get("requirement_refs", []) != current.get("requirement_refs", [])):
                 raise DependencyEvidenceError("historical Objective binding was superseded")
@@ -227,6 +266,26 @@ def _verify(session_id, plan, required_ids, repository, *, state_dir=None, all_t
         path, current = previous_path, previous
     else:
         raise DependencyEvidenceError("dependency lineage exceeds limit")
+    if approved_plan_sha256:
+        if not baseline_seen:
+            raise DependencyEvidenceError("signed approved plan is absent from lineage")
+        if any(item.plan_hash not in accepted_plans
+               for item in intents.for_session(session.project_id, session_id)):
+            raise DependencyEvidenceError("delivery intent precedes approved planning")
+        # An execution without an intent is still execution. A signed planning
+        # baseline cannot retroactively turn its dispatch history into drafts.
+        for journal in artifacts.iterdir():
+            direct = journal.name.startswith("execution-started-")
+            continuation = (journal.name.startswith("continuation-")
+                            and journal.name.endswith("-started.json"))
+            if not (direct or continuation):
+                continue
+            payload = json.loads(sessions.ensure_safe_path(journal).read_text())
+            binding = payload if direct else payload["binding"]
+            if (binding["session_id"] != session_id
+                    or binding["project_id"] != session.project_id
+                    or binding["plan_sha256"] not in accepted_plan_files):
+                raise DependencyEvidenceError("execution journal precedes approved planning")
     if set(proofs) != set(required):
-        raise DependencyEvidenceError("dependency has no verified integrated delivery")
+        raise MissingIntegrationEvidence("dependency has no verified integrated delivery")
     return [proofs[key] for key in sorted(proofs)]

@@ -24,7 +24,8 @@ def digest(value):
 
 
 def prepared(tmp_path, monkeypatch, *, integrated=True, third=False, top_level=False,
-             single=False, previous_criteria=None):
+             single=False, previous_criteria=None, persist_intent=True,
+             preserve_planning_lineage=False):
     root, base, candidate, remote = fixture(tmp_path)
     remote = Path(remote).as_uri()
     git(root, "remote", "set-url", "origin", remote)
@@ -51,6 +52,12 @@ def prepared(tmp_path, monkeypatch, *, integrated=True, third=False, top_level=F
     edges = [{"task_id": second.task_id, "depends_on": first.task_id}] if top_level else []
     original = replace(original, tasks=tasks, dependencies=edges, parallel_groups=[],
                        architecture_impact={"status": "approved", "requires_architect": False})
+    if preserve_planning_lineage:
+        original = replace(original, scope={
+            **original.scope, "lineage": session.plan_path,
+            "predecessor_plan_sha256": session.artifact_hashes["plan"],
+        })
+        session.artifact_hashes["predecessor_plan"] = session.artifact_hashes["plan"]
     if previous_criteria:
         historical = replace(
             original, tasks=[replace(first, acceptance_criteria=previous_criteria)],
@@ -78,7 +85,8 @@ def prepared(tmp_path, monkeypatch, *, integrated=True, third=False, top_level=F
     )
     item = replace(item, content_sha256=digest(item._payload()))
     intents = DeliveryIntentStore(state)
-    intents.put(item)
+    if persist_intent:
+        intents.put(item)
     if integrated:
         git(root, "merge", "--ff-only", "agf/task-001")
         git(root, "push", "origin", "main")

@@ -320,6 +320,13 @@ class SessionManager:
                 "DIRECTOR",
                 "session-start",
             )
+            origin = {"schema_version": "1.0", "protocol": "governed-session/1",
+                      "session_id": session_id, "project_id": project.project_id,
+                      "initial_plan_sha256": plan_hash}
+            _, origin_hash = self.store.write_artifact(
+                session_id, "planning-origin.json", json.dumps(origin, sort_keys=True) + "\n",
+            )
+            session.artifact_hashes["planning_origin"] = origin_hash
             self._save(session)
             return session
 
@@ -414,6 +421,60 @@ class SessionManager:
                 raise SessionManagerError("selected project does not match session project")
             with project_lock(self.store.state_dir, project.project_id, "session-resume"):
                 return self._resume_locked(session, project, execute, confirm_delivery)
+
+    def bind_objective_plan(self, session_id):
+        """Install only the exact first plan approved by the active owner contract."""
+        from .objective_acceptance import content_hash, read_objective_acceptance
+        from .objective_plan import (
+            assert_approved_projection,
+            project_objective_plan,
+            require_unexecuted_planning,
+        )
+        from .preflight import collect_repository
+
+        with session_lock(self.store.state_dir, session_id, "objective-plan-binding"):
+            session = self.store.load(session_id)
+            project = self.registry.get(session.project_id)
+            with project_lock(self.store.state_dir, project.project_id, "objective-plan-binding"):
+                self._validate_plan_identity(session, project)
+                self._validate_plan_lineage(session, project)
+                acceptance = read_objective_acceptance(project, session)
+                path = self.store.ensure_safe_path(session.plan_path)
+                plan = plan_from_dict(json.loads(path.read_text()))
+                if content_hash(plan.to_dict()) == acceptance.approved_plan_sha256:
+                    return session
+                require_unexecuted_planning(session, self.store)
+                repository = collect_repository(project.repository_root)
+                if (repository.head_sha != session.base_sha
+                        or repository.branch != project.default_branch
+                        or parse_remote_url(repository.origin).identity
+                        != parse_remote_url(project.origin_url).identity):
+                    raise SessionManagerError("target changed before Objective binding")
+                projected = project_objective_plan(plan, session, acceptance.objective,
+                                                   acceptance.criteria)
+                assert_approved_projection(projected, acceptance)
+                new_path, digest = self.store.write_artifact(
+                    session_id, f"objective-plan-{acceptance.approved_plan_sha256}.json",
+                    json.dumps(projected.to_dict(), sort_keys=True, indent=2) + "\n",
+                )
+                if (collect_repository(project.repository_root) != repository
+                        or read_objective_acceptance(project, session) != acceptance):
+                    raise SessionManagerError("Objective authority changed during binding")
+                with self.registry._lock("objective-plan-save"):
+                    if self.registry._get_unlocked(session.project_id) != project:
+                        raise SessionManagerError("project changed during Objective binding")
+                    session.artifact_hashes["predecessor_plan"] = session.artifact_hashes["plan"]
+                    session.plan_path = new_path
+                    session.artifact_hashes["plan"] = digest
+                    session.artifact_hashes["objective_binding"] = acceptance.component_sha256
+                    session = self._append_event(
+                        session, session.status, session.status,
+                        "first executable plan bound to authenticated Objective", [new_path],
+                        session.blocking_issues, "DIRECTOR",
+                        "objective-plan:" + acceptance.approved_plan_sha256,
+                    )
+                    self._save(session)
+                    return session
 
     def complete(self, session_id: str, *, execute=False, confirm_execution=False) -> dict:
         """Record completion only from freshly computed canonical acceptance.
@@ -1544,6 +1605,14 @@ class SessionManager:
                     session, "reconciled plan is unreadable", "restore session evidence"
                 )
             if recovered_scope.get("delivery_reconciliation", {}).get("completed_task_id"):
+                return session
+        if session.status is SessionStatus.READY and "objective_binding" in session.artifact_hashes:
+            from .objective_acceptance import content_hash, read_objective_acceptance
+
+            acceptance = read_objective_acceptance(project, session)
+            payload = json.loads(self.store.ensure_safe_path(session.plan_path).read_text())
+            if (acceptance.component_sha256 == session.artifact_hashes["objective_binding"]
+                    and content_hash(payload) == acceptance.approved_plan_sha256):
                 return session
         if session.status is SessionStatus.READY and "provider_evidence" in session.artifact_hashes:
             evidence_path = _assessment_artifact_paths(self.store, session)["provider_evidence"]

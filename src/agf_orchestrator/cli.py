@@ -176,14 +176,14 @@ def build_parser() -> argparse.ArgumentParser:
         "show", "resume", "assess", "repair-lineage", "reconcile-external",
         "reconcile-external-result", "reconcile-canonical", "cancel", "doctor", "archive",
         "audit-completion",
-        "complete",
+        "complete", "continue",
     ):
         item = session_commands.add_parser(command)
         item.add_argument("--session", required=True)
         item.add_argument("--json", action="store_true")
         if command in {"doctor", "archive"}:
             item.add_argument("--project", required=True)
-        if command == "assess":
+        if command in {"assess", "continue"}:
             item.add_argument(
                 "--architect-config",
                 help="approved state-root JSON with capability profiles, gates, and providers",
@@ -192,6 +192,19 @@ def build_parser() -> argparse.ArgumentParser:
             item.add_argument(
                 "--evidence", required=True, help="signed external advancement evidence"
             )
+    continuation = session_commands.choices["continue"]
+    continuation.add_argument("--execute", action="store_true")
+    continuation.add_argument("--confirm-execution", action="store_true")
+    continuation.add_argument("--confirm-delivery", action="store_true")
+    continuation.add_argument("--max-steps", type=int, default=10)
+    continuation.add_argument(
+        "--adapter", choices=["codex", "openhands", "ollama"], default="codex",
+    )
+    continuation.add_argument("--allow-openhands-llm-env", action="store_true")
+    continuation.add_argument("--codex-path", default=None)
+    continuation.add_argument("--openhands-path", default="openhands")
+    continuation.add_argument("--timeout", type=float, default=300.0)
+    continuation.set_defaults(reviewer="codex", simulate_pr=False)
     resume = session_commands.choices["resume"]
     complete = session_commands.choices["complete"]
     complete.add_argument("--execute", action="store_true")
@@ -369,6 +382,8 @@ def run_project(args: argparse.Namespace) -> int:
 
 def run_session(args: argparse.Namespace) -> int:
     try:
+        if args.session_command == "continue":
+            return run_session_continuation(args)
         manager = SessionManager(architect=_architect_from_config(args))
         if args.session_command == "start":
             session = manager.start(args.project, args.goal)
@@ -521,7 +536,7 @@ class _AdapterArchitectProvider:
 
 
 def _architect_from_config(args: argparse.Namespace):
-    if getattr(args, "session_command", None) != "assess":
+    if getattr(args, "session_command", None) not in {"assess", "continue"}:
         return None
     config_path = getattr(args, "architect_config", None)
     store = SessionStore()
@@ -1071,6 +1086,65 @@ def run_execute(args: argparse.Namespace) -> int:
     return 0
 
 
+def _delivery_pipeline(args, project):
+    adapter = (
+        OllamaOpenHandsAdapter(
+            executable=args.openhands_path,
+            timeout=args.timeout,
+            allow_llm_env=True,
+        )
+        if args.adapter == "ollama"
+        else OpenHandsSDKAdapter(
+            executable=args.openhands_path,
+            timeout=args.timeout,
+            allow_llm_env=args.allow_openhands_llm_env,
+        )
+        if args.adapter == "openhands"
+        else CodexAdapter(executable=args.codex_path, timeout=args.timeout)
+    )
+    reviewer = (
+        CodexReviewerAdapter(CodexAdapter(executable=args.codex_path, timeout=args.timeout))
+        if args.reviewer == "codex"
+        else DeterministicReviewer()
+    )
+    return DeliveryPipeline(
+        adapter=adapter,
+        reviewer=reviewer,
+        compliance=ComplianceChecker(),
+        pr_creator=DraftPRCreator(simulate=args.simulate_pr),
+        max_correction_rounds=project.policy.maximum_correction_rounds,
+    )
+
+
+def run_session_continuation(args):
+    from .session_continuation import SessionContinuation
+
+    if not 1 <= args.max_steps <= 100:
+        raise SessionManagerError("continuation max-steps must be between 1 and 100")
+    if not all((args.execute, args.confirm_execution, args.confirm_delivery)):
+        raise SessionManagerError("continuation requires execution and delivery confirmation")
+    if args.allow_openhands_llm_env and args.adapter != "openhands":
+        raise SessionManagerError("LLM environment forwarding requires OpenHands")
+    history = []
+    for _ in range(args.max_steps):
+        # Resolve provider configuration only when assessment is needed; stale
+        # planning configuration must not prevent delivery reconciliation.
+        manager = SessionManager()
+        session = manager.get(args.session)
+        project = manager.registry.get(session.project_id)
+        result = SessionContinuation(
+            manager, _delivery_pipeline(args, project),
+            architect_factory=lambda: _architect_from_config(args),
+        ).tick(
+            args.session, execute=True, confirm_execution=True, confirm_delivery=True,
+        )
+        history.append(result)
+        if result["status"] != "CONTINUE":
+            break
+    _output({**result, "steps": history}, args.json)
+    return 0 if result["status"] in {"SUCCESS", "NO_JUSTIFIED_WORK"} else 2
+
+
 def run_deliver(args: argparse.Namespace) -> int:
     if args.allow_openhands_llm_env and args.adapter != "openhands":
         print("ERROR: --allow-openhands-llm-env requires --adapter openhands", file=sys.stderr)
@@ -1088,54 +1162,15 @@ def run_deliver(args: argparse.Namespace) -> int:
         project, target_root = _resolve_project(args)
         _validate_plan_project(plan, project, target_root)
         if args.execute:
-            if not project.policy.allow_live_execution or not project.policy.allow_delivery:
-                raise ProjectRegistryError("project policy denies live delivery")
-            _verify_constitution(project)
-            if (Path.home() / ".agf-orchestrator" / "policy-state.sqlite3").exists():
-                active_policy = resolve_authority(project.project_id).policy
-            else:
-                active_policy = None
-            if active_policy is None and not project.policy.require_human_merge:
-                raise ProjectRegistryError("delivery requires human merge approval")
-            task = next((item for item in plan.tasks if item.task_id == args.task), None)
-            if task is None:
-                raise ExecutionValidationError(f"task does not exist: {args.task}")
-            if active_policy is not None and active_policy.requires_human_merge(task.risk_level):
-                raise ProjectRegistryError(
-                    f"active policy requires human merge for risk {task.risk_level}"
-                )
+            from .delivery_admission import admit_live_delivery
+
+            admit_live_delivery(project, plan, args.task)
         output = Path(args.output).expanduser().resolve()
         if output == target_root or target_root in output.parents:
             raise ExecutionValidationError(
                 "delivery report must not be written inside the target repository"
             )
-        adapter = (
-            OllamaOpenHandsAdapter(
-                executable=args.openhands_path,
-                timeout=args.timeout,
-                allow_llm_env=True,
-            )
-            if args.adapter == "ollama"
-            else OpenHandsSDKAdapter(
-                executable=args.openhands_path,
-                timeout=args.timeout,
-                allow_llm_env=args.allow_openhands_llm_env,
-            )
-            if args.adapter == "openhands"
-            else CodexAdapter(executable=args.codex_path, timeout=args.timeout)
-        )
-        reviewer = (
-            CodexReviewerAdapter(CodexAdapter(executable=args.codex_path, timeout=args.timeout))
-            if args.reviewer == "codex"
-            else DeterministicReviewer()
-        )
-        pipeline = DeliveryPipeline(
-            adapter=adapter,
-            reviewer=reviewer,
-            compliance=ComplianceChecker(),
-            pr_creator=DraftPRCreator(simulate=args.simulate_pr),
-            max_correction_rounds=project.policy.maximum_correction_rounds,
-        )
+        pipeline = _delivery_pipeline(args, project)
         report = pipeline.deliver(
             plan,
             args.task,
@@ -1146,6 +1181,8 @@ def run_deliver(args: argparse.Namespace) -> int:
         )
         write_delivery_report(report, output)
     except (
+        SessionStoreError,
+        LockError,
         ProjectRegistryError,
         ExecutionValidationError,
         PolicyActivationError,

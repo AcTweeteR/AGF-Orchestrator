@@ -94,3 +94,19 @@ signer, caller-controlled approval flags, another policy engine, a new active
 authority generation, or installation of keys or credentials. Activation remains
 an external owner decision. See [runtime acceptance](../OBJECTIVE_ACCEPTANCE.md)
 for the implemented closure interface and remaining continuation work.
+
+
+## First-plan binding within the approved boundary
+
+Objective component schema `2.0` binds the complete first executable plan hash.
+This is a content-bound implementation of the approved intent and criterion
+mapping, not another authority source. Projection adds only Objective and
+requirement references; it preserves scopes, commands, dependencies and lineage.
+The owner must sign the exact resulting content through the existing mechanism.
+
+Only planning with recorded origin, intact ancestry and no execution history can
+use this boundary. All draft ancestors remain verified. No executed or uncertain
+work may be reclassified as a draft; canonical intents and execution journals
+outside the approved plan lineage prevent closure. Legacy contracts retain the
+strict full-history rule. This does not authorize supersession of executed
+obligations, owner publication, activation or installation of credentials.

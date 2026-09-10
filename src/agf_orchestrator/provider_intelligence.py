@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import tempfile
@@ -132,7 +133,8 @@ def _validate_architect_gate_evidence(
         raise ProviderIntelligenceError("budget gate evidence is invalid")
     try:
         timeout_text, budget_value = budget.removeprefix("bounded-timeout-seconds:").split(";", 1)
-        if float(timeout_text) <= 0 or budget_value not in {"True", "False"}:
+        timeout = float(timeout_text)
+        if not math.isfinite(timeout) or timeout <= 0 or budget_value not in {"True", "False"}:
             raise ValueError
     except (TypeError, ValueError) as exc:
         raise ProviderIntelligenceError("budget gate evidence is invalid") from exc

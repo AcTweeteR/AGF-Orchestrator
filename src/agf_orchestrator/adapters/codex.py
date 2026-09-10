@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -155,6 +156,9 @@ class CodexAdapter:
         timeout: float = 300.0,
         profile: CodexInvocationProfile | None = None,
     ) -> None:
+        if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                or not math.isfinite(timeout) or timeout <= 0):
+            raise ValueError("timeout must be finite and positive")
         self.executable = executable
         self.timeout = timeout
         self.profile = profile
