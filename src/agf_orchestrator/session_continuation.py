@@ -11,7 +11,7 @@ from .delivery_admission import admit_live_delivery
 from .delivery_reconciliation import DeliveryIntentStore
 from .execution_journal import ExecutionRecoveryRequired
 from .git_delivery import GitDelivery, sanitize_branch_name
-from .locking import project_lock
+from .locking import LockError, project_lock
 from .models import plan_from_dict
 from .objective_acceptance import (
     ObjectiveAcceptanceError,
@@ -52,6 +52,10 @@ class SessionContinuation:
             except ExecutionRecoveryRequired:
                 return self._result(session, "HUMAN_REQUIRED", "interrupted-dispatch",
                                     "prior execution requires canonical reconciliation")
+            except LockError:
+                # The campaign runner owns bounded retry/backoff. Contention is
+                # not evidence corruption and must not terminalize its session.
+                raise
             except (OSError, ValueError, RuntimeError):
                 return self._result(session, "BLOCKED", "evidence-gate",
                                     "canonical evidence failed; inspect retained artifacts")

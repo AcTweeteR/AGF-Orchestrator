@@ -79,8 +79,10 @@ agf-orchestrator campaign-runner register-session --state-dir "$AGF_STATE_DIR" -
 agf-orchestrator campaign-runner run --state-dir "$AGF_STATE_DIR"
 ```
 
-The state directory must match the configured session state. Registration binds
-one immutable driver configuration and existing campaign retry budget to the
+The state directory must match the configured session state. An explicit Architect
+configuration is stored as an absolute path so later daemon working directories
+do not change its meaning. Loading still verifies root and symlinks. Registration
+binds one immutable driver configuration and existing campaign retry budget to the
 session. It requires an active registered project and installed generation
 authority; it does not publish or activate authority. The confirmation flags
 authorize execution and delivery, not Objective approval or protected merges.
@@ -92,6 +94,8 @@ candidate without invoking a provider or writing integration receipts. The work
 step reconciles through SessionManager. Only verified canonical reconciliation
 advances the campaign target and plan binding, retaining its budget and authority.
 Restart between reconciliation and campaign save revalidates the full lineage.
+Transient session/project lock contention uses the existing bounded retry/backoff
+budget rather than declaring canonical evidence corrupt.
 An exact merge arriving during a wait is reconciled on the next cycle.
 
 Built-in session `COMPLETE` requires canonical Objective acceptance; generic

@@ -1237,7 +1237,9 @@ def run_campaign_runner(args: argparse.Namespace) -> int:
                 project_id=session.project_id, campaign_id=args.campaign_id,
                 state_dir=str(daemon.state_dir), session_id=session.session_id,
                 poll_seconds=args.poll_seconds, adapter=args.adapter, timeout=args.timeout,
-                architect_config=args.architect_config, codex_path=args.codex_path,
+                architect_config=(str(Path(args.architect_config).expanduser().absolute())
+                                  if args.architect_config else None),
+                codex_path=args.codex_path,
                 openhands_path=args.openhands_path,
                 allow_openhands_llm_env=args.allow_openhands_llm_env,
             )

@@ -187,3 +187,49 @@ def test_daemon_rejects_unknown_driver_schema(tmp_path, payload):
     (daemon.spec_dir / "campaign-invalid.json").write_text(json.dumps(payload))
     with pytest.raises(CampaignDaemonError):
         daemon._load_specs()
+
+
+@pytest.mark.parametrize("lock_kind", ["session", "project"])
+def test_real_lock_contention_retries_without_terminalizing(tmp_path, monkeypatch, lock_kind):
+    from agf_orchestrator.locking import project_lock, session_lock
+
+    _, manager, spec, store, driver, _ = registered(tmp_path, monkeypatch)
+    clock = Clock()
+    runner = GovernedCampaignRunner(store, driver, now=clock, base_backoff_seconds=1)
+    lock = (session_lock(store.state_dir, spec.session_id, "concurrent-cli")
+            if lock_kind == "session"
+            else project_lock(store.state_dir, spec.project_id, "concurrent-cli"))
+    def concurrent_cli(state):
+        # Contention starts after the runner has claimed the campaign, while
+        # SessionManager enters its independent session/project transaction.
+        with lock:
+            return driver.work(state)
+
+    result = runner.tick(driver.probe, concurrent_cli)
+    assert result.status is CampaignStatus.RETRY_BACKOFF
+    assert manager.get(spec.session_id).status.value == "READY"
+    assert result.retry_count == 1
+    clock.advance(2)
+    assert runner.tick(driver.probe, driver.work).status is CampaignStatus.COMPLETE
+
+
+def test_relative_architect_spec_is_rejected():
+    spec = GovernedSessionDriverSpec("project-test", "campaign-test", "/tmp/state",
+                                    "session-test", architect_config="config.json")
+    with pytest.raises(GovernedCampaignError, match="absolute"):
+        spec.validate()
+
+
+def test_cli_persists_absolute_architect_path_across_cwd_changes(tmp_path, monkeypatch):
+    from agf_orchestrator.cli import main
+
+    _, state, _, session, _ = ready(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    args = ["campaign-runner", "register-session", "--state-dir", str(state),
+            "--session", session.session_id, "--campaign-id", "campaign-path",
+            "--architect-config", "state/config.json", "--execute", "--confirm-execution",
+            "--confirm-delivery", "--json"]
+    assert main(args) == 0
+    monkeypatch.chdir(state)
+    spec, = CampaignDaemon(state)._load_specs()
+    assert spec.architect_config == str(state / "config.json")
