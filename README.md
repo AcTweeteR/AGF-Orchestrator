@@ -58,7 +58,8 @@ The current runtime includes executable layers for:
 - delivery intent/receipt verification and lineage reconciliation;
 - stale-target, replay, tamper, ambiguity, and drift detection;
 - durable campaign waits, retries, wake conditions, and terminal states;
-- an independent persistent campaign daemon with single-instance/heartbeat behavior;
+- an independent persistent campaign daemon with single-instance/heartbeat behavior
+  and a built-in governed session driver with persistent assessment budgets;
 - policy enforcement before external campaign actions;
 - reconciliation of already-observed external results without false provenance.
 

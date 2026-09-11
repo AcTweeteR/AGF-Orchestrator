@@ -275,6 +275,23 @@ def build_parser() -> argparse.ArgumentParser:
     campaign_reset.add_argument("--campaign-id", required=True)
     campaign_reset.add_argument("--reason", required=True)
     campaign_reset.add_argument("--json", action="store_true")
+    campaign_session = campaign_commands.add_parser("register-session")
+    campaign_session.add_argument("--state-dir", required=True)
+    campaign_session.add_argument("--session", required=True)
+    campaign_session.add_argument("--campaign-id", required=True)
+    campaign_session.add_argument("--retry-budget", type=int, default=3)
+    campaign_session.add_argument("--poll-seconds", type=int, default=30)
+    campaign_session.add_argument("--adapter", choices=("codex", "openhands", "ollama"),
+                                  default="codex")
+    campaign_session.add_argument("--timeout", type=float, default=300.0)
+    campaign_session.add_argument("--architect-config")
+    campaign_session.add_argument("--codex-path")
+    campaign_session.add_argument("--openhands-path", default="openhands")
+    campaign_session.add_argument("--allow-openhands-llm-env", action="store_true")
+    campaign_session.add_argument("--execute", action="store_true")
+    campaign_session.add_argument("--confirm-execution", action="store_true")
+    campaign_session.add_argument("--confirm-delivery", action="store_true")
+    campaign_session.add_argument("--json", action="store_true")
     return parser
 
 
@@ -569,12 +586,16 @@ def _architect_from_config(args: argparse.Namespace):
         candidates = state.candidates
         gates = state.gates
         providers = {}
+        budget_evidence = dict(state.gate_evidence)["budget_eligible"]
+        timeout = float(budget_evidence.removeprefix("bounded-timeout-seconds:").split(";", 1)[0])
         for provider_id, interface in state.provider_interfaces:
             if interface == "codex":
-                providers[provider_id] = _AdapterArchitectProvider(provider_id, CodexAdapter())
+                providers[provider_id] = _AdapterArchitectProvider(
+                    provider_id, CodexAdapter(timeout=timeout),
+                )
             elif interface == "openhands":
                 providers[provider_id] = _AdapterArchitectProvider(
-                    provider_id, OpenHandsSDKAdapter(allow_llm_env=False)
+                    provider_id, OpenHandsSDKAdapter(allow_llm_env=False, timeout=timeout)
                 )
             else:
                 raise ProviderIntelligenceError("provider interface is not approved")
@@ -1202,6 +1223,29 @@ def run_campaign_runner(args: argparse.Namespace) -> int:
     """Control the independent process that keeps campaign waits alive."""
     daemon = CampaignDaemon(args.state_dir)
     try:
+        if args.campaign_command == "register-session":
+            from .governed_campaign import GovernedSessionDriverSpec, register_governed_campaign
+
+            if not (args.execute and args.confirm_execution and args.confirm_delivery):
+                raise CampaignDaemonError(
+                    "session registration requires execution/delivery confirmation",
+                )
+            if daemon.state_dir != SessionStore().state_dir:
+                raise CampaignDaemonError("state-dir must match configured AGF_STATE_DIR")
+            session = SessionStore().load(args.session)
+            spec = GovernedSessionDriverSpec(
+                project_id=session.project_id, campaign_id=args.campaign_id,
+                state_dir=str(daemon.state_dir), session_id=session.session_id,
+                poll_seconds=args.poll_seconds, adapter=args.adapter, timeout=args.timeout,
+                architect_config=args.architect_config, codex_path=args.codex_path,
+                openhands_path=args.openhands_path,
+                allow_openhands_llm_env=args.allow_openhands_llm_env,
+            )
+            state = register_governed_campaign(spec, args.retry_budget)
+            daemon.register(spec)
+            _output({"registered": True, "campaign_id": state.campaign_id,
+                     "status": state.status.value}, args.json)
+            return 0
         if args.campaign_command == "register":
             spec = CampaignDriverSpec(
                 project_id=args.project_id, campaign_id=args.campaign_id,
@@ -1237,7 +1281,8 @@ def run_campaign_runner(args: argparse.Namespace) -> int:
         if args.campaign_command == "run":
             daemon.run_forever(max_loops=args.max_loops)
             return 0
-    except CampaignDaemonError as exc:
+    except (CampaignDaemonError, SessionStoreError, ProjectRegistryError,
+            ValueError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     return 2

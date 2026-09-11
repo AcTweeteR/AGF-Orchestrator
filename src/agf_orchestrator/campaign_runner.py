@@ -36,6 +36,7 @@ class CampaignStatus(StrEnum):
     WAITING_EXTERNAL = "WAITING_EXTERNAL"
     RETRY_BACKOFF = "RETRY_BACKOFF"
     COMPLETE = "COMPLETE"
+    NO_JUSTIFIED_WORK = "NO_JUSTIFIED_WORK"
     HUMAN_REQUIRED = "HUMAN_REQUIRED"
     BLOCKED_NON_RETRYABLE = "BLOCKED_NON_RETRYABLE"
     CANCELLED = "CANCELLED"
@@ -53,6 +54,7 @@ WAITING_STATUSES = {
 }
 TERMINAL_STATUSES = {
     CampaignStatus.COMPLETE,
+    CampaignStatus.NO_JUSTIFIED_WORK,
     CampaignStatus.HUMAN_REQUIRED,
     CampaignStatus.BLOCKED_NON_RETRYABLE,
     CampaignStatus.CANCELLED,
@@ -405,7 +407,7 @@ class StepResult:
     def __post_init__(self) -> None:
         allowed = {
             "CONTINUE", "WAIT", "COMPLETE", "HUMAN_REQUIRED",
-            "BLOCKED_NON_RETRYABLE", "CANCELLED",
+            "BLOCKED_NON_RETRYABLE", "CANCELLED", "NO_JUSTIFIED_WORK",
         }
         if self.outcome not in allowed:
             raise CampaignRunnerError("campaign step outcome is invalid")

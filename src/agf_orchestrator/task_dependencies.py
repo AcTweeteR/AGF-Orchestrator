@@ -24,6 +24,14 @@ class MissingIntegrationEvidence(DependencyEvidenceError):
     """Valid canonical lineage does not yet prove all requested tasks."""
 
 
+def verify_plan_lineage(session_id, plan, repository, *, state_dir=None,
+                        allow_completed=False, policy_hash=None, constitution_id=None):
+    """Verify canonical history without asserting that pending tasks are complete."""
+    return _read_verified(session_id, plan, set(), repository, state_dir=state_dir,
+                          allow_completed=allow_completed, policy_hash=policy_hash,
+                          constitution_id=constitution_id)
+
+
 def verify_integrated_task(session_id, plan, task_id, repository, *, state_dir=None,
                            allow_completed=False):
     return _read_verified(session_id, plan, {task_id}, repository, state_dir=state_dir,

@@ -525,3 +525,41 @@ inspection and Compliance review accepted the bounded changes; the final journal
 delta passed 25 independent focused tests. Remote checks and the registered human
 merge requirement remain integration gates. None of these results establishes
 mission SUCCESS or resolves the resource/routing and live E2E gaps above.
+
+### Background continuation checkpoint — 2026-09-11
+
+- FACT: #198 is merged at `09f72365a8360fa31b17552ff941154b7c943c3c`,
+  containing source commit `2924a2f`. Post-merge CI `34515898356`, CodeQL
+  `34515898379` and Docs `34515898359` passed, including the CI history audit.
+  Main still pointed at that merge during this checkpoint; open CodeQL alerts
+  were zero. Dependency PRs #189–#194 remain open.
+- FACT: the built-in session driver now runs within the existing persistent
+  daemon, without holding the generic driver's project lock across session work.
+  Polling is read-only. Canonical reconciliation advances target/plan bindings
+  while preserving authority and budget. A restart between session and campaign
+  persistence verifies the retained lineage, and a concurrent exact merge remains
+  work for the next tick instead of causing a terminal failure.
+- FACT: one immutable registration binds the driver configuration and existing
+  campaign retry budget to the session. Fresh assessment calls persist consumption
+  across errors, restart and retry reset. An unknown interrupted outcome blocks
+  another call. Planning adapters now use the timeout recorded in canonical
+  budget evidence instead of silently using the constructor default.
+- FACT: separate forked daemon processes exercised WAIT, exit, real temporary Git
+  integration, restart, reconciliation and canonical closure; a competing daemon
+  was excluded. Tests also cover corruption, changed bindings, transient failure,
+  bounded retry and the distinct NO_JUSTIFIED_WORK terminal result.
+- FACT: the full candidate suite passed **1,269 tests in 168.03 seconds** on
+  Python 3.14.6. No tests were removed or skipped to obtain green. Ruff, strict
+  MkDocs and whitespace validation passed. The public-history audit passed over
+  517 commits and 1,169 unique blobs. Independent Reviewer and Compliance Officer
+  inspection accepted this bounded change; Compliance ran 38 focused tests.
+- UNKNOWN: effective live provider/model routing, subordinate eligibility versus
+  unnecessary powerful-model use, and end-to-end budget behavior with a real
+  engineering provider remain unproved. Process tests use ephemeral authority
+  fixtures and prohibit provider invocation; they are not live-provider E2E.
+
+This checkpoint does not establish mission SUCCESS. Owner-controlled publication
+and issuance, qualified real engineering E2E with failure/recovery/resume,
+dependency/issue reconciliation and the final independent audit of the complete
+system remain required. No real authority generation, credential or key was
+installed or activated by this change. The existing human merge gate remains.
