@@ -50,6 +50,51 @@ The output contains the projected plan and schema `2.0` component, marked
 activate anything. Publication through the existing owner-controlled authority
 mechanism remains a separate deployment action.
 
+## External owner publication
+
+The owner runs `tools.owner_objective_publication` in the existing independently
+controlled owner environment. It accepts no signing key, trust-root path or
+runtime callback. It requires the installed pinned Ed25519 generation and the
+complete proposal above, naming exactly the next generation. Its first operation
+is publication of a verified candidate, with no selector or floor change:
+
+```sh
+python -m tools.owner_objective_publication prepare --project PROJECT_ID --operation-id OPERATION_ID --proposal PROPOSAL.json
+python -m tools.owner_objective_publication verify --project PROJECT_ID --operation-id OPERATION_ID --proposal PROPOSAL.json
+```
+
+Preparation preserves all six existing component contents and adds only Objective
+acceptance. It revalidates the entire proposal against current canonical planning
+without silently correcting the reviewed plan hash. The signed publication record
+binds the operation, proposal, candidate manifest and exact active predecessor.
+Repeating identical preparation is idempotent; occupied generation identities,
+different content, changed state or a changed predecessor are rejected.
+
+Activation remains a separate owner decision, bound to the manifest returned by
+preparation and verification. An owner who authorizes that specific activation
+runs:
+
+```sh
+python -m tools.owner_objective_publication activate --project PROJECT_ID --operation-id OPERATION_ID --proposal PROPOSAL.json --expected-manifest REVIEWED_MANIFEST_HASH
+```
+
+This implementation does not itself authorize running that command. Approval to
+implement ADR-0007 remains separate from deployment activation. No command creates
+keys or another root. A manifest hash identifies content; it is not a caller flag
+that grants runtime approval. Session, project and registry locks protect final
+validation and commit. A committed activation can be recovered or repeated without
+activating twice. ALREADY_ACTIVE reports the historical owner operation, not
+current Objective completion or fresh provider eligibility.
+
+The generic legacy migration controller cannot activate an Objective candidate or
+replace installed Objective authority with a legacy bundle. Superseding an already
+accepted Objective is outside this publication operation. Generation changes can
+invalidate generation-bound provider evidence; current eligibility must still be
+verified and, when required, refreshed through the existing owner-controlled flow.
+
+Tests use ephemeral authority only. Actual owner publication and activation are
+still required for the live scenario; the runtime never imports this owner tool.
+
 ## Bounded continuation
 
 ```sh
@@ -95,7 +140,12 @@ step reconciles through SessionManager. Only verified canonical reconciliation
 advances the campaign target and plan binding, retaining its budget and authority.
 Restart between reconciliation and campaign save revalidates the full lineage.
 Transient session/project lock contention uses the existing bounded retry/backoff
-budget rather than declaring canonical evidence corrupt.
+budget rather than declaring canonical evidence corrupt. If the same project lock
+also prevents saving that transition, the runner leaves a content-hashed deferred
+retry record. A restart applies it by exact before/after comparison ahead of lease
+handling. Corruption or unrelated concurrent state blocks without deleting the
+record; a crash after saving it is idempotent. The deferred record does not reset
+or increase either retry or assessment budgets.
 An exact merge arriving during a wait is reconciled on the next cycle.
 
 Built-in session `COMPLETE` requires canonical Objective acceptance; generic
@@ -149,8 +199,8 @@ authority and do not demonstrate live-provider engineering.
 
 The bounded continuation CLI and built-in daemon driver connect assessment,
 delivery, external-action waiting, reconciliation and closure. Generic campaign
-COMPLETE is still only an operation result. Owner-side publication of a
-compatible Objective generation, a qualified live execution target, complete
+COMPLETE is still only an operation result. Deployment of the owner publication
+flow, a qualified live execution target, complete
 failure/recovery/resume E2E and the final independent mission audit remain open.
 
 

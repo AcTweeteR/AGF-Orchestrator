@@ -7,6 +7,7 @@ and the runner's wake condition are what keep the campaign alive.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -478,11 +479,7 @@ class PersistentCampaignRunner:
     ) -> CampaignState:
         # A time lease cannot prove a slow worker has stopped. Keep an OS lock
         # across the invocation; process exit releases it without breaking locks.
-        lock = FileLock(
-            self.store.state_dir / "locks"
-            / f"campaign-{self.store.project_id}-{self.store.campaign_id}.lock",
-            "campaign-tick",
-        )
+        lock = self._operation_lock()
         try:
             lock.acquire()
         except LockError as exc:
@@ -501,6 +498,7 @@ class PersistentCampaignRunner:
         *,
         wake_guard: Callable[[CampaignState], None] | None,
     ) -> CampaignState:
+        self._recover_deferred_retry()
         state = self.store.load()
         if state.status in TERMINAL_STATUSES:
             return state
@@ -574,12 +572,14 @@ class PersistentCampaignRunner:
 
     def schedule_retry(self, reason: str) -> CampaignState:
         """Persist bounded backoff for a transient orchestration dependency."""
-        state = self.store.load()
-        if state.status in TERMINAL_STATUSES:
-            return state
-        if not isinstance(reason, str) or not reason.strip():
-            raise CampaignRunnerError("retry reason is required")
-        return self._schedule_retry(state, reason.strip())
+        with self._operation_lock():
+            self._recover_deferred_retry()
+            state = self.store.load()
+            if state.status in TERMINAL_STATUSES:
+                return state
+            if not isinstance(reason, str) or not reason.strip():
+                raise CampaignRunnerError("retry reason is required")
+            return self._schedule_retry(state, reason.strip())
 
     def invalidate_binding(self, reason: str) -> CampaignState:
         """Retire a campaign whose canonical target binding is no longer valid.
@@ -644,7 +644,6 @@ class PersistentCampaignRunner:
                 self.max_backoff_seconds,
                 self.base_backoff_seconds * (2 ** min(count - 1, 10)),
             )
-            next_check = timestamp(self.now() + timedelta(seconds=delay))
             updated = self._append(
                 state, "RETRY_BACKOFF", CampaignStatus.RETRY_BACKOFF.value, reason
             )
@@ -652,11 +651,113 @@ class PersistentCampaignRunner:
                 updated, status=CampaignStatus.RETRY_BACKOFF, reason=reason,
                 resource=state.resource or "campaign-external-boundary",
                 expected_condition=state.expected_condition or "retry budget remains",
-                waiting_since=timestamp(self.now()), next_check_at=next_check,
+                waiting_since=updated.updated_at,
+                next_check_at=timestamp(
+                    parse_timestamp(updated.updated_at) + timedelta(seconds=delay)),
                 retry_count=count, lease_owner=None, lease_expires_at=None,
             )
-        self.store.save(updated)
+        try:
+            self.store.save(updated)
+        except LockError:
+            # The invocation already ended; retaining only its claim would hide
+            # the failure until lease expiry. Journal the exact retry transition
+            # under the campaign OS lock without taking the contended project lock.
+            self._defer_retry(state, updated)
         return updated
+
+    def _operation_lock(self):
+        return FileLock(
+            self.store.state_dir / "locks"
+            / f"campaign-{self.store.project_id}-{self.store.campaign_id}.lock",
+            "campaign-tick",
+        )
+
+    def _deferred_path(self):
+        path = self.store.path.with_suffix(".deferred-retry.json")
+        if (not path.resolve().is_relative_to(self.store.state_dir)
+                or any(item.is_symlink() for item in (path, *path.parents))):
+            raise CampaignRunnerError("deferred retry path is unsafe")
+        return path
+
+    @staticmethod
+    def _retry_digest(payload):
+        return hashlib.sha256(json.dumps(payload, sort_keys=True,
+                                         separators=(",", ":")).encode()).hexdigest()
+
+    def _read_deferred(self, path):
+        try:
+            payload = json.loads(path.read_text())
+            if set(payload) != {"schema_version", "before", "after", "sha256"}:
+                raise ValueError
+            unsigned = {key: value for key, value in payload.items() if key != "sha256"}
+            if payload["schema_version"] != "1.0" or payload["sha256"] != (
+                self._retry_digest(unsigned)
+            ):
+                raise ValueError
+            before, after = (campaign_from_dict(payload[key]) for key in ("before", "after"))
+            self.store._validate_identity(before)
+            self.store._validate_identity(after)
+            exhausted = before.retry_count >= before.retry_budget
+            status = (CampaignStatus.BLOCKED_NON_RETRYABLE if exhausted
+                      else CampaignStatus.RETRY_BACKOFF)
+            event = CampaignEvent(before.event_sequence + 1,
+                                  "RETRY_EXHAUSTED" if exhausted else "RETRY_BACKOFF",
+                                  status.value, after.updated_at, after.reason)
+            expected = replace(
+                before, status=status, reason=after.reason, updated_at=after.updated_at,
+                waiting_since=None if exhausted else after.updated_at,
+                next_check_at=None if exhausted else after.next_check_at,
+                retry_count=before.retry_count if exhausted else before.retry_count + 1,
+                lease_owner=None, lease_expires_at=None, event_sequence=event.sequence,
+                events=(*before.events, event),
+                resource=before.resource if exhausted else (
+                    before.resource or "campaign-external-boundary"),
+                expected_condition=before.expected_condition if exhausted else (
+                    before.expected_condition or "retry budget remains"),
+            )
+            if (before.status in TERMINAL_STATUSES or after != expected
+                    or (not exhausted and parse_timestamp(after.next_check_at)
+                        <= parse_timestamp(after.updated_at))):
+                raise ValueError
+            return before, after
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise CampaignRunnerError("deferred retry evidence is inconsistent") from exc
+
+    def _defer_retry(self, before, after):
+        path = self._deferred_path()
+        payload = {"schema_version": "1.0", "before": before.to_dict(), "after": after.to_dict()}
+        payload["sha256"] = self._retry_digest(payload)
+        if path.exists():
+            if self._read_deferred(path) != (before, after):
+                raise CampaignRunnerError("conflicting deferred retry evidence")
+            return
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                             prefix=".retry.", delete=False) as handle:
+                temporary = Path(handle.name)
+                json.dump(payload, handle, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.link(temporary, path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def _recover_deferred_retry(self):
+        path = self._deferred_path()
+        if not path.exists():
+            return
+        before, after = self._read_deferred(path)
+        with project_lock(self.store.state_dir, self.store.project_id,
+                          "campaign-deferred-retry", timeout=5.0):
+            current = self.store._load_unlocked()
+            if current == before:
+                self.store._save_unlocked(after)
+            elif current != after:
+                raise CampaignRunnerError("deferred retry conflicts with current campaign state")
+            # A crash after save is idempotent: exact 'after' permits cleanup.
+            path.unlink()
 
     def _append(
         self, state: CampaignState, event_type: str, status: str, summary: str

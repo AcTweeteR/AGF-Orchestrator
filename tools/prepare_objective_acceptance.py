@@ -34,27 +34,32 @@ def prepare_proposal(session_id, component, *, state_dir=None):
         session = store.load(session_id)
         project = registry.get(session.project_id)
         with project_lock(store.state_dir, project.project_id, "objective-proposal"):
-            require_unexecuted_planning(session, store)
-            repository = collect_repository(project.repository_root)
-            if (project.status.value != "ACTIVE" or repository.head_sha != session.base_sha
-                    or repository.branch != project.default_branch
-                    or canonical_remote_identity(repository.origin)
-                    != canonical_remote_identity(project.origin_url)):
-                raise ObjectiveAcceptanceError("proposal target differs from canonical session")
-            objective, criteria = parse_objective_proposal(
-                component, project, session, component.get("generation_id"),
-            )
-            path = store.ensure_safe_path(session.plan_path)
-            plan = plan_from_dict(json.loads(path.read_text()))
-            projected = project_objective_plan(plan, session, objective, criteria)
-            proposal = {**component, "schema_version": "2.0",
-                        "approved_plan_sha256": content_hash(projected.to_dict())}
-            parse_objective_proposal(proposal, project, session, proposal["generation_id"])
-            if (registry.get(project.project_id) != project
-                    or collect_repository(project.repository_root) != repository):
-                raise ObjectiveAcceptanceError("proposal target changed during preparation")
-            return {"status": "PROPOSAL", "authority_effect": "NONE",
-                    "component": proposal, "projected_plan": projected.to_dict()}
+            return _prepare_proposal_locked(session, project, component, store, registry)
+
+
+def _prepare_proposal_locked(session, project, component, store, registry):
+    """Content validation while the caller holds canonical session/project locks."""
+    require_unexecuted_planning(session, store)
+    repository = collect_repository(project.repository_root)
+    if (project.status.value != "ACTIVE" or repository.head_sha != session.base_sha
+            or repository.branch != project.default_branch
+            or canonical_remote_identity(repository.origin)
+            != canonical_remote_identity(project.origin_url)):
+        raise ObjectiveAcceptanceError("proposal target differs from canonical session")
+    objective, criteria = parse_objective_proposal(
+        component, project, session, component.get("generation_id"),
+    )
+    path = store.ensure_safe_path(session.plan_path)
+    plan = plan_from_dict(json.loads(path.read_text()))
+    projected = project_objective_plan(plan, session, objective, criteria)
+    proposal = {**component, "schema_version": "2.0",
+                "approved_plan_sha256": content_hash(projected.to_dict())}
+    parse_objective_proposal(proposal, project, session, proposal["generation_id"])
+    if (registry.get(project.project_id) != project
+            or collect_repository(project.repository_root) != repository):
+        raise ObjectiveAcceptanceError("proposal target changed during preparation")
+    return {"status": "PROPOSAL", "authority_effect": "NONE",
+            "component": proposal, "projected_plan": projected.to_dict()}
 
 
 def main(argv=None):

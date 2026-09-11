@@ -478,6 +478,7 @@ def test_cutover_rejects_readiness_bound_to_another_generation(monkeypatch, tmp_
     generation_id = "generation-2"
     component = SimpleNamespace(name="constitution", artifact_hash="a" * 64)
     generation = SimpleNamespace(
+        schema_version="1.0",
         project_id=project_id,
         generation_id=generation_id,
         generation_number=2,
@@ -532,6 +533,7 @@ def test_verify_generation_persists_signed_readiness_for_all_components(monkeypa
         )
     )
     generation = SimpleNamespace(
+        schema_version="1.0",
         generation_id=generation_id,
         generation_number=2,
         manifest_hash="b" * 64,
