@@ -346,6 +346,12 @@ class AuthorityGenerationStore:
         self._recover_metadata(project_id)
         path = self._floor_path(project_id)
         if not path.exists():
+            for candidate in self._directory(project_id).glob("generation-*.json"):
+                if candidate.stem == "generation-floor":
+                    continue
+                saved = self.load(project_id, candidate.stem)
+                if saved.status in {GenerationStatus.ACTIVE, GenerationStatus.SUPERSEDED}:
+                    raise AuthorityGenerationError("committed authority floor is missing")
             return 0
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
@@ -362,10 +368,11 @@ class AuthorityGenerationStore:
             floor = value["generation_number"]
             persisted_numbers = []
             for candidate in self._directory(project_id).glob("generation-*.json"):
-                try:
-                    persisted_numbers.append(_generation_number(candidate.stem))
-                except AuthorityGenerationError:
+                if candidate.stem == "generation-floor":
                     continue
+                saved = self.load(project_id, candidate.stem)
+                if saved.status in {GenerationStatus.ACTIVE, GenerationStatus.SUPERSEDED}:
+                    persisted_numbers.append(saved.generation_number)
             if persisted_numbers and floor < max(persisted_numbers):
                 raise AuthorityGenerationError("authority generation floor was downgraded")
             return floor
@@ -373,6 +380,11 @@ class AuthorityGenerationStore:
             raise AuthorityGenerationError("authority generation floor is invalid") from exc
 
     def _save_prepared_owner_controlled(self, generation: AuthorityGeneration) -> None:
+        with project_lock(self.root, generation.project_id, "authority-generation-prepare", 5.0):
+            self._save_prepared_owner_controlled_locked(generation)
+
+    def _save_prepared_owner_controlled_locked(self, generation: AuthorityGeneration) -> None:
+        """Owner transaction entry; caller holds the existing project lock."""
         generation = self._sign_legacy(generation)
         generation.validate()
         self._verify_signature(generation)
@@ -382,11 +394,16 @@ class AuthorityGenerationStore:
             GenerationStatus.VERIFIED,
         }:
             raise AuthorityGenerationError("only non-active generations may be prepared")
-        with project_lock(self.root, generation.project_id, "authority-generation-prepare", 5.0):
-            _atomic_write(
-                self._generation_path(generation.project_id, generation.generation_id),
-                generation.to_dict(),
-            )
+        path = self._generation_path(generation.project_id, generation.generation_id)
+        previous = (self.load(generation.project_id, generation.generation_id)
+                    if path.exists() else None)
+        if previous is not None and (
+            generation.schema_version == "2.0" or previous.schema_version == "2.0"
+        ):
+            if previous != generation:
+                raise AuthorityGenerationError("Objective generation cannot be overwritten")
+            return
+        _atomic_write(path, generation.to_dict())
 
     def load(self, project_id: str, generation_id: str) -> AuthorityGeneration:
         path = self._generation_path(project_id, generation_id)
@@ -395,7 +412,7 @@ class AuthorityGenerationStore:
             generation = _from_dict(payload)
         except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
             raise AuthorityGenerationError("authority generation is unavailable") from exc
-        if generation.generation_id != generation_id:
+        if generation.generation_id != generation_id or generation.project_id != project_id:
             raise AuthorityGenerationError("authority generation identity does not match path")
         generation.validate()
         self._verify_signature(generation)
@@ -408,44 +425,61 @@ class AuthorityGenerationStore:
         *,
         active_signature: dict[str, Any] | None = None,
     ) -> None:
+        with project_lock(self.root, project_id, "authority-generation-activate", 5.0):
+            self._activate_owner_controlled_locked(
+                project_id, generation_id, active_signature=active_signature,
+            )
+
+    def _activate_owner_controlled_locked(
+        self, project_id, generation_id, *, active_signature=None,
+    ):
+        """Owner transaction entry; caller holds the existing project lock."""
         generation = self.load(project_id, generation_id)
         if (
             generation.project_id != project_id
             or generation.status is not GenerationStatus.VERIFIED
         ):
             raise AuthorityGenerationError("generation is not ready for cutover")
-        with project_lock(self.root, project_id, "authority-generation-activate", 5.0):
-            floor = self._floor(project_id)
-            if generation.generation_number <= floor:
-                raise AuthorityGenerationError("authority generation downgrade or replay detected")
-            active = build_generation(
-                **{
-                    **generation.__dict__,
-                    "status": GenerationStatus.ACTIVE,
-                    "manifest_hash": "0" * 64,
-                    "signature": active_signature
-                    if active_signature is not None
-                    else generation.signature,
-                }
-            )
-            active = self._sign_legacy(active)
-            active.validate(active=True)
-            self._commit_metadata(
-                project_id,
-                self._generation_path(project_id, generation_id),
-                active.to_dict(),
-                {
-                    "schema_version": "1.0",
-                    "project_id": project_id,
-                    "generation_id": generation_id,
-                    "manifest_hash": active.manifest_hash,
-                },
-                {
-                    "schema_version": "1.0",
-                    "project_id": project_id,
-                    "generation_number": generation.generation_number,
-                },
-            )
+        floor = self._floor(project_id)
+        if generation.generation_number <= floor:
+            raise AuthorityGenerationError("authority generation downgrade or replay detected")
+        if self._selector_path(project_id).exists():
+            selected = self.active(project_id)
+            if selected.schema_version == "2.0" and generation.schema_version != "2.0":
+                raise AuthorityGenerationError("legacy cutover cannot remove Objective authority")
+        if generation.schema_version == "2.0" and generation.predecessor_id is not None:
+            previous = self.active(project_id)
+            if (previous.generation_id != generation.predecessor_id
+                    or previous.manifest_hash != generation.predecessor_hash):
+                raise AuthorityGenerationError("Objective generation predecessor changed")
+        active = build_generation(
+            **{
+                **generation.__dict__,
+                "status": GenerationStatus.ACTIVE,
+                "manifest_hash": "0" * 64,
+                "signature": active_signature
+                if active_signature is not None
+                else generation.signature,
+            }
+        )
+        active = self._sign_legacy(active)
+        active.validate(active=True)
+        self._commit_metadata(
+            project_id,
+            self._generation_path(project_id, generation_id),
+            active.to_dict(),
+            {
+                "schema_version": "1.0",
+                "project_id": project_id,
+                "generation_id": generation_id,
+                "manifest_hash": active.manifest_hash,
+            },
+            {
+                "schema_version": "1.0",
+                "project_id": project_id,
+                "generation_number": generation.generation_number,
+            },
+        )
 
     def active(self, project_id: str) -> AuthorityGeneration:
         self._recover_metadata(project_id)

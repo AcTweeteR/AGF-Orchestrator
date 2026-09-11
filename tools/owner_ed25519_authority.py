@@ -1034,6 +1034,9 @@ def prepare_ed25519_generation(project_id: str, operation_id: str) -> dict[str, 
                 "operation_id": operation_id,
             }
         raise RuntimeError("authority operation identity has already been consumed")
+    selector = state_dir / "authority-generations" / project_id / "active.json"
+    if selector.exists() and store.active(project_id).schema_version == "2.0":
+        raise RuntimeError("legacy preparation cannot supersede Objective authority")
     current_number = max(current_number, _monotonic_floor(store, project_id))
     generation_id = f"generation-{current_number + 1}"
     existing_path = store._generation_path(project_id, generation_id)
@@ -1078,6 +1081,8 @@ def _verify_prepared_generation(project_id: str, generation_id: str):
 
 def verify_ed25519_generation(project_id: str, generation_id: str) -> dict[str, object]:
     generation, _ = _verify_prepared_generation(project_id, generation_id)
+    if generation.schema_version == "2.0":
+        raise RuntimeError("Objective generations require owner_objective_publication verification")
     directory = _migration_state_dir() / "authority-generations" / project_id
     selector_path = directory / "active.json"
     floor_path = directory / "generation-floor.json"
@@ -1105,6 +1110,9 @@ def cutover_ed25519_generation(project_id: str, generation_id: str) -> dict[str,
     state_dir = _migration_state_dir()
     AuthorityGenerationStore._validate_project_id(project_id)
     AuthorityGenerationStore._validate_generation_id(generation_id)
+    candidate, _ = _verify_prepared_generation(project_id, generation_id)
+    if candidate.schema_version == "2.0":
+        raise RuntimeError("Objective generations require owner_objective_publication activation")
     directory = state_dir / "authority-generations" / project_id / generation_id
     readiness_record = _read_object(directory / "readiness.json")
     signature = readiness_record.pop("signature", None)

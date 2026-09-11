@@ -126,3 +126,22 @@ registration binds the driver and campaign retry budget. Fresh assessments consu
 that budget durably, and unknown interruptions block another invocation. These
 records account for attempts; they supply no approval authority. Publication,
 issuance and activation remain external owner operations.
+
+## Owner publication implementation
+
+The external owner tool publishes a verified next-generation candidate from the
+complete unsigned proposal, preserving the existing six components and pinned
+root. Its record binds the operation to the exact proposal and active predecessor.
+Activation is a separate explicit owner operation with the reviewed manifest hash;
+it revalidates canonical planning and registration under the existing locks.
+Neither the tool nor a manifest hash delegates approval to the runtime.
+
+Preparing a candidate must not invalidate active authority. The anti-downgrade
+floor therefore checks authenticated committed generations, excluding prepared
+candidates. Missing or reduced floors after a committed generation still fail
+closed. Objective candidates cannot be overwritten or activated over a different
+predecessor, and legacy cutover cannot remove installed Objective authority.
+
+Atomic publication and the existing metadata transaction support interrupted
+preparation and activation. These changes implement this ADR's approved boundary;
+they do not authorize actual activation, Objective supersession or key installation.

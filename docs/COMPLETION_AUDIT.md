@@ -598,3 +598,44 @@ for every planning flow; its necessity must follow the actual E2E scenario.
 Live routing/model identity, effective budgets, complete failure/recovery/resume,
 pending dependency/issue reconciliation and final independent system audit remain
 open. This checkpoint is not mission SUCCESS.
+
+### Owner publication and prolonged-lock recovery candidate — 2026-09-12
+
+- FACT: #200 is merged at `c4d1bc87fab64dd09cc02a553a237a68258f2037`.
+  Post-merge CI `34586039384`, CodeQL `34586039351` and Docs `34586039419`
+  passed. A later review found a distinct prolonged-lock recovery window.
+- FACT: the external owner publication tool now prepares and verifies a signed
+  Objective generation candidate using only the installed pinned root. It
+  preserves the six active component contents and adds the complete schema 2.0
+  Objective proposal. Preparation does not change selector or floor. Activation
+  is a separate command requiring the exact reviewed candidate manifest.
+- FACT: proposal, operation, project, session, candidate and exact predecessor
+  are content-bound. Final project/session/plan/authority checks run under the
+  existing project, session and registry locks. Publication is atomic and
+  immutable; interrupted preparation and activation are idempotently recoverable.
+  The legacy controller cannot bypass this path to activate schema 2.0 or later
+  remove installed Objective authority.
+- FACT: the generation floor now distinguishes signed prepared candidates from
+  committed ACTIVE/SUPERSEDED generations. Preparing the next generation no
+  longer invalidates current authority, while missing/reduced committed floors,
+  replay, cross-project manifests and changed predecessors still fail closed.
+- FACT: if a project lock outlives the campaign retry-save timeout, the runner
+  persists a content-hashed deferred transition under its campaign invocation
+  lock. Restart applies it by exact before/after comparison before lease handling.
+  Corruption or unrelated state blocks without deleting evidence; retry budgets
+  remain bounded and a crash after save is idempotent.
+- FACT: 57 focused publication/authority tests and 57 focused deferred-retry,
+  campaign and daemon tests passed. They include real competing processes,
+  lock duration beyond five seconds, registry writer exclusion, interrupted
+  metadata commits, proposal tampering and activation retries. Ruff and whitespace
+  validation passed. All signing and activation tests use ephemeral fixture roots.
+
+The complete candidate suite passed **1,307 tests in 196.83 seconds**, with no
+removals or skips to obtain green. Ruff, strict MkDocs, whitespace checks and the
+public-history audit (521 commits, 1,193 unique blobs) passed. Independent Reviewer
+and Compliance Officer reviews accepted the bounded changes; Compliance ran 53
+focused tests without a new P1/P2 finding.
+
+No production generation has been prepared or activated. The installed real
+generation remains 4 without Objective acceptance. Merge, owner deployment and
+the real governed provider E2E remain required; this is not mission SUCCESS.
