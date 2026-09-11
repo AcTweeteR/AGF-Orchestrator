@@ -269,7 +269,14 @@ class DeliveryIntentStore:
                 result.append(intent)
         return result
 
-    def observe(self, project_id: str, delivery_id: str, repository: str | Path) -> DeliveryReceipt:
+    def verify_observation(
+        self, project_id: str, delivery_id: str, repository: str | Path,
+    ) -> DeliveryReceipt:
+        """Verify the exact observed delivery without creating or changing evidence.
+
+        The returned receipt is a verified observation, not persisted recovery
+        evidence. Call ``observe`` to record it before canonical reconciliation.
+        """
         intent = self.get(project_id, delivery_id)
         if intent is None:
             raise DeliveryReconciliationError("delivery intent is missing")
@@ -348,8 +355,12 @@ class DeliveryIntentStore:
             "observed_tree_sha": tree, "diff_sha256": diff_sha,
             "state": "VERIFIED", "observed_at": observed_at,
         }
-        receipt = DeliveryReceipt(**payload, receipt_sha256=_sha(payload))
-        receipt_payload = {**payload, "receipt_sha256": receipt.receipt_sha256}
+        return DeliveryReceipt(**payload, receipt_sha256=_sha(payload))
+
+    def observe(self, project_id: str, delivery_id: str, repository: str | Path) -> DeliveryReceipt:
+        receipt = self.verify_observation(project_id, delivery_id, repository)
+        receipt_payload = receipt.to_dict()
+        receipt_path = self.receipt_path(project_id, delivery_id)
         with self._lock(project_id, delivery_id):
             if receipt_path.exists():
                 if receipt_path.is_symlink():

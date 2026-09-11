@@ -21,6 +21,7 @@ from typing import Callable
 
 from .authority_context import AuthorityContext, AuthorityContextError
 from .campaign_runner import (
+    TERMINAL_STATUSES,
     CampaignState,
     CampaignStatus,
     CampaignStore,
@@ -32,6 +33,12 @@ from .campaign_runner import (
     utc_now,
 )
 from .external_actions import ExternalActionError, ExternalActionExecutor, ExternalActionRequest
+from .governed_campaign import (
+    GovernedCampaignError,
+    GovernedCampaignRunner,
+    GovernedSessionDriver,
+    GovernedSessionDriverSpec,
+)
 from .locking import LockError, project_lock
 from .project_registry import ProjectRegistry, ProjectRegistryError, _git
 from .session_store import SessionStore, SessionStoreError
@@ -254,8 +261,20 @@ class CampaignDaemon:
 
     def register(self, spec: CampaignDriverSpec) -> None:
         spec.validate()
+        if isinstance(spec, GovernedSessionDriverSpec):
+            SessionStore(self.state_dir).ensure_safe_path(self.spec_dir)
         self.spec_dir.mkdir(parents=True, exist_ok=True)
         path = self.spec_dir / f"{spec.campaign_id}.json"
+        existing = json.loads(path.read_text()) if path.is_file() else None
+        if (isinstance(existing, dict) and existing.get("driver_kind") == "governed-session/1"
+                and existing != spec.to_dict()):
+            raise CampaignDaemonError("governed driver registration is immutable")
+        if isinstance(spec, GovernedSessionDriverSpec):
+            SessionStore(self.state_dir).ensure_safe_path(path)
+            if Path(spec.state_dir).resolve() != self.state_dir:
+                raise CampaignDaemonError("driver state root differs from daemon")
+            if existing is not None and existing != spec.to_dict():
+                raise CampaignDaemonError("governed driver registration is immutable")
         self._atomic_json(path, spec.to_dict())
 
     def rebind_interpreters(self, interpreter: str) -> int:
@@ -265,6 +284,9 @@ class CampaignDaemon:
             raise CampaignDaemonError("interpreter is not an executable file")
         changed = 0
         for spec in self._load_specs():
+            if isinstance(spec, GovernedSessionDriverSpec):
+                continue
+
             def rebind(command: tuple[str, ...]) -> tuple[str, ...]:
                 if command and Path(command[0]).name.startswith("python"):
                     return (str(runtime), *command[1:])
@@ -301,9 +323,31 @@ class CampaignDaemon:
                 for spec in specs:
                     store = CampaignStore(spec.state_dir, spec.project_id, spec.campaign_id)
                     state = store.load()
-                    if state.status in {CampaignStatus.COMPLETE, CampaignStatus.HUMAN_REQUIRED,
-                                         CampaignStatus.BLOCKED_NON_RETRYABLE,
-                                         CampaignStatus.CANCELLED}:
+                    if state.status in TERMINAL_STATUSES:
+                        continue
+                    if isinstance(spec, GovernedSessionDriverSpec):
+                        active += 1
+                        driver = GovernedSessionDriver(spec)
+                        runner = GovernedCampaignRunner(store, driver)
+                        try:
+                            after = runner.tick(driver.probe, driver.work)
+                        except LockError:
+                            last_action = "LOCK_CONTENTION_RETRY"
+                            continue
+                        except (GovernedCampaignError, OSError, ValueError, RuntimeError):
+                            after = runner.invalidate_binding(
+                                "governed campaign evidence is invalid",
+                            )
+                        if after.status in {
+                            CampaignStatus.WAITING_GITHUB, CampaignStatus.RETRY_BACKOFF,
+                        }:
+                            waiting += 1
+                            if next_wake is None or (
+                                after.next_check_at and after.next_check_at < next_wake
+                            ):
+                                next_wake = after.next_check_at
+                        if after.event_sequence != state.event_sequence:
+                            last_action = after.events[-1].event_type
                         continue
                     if (
                         state.status is CampaignStatus.RETRY_BACKOFF
@@ -474,7 +518,21 @@ class CampaignDaemon:
         specs = []
         for path in sorted(self.spec_dir.glob("campaign-*.json")):
             try:
-                specs.append(CampaignDriverSpec.from_dict(json.loads(path.read_text(encoding="utf-8"))))
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    raise CampaignDaemonError("campaign driver spec is not an object")
+                if (isinstance(payload, dict) and "driver_kind" in payload
+                        and payload["driver_kind"] != "governed-session/1"):
+                    raise CampaignDaemonError("unsupported driver kind")
+                spec = (GovernedSessionDriverSpec.from_dict(payload)
+                        if payload.get("driver_kind") == "governed-session/1"
+                        else CampaignDriverSpec.from_dict(payload))
+                if (isinstance(spec, GovernedSessionDriverSpec)
+                        and Path(spec.state_dir).expanduser().resolve() != self.state_dir):
+                    raise CampaignDaemonError("driver state root differs from daemon")
+                if isinstance(spec, GovernedSessionDriverSpec):
+                    SessionStore(self.state_dir).ensure_safe_path(path)
+                specs.append(spec)
             except (OSError, json.JSONDecodeError) as exc:
                 raise CampaignDaemonError("campaign driver spec cannot be read") from exc
         return tuple(specs)

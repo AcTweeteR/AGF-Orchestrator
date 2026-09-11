@@ -77,7 +77,8 @@ Even when all plan work is integrated, the read-only audit reports HUMAN_REQUIRE
 It recognizes an authenticated installed Objective contract when available, but
 does not execute its validators or establish criterion acceptance. Campaign
 COMPLETE remains an operation-level result and is not consumed as Objective
-acceptance. Full continuation and live engineering E2E remain pending.
+acceptance. The built-in session campaign driver calls canonical closure before
+recording COMPLETE; live engineering E2E remains pending.
 
 ## Acceptance and activation gates
 
@@ -110,3 +111,18 @@ work may be reclassified as a draft; canonical intents and execution journals
 outside the approved plan lineage prevent closure. Legacy contracts retain the
 strict full-history rule. This does not authorize supersession of executed
 obligations, owner publication, activation or installation of credentials.
+
+## Background continuation within the existing boundary
+
+The built-in session campaign driver delegates each work step to the same
+continuation and closure gates. It does not hold the generic command driver's
+project lock across SessionManager operations. The campaign invocation lock and
+existing session, project and delivery locks prevent duplicate dispatch.
+
+Its target and plan binding may advance only after canonical reconciliation;
+restart verifies the retained plan ancestry and integration evidence. Read-only
+polling cannot issue provider work or integration receipts. Immutable session
+registration binds the driver and campaign retry budget. Fresh assessments consume
+that budget durably, and unknown interruptions block another invocation. These
+records account for attempts; they supply no approval authority. Publication,
+issuance and activation remain external owner operations.

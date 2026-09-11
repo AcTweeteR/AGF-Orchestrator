@@ -121,3 +121,67 @@ def test_tampered_intent_and_missing_intent_fail_closed(tmp_path):
     path.write_text(json.dumps(payload))
     with pytest.raises(DeliveryReconciliationError, match="hash"):
         store.get("project-0123456789abcdef", "delivery-test-001")
+
+
+@pytest.mark.parametrize("method", ["verify_observation", "observe"])
+def test_observation_validation_rejects_unmerged_and_wrong_candidate(tmp_path, method):
+    root, base, candidate, remote = fixture(tmp_path)
+    store = DeliveryIntentStore(tmp_path / "state")
+    stored = intent(root, base, candidate, remote)
+    store.put(stored)
+    check = getattr(store, method)
+    with pytest.raises(DeliveryReconciliationError, match="delivery has not occurred"):
+        check(stored.project_id, stored.delivery_id, root)
+    (root / "unrelated.txt").write_text("unexpected target\n")
+    git(root, "add", "unrelated.txt")
+    git(root, "commit", "-m", "unrelated target")
+    git(root, "push", "origin", "main")
+    with pytest.raises(DeliveryReconciliationError, match="not the authorized candidate"):
+        check(stored.project_id, stored.delivery_id, root)
+    assert not store.receipt_path(stored.project_id, stored.delivery_id).exists()
+
+
+def test_readonly_observation_preserves_all_state_until_persisted(tmp_path):
+    root, base, candidate, remote = fixture(tmp_path)
+    state = tmp_path / "state"
+    store = DeliveryIntentStore(state)
+    stored = intent(root, base, candidate, remote)
+    store.put(stored)
+    git(root, "merge", "--ff-only", "agf/task-001")
+    git(root, "push", "origin", "main")
+
+    def snapshot():
+        return {str(path.relative_to(state)): path.read_bytes()
+                for path in state.rglob("*") if path.is_file()}
+
+    before = snapshot()
+    observed = store.verify_observation(stored.project_id, stored.delivery_id, root)
+    assert observed.observed_sha == candidate
+    assert observed.intent_hash == stored.content_sha256
+    assert snapshot() == before
+    assert not store.receipt_path(stored.project_id, stored.delivery_id).exists()
+    persisted = store.observe(stored.project_id, stored.delivery_id, root)
+    assert persisted.observed_sha == observed.observed_sha
+    assert persisted.intent_hash == observed.intent_hash
+    before = snapshot()
+    assert store.verify_observation(stored.project_id, stored.delivery_id, root) == persisted
+    assert snapshot() == before
+
+
+@pytest.mark.parametrize("method", ["verify_observation", "observe"])
+def test_existing_corrupt_receipt_remains_fail_closed(tmp_path, method):
+    root, base, candidate, remote = fixture(tmp_path)
+    store = DeliveryIntentStore(tmp_path / "state")
+    stored = intent(root, base, candidate, remote)
+    store.put(stored)
+    git(root, "merge", "--ff-only", "agf/task-001")
+    git(root, "push", "origin", "main")
+    store.observe(stored.project_id, stored.delivery_id, root)
+    path = store.receipt_path(stored.project_id, stored.delivery_id)
+    payload = json.loads(path.read_text())
+    payload["observed_sha"] = "f" * 40
+    path.write_text(json.dumps(payload))
+    before = path.read_bytes()
+    with pytest.raises(DeliveryReconciliationError, match="receipt hash"):
+        getattr(store, method)(stored.project_id, stored.delivery_id, root)
+    assert path.read_bytes() == before

@@ -70,11 +70,33 @@ and must leave the Git target and worktrees clean before another attempt.
 `CONTINUE` at the step limit is intermediate, and `objective_completed` remains
 false unless the canonical closure operation verifies acceptance.
 
-This bounded CLI is not yet a background continuation service. The generic
-campaign daemon has a different driver protocol and holds locks incompatible
-with invoking this CLI as its work command. Its fixed target binding also needs
-verified advancement after delivery reconciliation. Do not configure the CLI as
-a generic campaign work command or interpret campaign `COMPLETE` as acceptance.
+The daemon has a built-in session driver for background continuation. Do not
+configure this CLI as a generic campaign work command: generic command drivers
+have a different protocol and lock ownership. Register the built-in driver:
+
+```sh
+agf-orchestrator campaign-runner register-session --state-dir "$AGF_STATE_DIR" --session SESSION_ID --campaign-id campaign-example --retry-budget 3 --execute --confirm-execution --confirm-delivery --json
+agf-orchestrator campaign-runner run --state-dir "$AGF_STATE_DIR"
+```
+
+The state directory must match the configured session state. Registration binds
+one immutable driver configuration and existing campaign retry budget to the
+session. It requires an active registered project and installed generation
+authority; it does not publish or activate authority. The confirmation flags
+authorize execution and delivery, not Objective approval or protected merges.
+The existing `install-launchd` command can render a supervisor configuration;
+registering a session does not install or start an operating-system service.
+
+Polling verifies the exact repository, authority, plan lineage and delivery
+candidate without invoking a provider or writing integration receipts. The work
+step reconciles through SessionManager. Only verified canonical reconciliation
+advances the campaign target and plan binding, retaining its budget and authority.
+Restart between reconciliation and campaign save revalidates the full lineage.
+An exact merge arriving during a wait is reconciled on the next cycle.
+
+Built-in session `COMPLETE` requires canonical Objective acceptance; generic
+campaign `COMPLETE` remains an operation result. `NO_JUSTIFIED_WORK` is a separate
+terminal outcome and does not imply a satisfied Objective.
 
 ## Closure
 
@@ -121,9 +143,9 @@ failed validation, tampering during validation, project disablement, target drif
 crash before persistence and restart. These fixtures do not activate deployment
 authority and do not demonstrate live-provider engineering.
 
-The bounded continuation CLI connects assessment, delivery, external-action
-waiting, reconciliation and closure. Persistent background continuation remains
-pending. Generic campaign COMPLETE is still only an operation result. Owner-side publication of a
+The bounded continuation CLI and built-in daemon driver connect assessment,
+delivery, external-action waiting, reconciliation and closure. Generic campaign
+COMPLETE is still only an operation result. Owner-side publication of a
 compatible Objective generation, a qualified live execution target, complete
 failure/recovery/resume E2E and the final independent mission audit remain open.
 
@@ -142,8 +164,15 @@ gates. A lower-priority fallback is attempted only after earlier candidates are
 rejected or fail; the candidate set is finite within one Architect invocation.
 This does not yet prove that the effective live model is the least costly eligible
 capability. The observational cost-ranking helper is not wired to runtime
-selection. Persistent assessment budgets across fresh retries and effective
-provider/model routing provenance require further E2E evidence. No new cost
+selection. For campaign-bound sessions, fresh assessment invocations persist a
+start and outcome before another attempt is allowed. Both returned and raised
+invocations consume the existing retry budget (initial invocation plus retries).
+Restart, direct assessment entry and campaign retry reset cannot erase this
+consumption; an unknown interrupted outcome requires reconciliation. Legacy
+sessions without a campaign binding retain their existing behavior. Canonical
+provider timeout evidence is also applied to the actual planning adapters.
+Effective provider/model routing provenance and live budgets still require E2E
+evidence. No new cost
 subsystem or unapproved provider promotion is introduced by this implementation.
 
 Historical known failures across a changed baseline may still require human

@@ -15,7 +15,7 @@ from agf_orchestrator.session_models import SessionStatus
 CHECK = 'python -B -c "from calculator import add; assert add(2, 3) == 5"'
 
 
-def ready(tmp_path, monkeypatch, *, command=CHECK, human=False):
+def ready(tmp_path, monkeypatch, *, command=CHECK, human=False, integrated=True):
     root, state, manager, session, plan, item = prepared(
         tmp_path, monkeypatch, single=True, integrated=False,
     )
@@ -49,9 +49,10 @@ def ready(tmp_path, monkeypatch, *, command=CHECK, human=False):
     # Fixture setup precedes integration; production still enforces immutable puts.
     intent_path = DeliveryIntentStore(state).root / session.project_id / f"{item.delivery_id}.json"
     intent_path.write_text(json.dumps(item.to_dict()))
-    git(root, "merge", "--ff-only", "agf/task-001")
-    git(root, "push", "origin", "main")
-    session = manager.resume(session.session_id)
+    if integrated:
+        git(root, "merge", "--ff-only", "agf/task-001")
+        git(root, "push", "origin", "main")
+        session = manager.resume(session.session_id)
     return root, state, manager, session, sign
 
 

@@ -1136,10 +1136,13 @@ class SessionManager:
                     gates=self.architect_gates,
                 )
                 try:
-                    if isinstance(architect, ProviderArchitect):
-                        proposal = architect.propose(request)
-                    else:
-                        proposal = architect.propose(session.goal, assessment)
+                    from .assessment_budget import assessment_invocation
+
+                    with assessment_invocation(session, self.store, request.request_hash):
+                        if isinstance(architect, ProviderArchitect):
+                            proposal = architect.propose(request)
+                        else:
+                            proposal = architect.propose(session.goal, assessment)
                 except ArchitectPlanningError as exc:
                     proposal = None
                     provider_selection = {
