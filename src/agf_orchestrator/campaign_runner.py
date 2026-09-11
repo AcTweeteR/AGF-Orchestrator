@@ -673,7 +673,12 @@ class PersistentCampaignRunner:
         )
 
     def _deferred_path(self):
-        path = self.store.path.with_suffix(".deferred-retry.json")
+        path = (
+            self.store.state_dir
+            / "campaign-deferred-retries"
+            / self.store.project_id
+            / f"{self.store.campaign_id}.json"
+        )
         if (not path.resolve().is_relative_to(self.store.state_dir)
                 or any(item.is_symlink() for item in (path, *path.parents))):
             raise CampaignRunnerError("deferred retry path is unsafe")
@@ -725,6 +730,7 @@ class PersistentCampaignRunner:
 
     def _defer_retry(self, before, after):
         path = self._deferred_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"schema_version": "1.0", "before": before.to_dict(), "after": after.to_dict()}
         payload["sha256"] = self._retry_digest(payload)
         if path.exists():
@@ -763,9 +769,10 @@ class PersistentCampaignRunner:
         self, state: CampaignState, event_type: str, status: str, summary: str
     ) -> CampaignState:
         sequence = state.event_sequence + 1
-        event = CampaignEvent(sequence, event_type, status, timestamp(self.now()), summary)
+        recorded_at = timestamp(self.now())
+        event = CampaignEvent(sequence, event_type, status, recorded_at, summary)
         return replace(
-            state, updated_at=timestamp(self.now()), event_sequence=sequence,
+            state, updated_at=recorded_at, event_sequence=sequence,
             wake_generation=state.wake_generation + (1 if event_type == "WAKE" else 0),
             events=(*state.events, event),
         )

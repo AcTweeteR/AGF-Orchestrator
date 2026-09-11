@@ -1,6 +1,7 @@
 import json
 import multiprocessing
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -151,3 +152,37 @@ def test_deferred_exhaustion_stays_terminal_without_extra_work(tmp_path, monkeyp
     )
     assert recovered == after
     assert not runner._deferred_path().exists()
+
+
+def test_deferred_retry_path_cannot_collide_with_another_campaign(tmp_path, monkeypatch):
+    store, clock, runner, _ = defer_with_failed_save(tmp_path, monkeypatch)
+    other = type(store)(
+        tmp_path,
+        store.project_id,
+        f"{store.campaign_id}.deferred-retry",
+        now=clock,
+    )
+    other.create(
+        replace(store.load(), campaign_id=f"{store.campaign_id}.deferred-retry")
+    )
+    assert runner._deferred_path() != other.path
+    assert runner._deferred_path().exists()
+    assert other.load().campaign_id.endswith(".deferred-retry")
+
+
+def test_retry_event_and_state_use_one_recorded_timestamp(tmp_path, monkeypatch):
+    store, clock = build(tmp_path)
+
+    class AdvancingClock:
+        def __call__(self):
+            value = clock()
+            clock.advance(1)
+            return value
+
+    runner = PersistentCampaignRunner(store, now=AdvancingClock())
+    monkeypatch.setattr(
+        store, "save", lambda _: (_ for _ in ()).throw(LockError("lock is held"))
+    )
+    after = runner.tick(lambda _: True, lambda _: (_ for _ in ()).throw(RuntimeError()))
+    assert after.updated_at == after.events[-1].timestamp
+    assert runner._read_deferred(runner._deferred_path())[1] == after
