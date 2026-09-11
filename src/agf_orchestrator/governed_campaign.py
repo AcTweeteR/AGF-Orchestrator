@@ -70,6 +70,8 @@ class GovernedSessionDriverSpec:
         for value in (self.architect_config, self.codex_path, self.openhands_path):
             if value is not None and (not isinstance(value, str) or not value or len(value) > 4096):
                 raise GovernedCampaignError("driver configuration path is invalid")
+        if self.architect_config is not None and not Path(self.architect_config).is_absolute():
+            raise GovernedCampaignError("architect configuration path must be absolute")
 
     def to_dict(self):
         self.validate()

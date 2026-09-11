@@ -563,3 +563,38 @@ and issuance, qualified real engineering E2E with failure/recovery/resume,
 dependency/issue reconciliation and the final independent audit of the complete
 system remain required. No real authority generation, credential or key was
 installed or activated by this change. The existing human merge gate remains.
+
+### Post-merge recovery findings — 2026-09-11
+
+#199 merged at `01a5689ac55a7425a274e77be0f71b43ad514d1b`. Post-merge CI
+`34584530947`, CodeQL `34584530940` and Docs `34584530935` passed; open CodeQL
+alerts were zero. A subsequent review reported two valid recovery findings:
+
+- Lock contention during a session operation was caught as generic runtime
+  failure and converted to a terminal campaign result. LockError now reaches
+  the existing runner's bounded retry/backoff path. Attempts still consume its
+  retry budget; releasing the lock permits recovery without changing authority.
+- A relative Architect configuration path depended on the daemon's working
+  directory. Registration now fixes its absolute location, and persisted specs
+  reject relative values. The existing root, symlink and authority validation
+  still applies when loading configuration.
+
+The corrected candidate passed **1,273 tests in 173.18 seconds**, including real
+session/project lock contention and changed-working-directory regressions. Ruff,
+whitespace checks and the public-history audit (519 commits, 1,187 unique blobs)
+passed. Independent Reviewer and Compliance Officer reviews accepted the delta;
+Compliance ran 20 focused tests. No tests were removed or skipped.
+
+A read-only inspection of the real project authority found generation 4 with
+constitution, policy, activation, rollback, registration and provider intelligence
+components, but no Objective acceptance component. The current external controller
+prepares six legacy components; an unsigned proposal alone cannot close that gap.
+An operational owner-controlled publication path is still required before a
+qualified real session can demonstrate authenticated Objective closure. This
+inspection did not sign, publish, activate or install any authority or credential.
+The separate documentation issuance endpoint is not automatically a prerequisite
+for every planning flow; its necessity must follow the actual E2E scenario.
+
+Live routing/model identity, effective budgets, complete failure/recovery/resume,
+pending dependency/issue reconciliation and final independent system audit remain
+open. This checkpoint is not mission SUCCESS.
