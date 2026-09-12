@@ -244,6 +244,9 @@ def test_same_objective_can_follow_owner_authorized_target_advance(tmp_path, mon
     component = copy.deepcopy(proposal["component"])
     component["generation_id"] = "generation-4"
     successor = prepare_proposal(session.session_id, component, state_dir=manager.store.state_dir)
+    successor["component"]["approved_plan_sha256"] = "f" * 64
+    import tools.owner_objective_publication as publication
+    monkeypatch.setattr(publication, "_prepare_proposal_locked", lambda *_: successor)
 
     result = publish(project.project_id, "operation-objective-successor", successor)
 
@@ -254,4 +257,10 @@ def test_same_objective_can_follow_owner_authorized_target_advance(tmp_path, mon
     with pytest.raises(RuntimeError, match="changes accepted content"):
         _validate_objective_succession(
             proposal["component"], changed["component"], manager.get(session.session_id)
+        )
+    unchanged_plan = copy.deepcopy(successor["component"])
+    unchanged_plan["approved_plan_sha256"] = proposal["component"]["approved_plan_sha256"]
+    with pytest.raises(RuntimeError, match="freshly projected plan"):
+        _validate_objective_succession(
+            proposal["component"], unchanged_plan, manager.get(session.session_id)
         )

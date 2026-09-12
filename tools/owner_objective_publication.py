@@ -71,6 +71,8 @@ def _validate_objective_succession(previous, component, session):
     }
     if any(previous.get(field) != component.get(field) for field in stable_fields):
         raise RuntimeError("Objective succession changes accepted content")
+    if previous.get("approved_plan_sha256") == component.get("approved_plan_sha256"):
+        raise RuntimeError("Objective succession requires a freshly projected plan")
     if session.artifact_hashes.get("external_advancement") is None:
         raise RuntimeError("Objective succession requires owner-authorized target advance")
 

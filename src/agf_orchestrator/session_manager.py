@@ -674,12 +674,30 @@ class SessionManager:
                 self.store.artifacts_dir / session.session_id / "planning-origin.json"
             )
             if origin_path.exists():
-                _, origin_hash, archived_origin_hash = self.store.replace_artifact_for_recovery(
-                    session.session_id,
-                    "planning-origin.json",
-                    origin_content,
-                    f"planning-origin-before-{item.advancement_id}.json",
+                backup_name = f"planning-origin-before-{item.advancement_id}.json"
+                backup_path = self.store.ensure_safe_path(
+                    self.store.artifacts_dir / session.session_id / backup_name
                 )
+                current_origin_hash = self.store.artifact_hash(str(origin_path))
+                expected_origin_hash = session.artifact_hashes.get("planning_origin")
+                if current_origin_hash == hashlib.sha256(origin_content.encode()).hexdigest():
+                    if not backup_path.is_file():
+                        raise SessionManagerError(
+                            "planning recovery replacement has no historical origin"
+                        )
+                    origin_hash = current_origin_hash
+                    archived_origin_hash = self.store.artifact_hash(str(backup_path))
+                else:
+                    _, origin_hash, archived_origin_hash = (
+                        self.store.replace_artifact_for_recovery(
+                            session.session_id,
+                            "planning-origin.json",
+                            origin_content,
+                            backup_name,
+                        )
+                    )
+                if expected_origin_hash and archived_origin_hash != expected_origin_hash:
+                    raise SessionManagerError("historical planning origin changed")
                 historical_hashes["historical:planning_origin"] = archived_origin_hash
             else:
                 _, origin_hash = self.store.write_artifact(

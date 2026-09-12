@@ -223,6 +223,16 @@ def test_external_advance_creates_fresh_planning_checkpoint(tmp_path, monkeypatc
 
     monkeypatch.setattr(session_manager_module, "ExternalAdvancementStore", AdvancementStore)
 
+    save = manager._save
+    monkeypatch.setattr(
+        manager,
+        "_save",
+        lambda _session: (_ for _ in ()).throw(OSError("crash after artifact commit")),
+    )
+    with pytest.raises(OSError, match="crash after artifact commit"):
+        manager.reconcile_external_advance(session.session_id, str(evidence))
+    monkeypatch.setattr(manager, "_save", save)
+
     updated = manager.reconcile_external_advance(session.session_id, str(evidence))
 
     plan = json.loads(Path(updated.plan_path).read_text())
