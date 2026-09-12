@@ -297,13 +297,35 @@ def register_governed_campaign(spec, retry_budget):
                        "driver_sha256": content_hash(spec.to_dict())}
             path = store.ensure_safe_path(store.artifacts_dir / session.session_id
                                            / "campaign-binding.json")
+            rollover = False
             if path.exists() and json.loads(path.read_text()) != binding:
-                raise GovernedCampaignError("session already belongs to another campaign budget")
+                historical_hash = session.artifact_hashes.get("historical:campaign_binding")
+                if (
+                    session.artifact_hashes.get("campaign_binding") is not None
+                    or session.artifact_hashes.get("external_advancement") is None
+                    or historical_hash != store.artifact_hash(str(path))
+                ):
+                    raise GovernedCampaignError(
+                        "session already belongs to another campaign budget"
+                    )
+                rollover = True
             GovernedSessionDriver(spec).snapshot(state)
             if existing is None:
                 campaign_store._save_unlocked(state)
-            _, digest = store.write_artifact(session.session_id, path.name,
-                                              json.dumps(binding, sort_keys=True))
+            if rollover:
+                _, _, archived_hash = store.replace_artifact_for_recovery(
+                    session.session_id,
+                    "campaign-binding.json",
+                    json.dumps(binding, sort_keys=True),
+                    f"campaign-binding-before-{state.campaign_id}.json",
+                )
+                if archived_hash != historical_hash:
+                    raise GovernedCampaignError("historical campaign budget binding changed")
+            if path.exists() and json.loads(path.read_text()) == binding:
+                digest = store.artifact_hash(str(path))
+            else:
+                _, digest = store.write_artifact(session.session_id, path.name,
+                                                  json.dumps(binding, sort_keys=True))
             session.artifact_hashes["campaign_binding"] = digest
             manager._save(session)
             return state

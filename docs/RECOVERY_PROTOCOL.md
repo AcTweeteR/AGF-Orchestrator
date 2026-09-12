@@ -8,8 +8,9 @@ Recovery returns a task to the earliest role that can safely resolve the failure
 2. Record failure ID, category, task state, impact, evidence, suspected cause, owner, and safe disposition options.
 3. Route to the role named below; the Director records any state return or scope change.
 4. Issue corrected context or work and mark superseded records without deleting them.
-5. Repeat every affected quality gate before progression.
-6. Close the recovery record only when the original failure, corrective action, and verification evidence are linked.
+5. After an owner-authenticated target advancement, create a fresh planning checkpoint and bind a successor campaign budget while retaining the prior binding and consumed attempts as historical evidence.
+6. Repeat every affected quality gate before progression.
+7. Close the recovery record only when the original failure, corrective action, and verification evidence are linked.
 
 ## Failure-specific recovery
 
