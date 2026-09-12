@@ -67,7 +67,6 @@ _SECRET_NAME = re.compile(
 _SENSITIVE_DIRS = frozenset({
     "secrets", "keys", "credentials", "private", "certificates",
 })
-_PROTECTED_PREFIXES = (".git",)
 _IGNORED_DIRS = frozenset({
     ".venv", "venv", "node_modules", "dist", "build", "coverage", ".pytest_cache",
     ".mypy_cache", ".ruff_cache", "__pycache__",
@@ -299,8 +298,7 @@ def assess_repository(
             continue
         files.append(relative)
         if any(
-            part.startswith(_PROTECTED_PREFIXES)
-            or part in _SENSITIVE_DIRS
+            part in _SENSITIVE_DIRS
             or _SECRET_NAME.search(part)
             for part in parts
         ):

@@ -81,6 +81,7 @@ def test_assessment_includes_hidden_tracked_paths_and_excludes_ignored_state(tmp
 
     assert ".github/workflows/ci.yml" in evidence.repository_structure
     assert ".github/workflows/ci.yml" in evidence.ci_markers
+    assert ".github/workflows/ci.yml" not in evidence.protected_paths
     assert not any(
         path.startswith(".completion-worktrees/")
         for path in evidence.repository_structure
