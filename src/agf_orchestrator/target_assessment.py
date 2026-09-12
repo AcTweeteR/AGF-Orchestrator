@@ -87,6 +87,29 @@ def _git(root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def _git_repository_paths(root: Path) -> tuple[str, ...]:
+    """Return tracked and visible untracked paths without ignored workspace state."""
+    try:
+        result = subprocess.run(
+            [
+                "git", "-C", str(root), "ls-files", "-z", "--cached", "--others",
+                "--exclude-standard",
+            ],
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise AssessmentError("git ls-files failed") from exc
+    try:
+        return tuple(
+            item.decode("utf-8")
+            for item in result.stdout.split(b"\0")
+            if item
+        )
+    except UnicodeDecodeError as exc:
+        raise AssessmentError("repository path encoding is unsupported") from exc
+
+
 @dataclass(frozen=True)
 class TargetAssessment:
     schema_version: str
@@ -264,14 +287,15 @@ def assess_repository(
             raise AssessmentError("assessment repository origin is invalid") from exc
     files: list[str] = []
     protected: list[str] = []
-    for path in sorted(root.rglob("*")):
+    for relative in sorted(_git_repository_paths(root)):
+        path = root / relative
         if path.is_symlink() or not path.is_file():
             continue
-        relative = path.relative_to(root).as_posix()
+        relative = Path(relative).as_posix()
         parts = relative.split("/")
         if any(part in _IGNORED_DIRS for part in parts):
             continue
-        if any(part == ".git" or part.startswith(".git") for part in parts):
+        if ".git" in parts:
             continue
         files.append(relative)
         if any(
