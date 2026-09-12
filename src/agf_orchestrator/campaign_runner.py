@@ -712,7 +712,7 @@ class PersistentCampaignRunner:
         return hashlib.sha256(json.dumps(payload, sort_keys=True,
                                          separators=(",", ":")).encode()).hexdigest()
 
-    def _read_deferred(self, path):
+    def _read_deferred(self, path, *, legacy=False):
         try:
             payload = json.loads(path.read_text())
             if set(payload) != {"schema_version", "before", "after", "sha256"}:
@@ -728,9 +728,19 @@ class PersistentCampaignRunner:
             exhausted = before.retry_count >= before.retry_budget
             status = (CampaignStatus.BLOCKED_NON_RETRYABLE if exhausted
                       else CampaignStatus.RETRY_BACKOFF)
+            event_timestamp = after.updated_at
+            if legacy:
+                if not after.events:
+                    raise ValueError
+                event_timestamp = after.events[-1].timestamp
+                skew = (
+                    parse_timestamp(after.updated_at) - parse_timestamp(event_timestamp)
+                ).total_seconds()
+                if skew not in (0.0, 1.0):
+                    raise ValueError
             event = CampaignEvent(before.event_sequence + 1,
                                   "RETRY_EXHAUSTED" if exhausted else "RETRY_BACKOFF",
-                                  status.value, after.updated_at, after.reason)
+                                  status.value, event_timestamp, after.reason)
             expected = replace(
                 before, status=status, reason=after.reason, updated_at=after.updated_at,
                 waiting_since=None if exhausted else after.updated_at,
@@ -774,16 +784,19 @@ class PersistentCampaignRunner:
                 temporary.unlink(missing_ok=True)
 
     def _recover_deferred_retry(self):
-        paths = []
+        candidates = []
         current_path = self._deferred_path()
         if current_path.exists():
-            paths.append(current_path)
+            candidates.append((current_path, False))
         legacy_path = self._legacy_deferred_candidate()
         if legacy_path is not None:
-            paths.append(legacy_path)
-        if not paths:
+            candidates.append((legacy_path, True))
+        if not candidates:
             return
-        records = [self._read_deferred(path) for path in paths]
+        records = [
+            self._read_deferred(path, legacy=legacy)
+            for path, legacy in candidates
+        ]
         before, after = records[0]
         if any(record != (before, after) for record in records[1:]):
             raise CampaignRunnerError("conflicting deferred retry evidence")
@@ -795,7 +808,7 @@ class PersistentCampaignRunner:
             elif current != after:
                 raise CampaignRunnerError("deferred retry conflicts with current campaign state")
             # A crash after save is idempotent: exact 'after' permits cleanup.
-            for path in paths:
+            for path, _legacy in candidates:
                 path.unlink()
 
     def _append(

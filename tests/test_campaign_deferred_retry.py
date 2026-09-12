@@ -2,6 +2,7 @@ import json
 import multiprocessing
 import time
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from agf_orchestrator.campaign_runner import (
     PersistentCampaignRunner,
     StepResult,
     parse_timestamp,
+    timestamp,
 )
 from agf_orchestrator.locking import LockError, project_lock
 
@@ -231,3 +233,26 @@ def test_conflicting_current_and_legacy_retries_fail_closed(tmp_path, monkeypatc
         )
     assert runner._deferred_path().exists()
     assert legacy.exists()
+
+
+def test_one_second_historical_timestamp_skew_is_legacy_only(tmp_path, monkeypatch):
+    store, clock, runner, after = defer_with_failed_save(tmp_path, monkeypatch)
+    current = runner._deferred_path()
+    payload = json.loads(current.read_text())
+    payload["after"]["events"][-1]["timestamp"] = timestamp(
+        parse_timestamp(payload["after"]["updated_at"]) - timedelta(seconds=1)
+    )
+    unsigned = {key: value for key, value in payload.items() if key != "sha256"}
+    payload["sha256"] = runner._retry_digest(unsigned)
+    current.write_text(json.dumps(payload))
+    with pytest.raises(CampaignRunnerError, match="evidence is inconsistent"):
+        runner._read_deferred(current)
+    legacy = runner._legacy_deferred_path()
+    current.replace(legacy)
+    recovered = PersistentCampaignRunner(store, now=clock).tick(
+        lambda _: pytest.fail("legacy recovery must precede probe"),
+        lambda _: pytest.fail("legacy recovery must precede dispatch"),
+    )
+    assert recovered.to_dict() == payload["after"]
+    assert recovered.retry_count == after.retry_count
+    assert not legacy.exists()
