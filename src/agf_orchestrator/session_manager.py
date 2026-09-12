@@ -650,13 +650,47 @@ class SessionManager:
                 )
             historical = dict(session.artifact_hashes)
             historical_hashes = {f"historical:{key}": value for key, value in historical.items()}
+            if _git(root, "status", "--porcelain"):
+                raise SessionManagerError(
+                    "external advancement target is dirty during planning recovery"
+                )
             stored_hash = previous.evidence_hash if previous is not None else store.put(item)
+            repository = self._repository_context(project, clean=True)
+            plan = self.director.create_plan(session.goal, repository)
+            plan_path, plan_hash = self.store.write_artifact(
+                session.session_id,
+                f"plan-reassessment-{item.target_sha[:12]}.json",
+                json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n",
+            )
+            origin = {
+                "schema_version": "1.0",
+                "protocol": "governed-session/1",
+                "session_id": session.session_id,
+                "project_id": project.project_id,
+                "initial_plan_sha256": plan_hash,
+            }
+            origin_content = json.dumps(origin, sort_keys=True) + "\n"
+            origin_path = self.store.ensure_safe_path(
+                self.store.artifacts_dir / session.session_id / "planning-origin.json"
+            )
+            if origin_path.exists():
+                _, origin_hash, archived_origin_hash = self.store.replace_artifact_for_recovery(
+                    session.session_id,
+                    "planning-origin.json",
+                    origin_content,
+                    f"planning-origin-before-{item.advancement_id}.json",
+                )
+                historical_hashes["historical:planning_origin"] = archived_origin_hash
+            else:
+                _, origin_hash = self.store.write_artifact(
+                    session.session_id, "planning-origin.json", origin_content,
+                )
             updated = replace(
                 session,
                 base_sha=item.target_sha,
                 current_stage="REASSESSMENT",
                 status=SessionStatus.READY,
-                plan_path=None,
+                plan_path=plan_path,
                 execution_report_path=None,
                 review_report_path=None,
                 compliance_report_path=None,
@@ -665,7 +699,12 @@ class SessionManager:
                 pr_url=None,
                 blocking_issues=[],
                 required_human_actions=[],
-                artifact_hashes={"external_advancement": stored_hash, **historical_hashes},
+                artifact_hashes={
+                    "external_advancement": stored_hash,
+                    "plan": plan_hash,
+                    "planning_origin": origin_hash,
+                    **historical_hashes,
+                },
             )
             updated = self._append_event(
                 updated,

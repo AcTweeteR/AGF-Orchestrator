@@ -142,6 +142,13 @@ candidates. Missing or reduced floors after a committed generation still fail
 closed. Objective candidates cannot be overwritten or activated over a different
 predecessor, and legacy cutover cannot remove installed Objective authority.
 
+If an owner-authenticated external advancement changes the canonical target
+before execution, recovery may publish a successor acceptance only for the same
+Objective content, criteria, session, repository identity, and goal. The new
+generation binds the freshly projected plan at the advanced target, preserves
+the prior generation as its predecessor, and still requires separate exact owner
+activation. Any Objective or criterion change is rejected.
+
 Atomic publication and the existing metadata transaction support interrupted
 preparation and activation. These changes implement this ADR's approved boundary;
-they do not authorize actual activation, Objective supersession or key installation.
+they do not authorize actual activation, Objective replacement or key installation.

@@ -64,6 +64,17 @@ def _result(generation, status):
             "operation_id": generation.operation_id}
 
 
+def _validate_objective_succession(previous, component, session):
+    stable_fields = {
+        "project_id", "session_id", "repository_identity", "goal_sha256",
+        "objective", "objective_sha256", "criteria",
+    }
+    if any(previous.get(field) != component.get(field) for field in stable_fields):
+        raise RuntimeError("Objective succession changes accepted content")
+    if session.artifact_hashes.get("external_advancement") is None:
+        raise RuntimeError("Objective succession requires owner-authorized target advance")
+
+
 @contextmanager
 def _final_validation(registry, project, sessions, session, proposal, store, predecessor):
     # Registry writers use a separate lock from project execution transactions.
@@ -153,12 +164,19 @@ def publish(project_id, operation_id, proposal, *, action="prepare", expected_ma
         context = AuthorityContext.resolve_runtime(project_id, root)
         if context is None or context.manifest_hash != active.manifest_hash:
             raise RuntimeError("current owner authority cannot be verified")
-        if "objective_acceptance" in context.artifacts:
-            raise RuntimeError("superseding an accepted Objective is outside this operation")
         values = dict(context.artifacts)
-        if set(values) != {"constitution", "policy", "activation", "rollback", "registration",
-                           "provider_intelligence"}:
+        base_components = {
+            "constitution", "policy", "activation", "rollback", "registration",
+            "provider_intelligence",
+        }
+        if frozenset(values) not in {
+            frozenset(base_components),
+            frozenset({*base_components, "objective_acceptance"}),
+        }:
             raise RuntimeError("current generation has unsupported components")
+        previous_objective = values.get("objective_acceptance")
+        if previous_objective is not None:
+            _validate_objective_succession(previous_objective, component, session)
         if record is not None and (
             record["payload"]["predecessor_id"] != active.generation_id
             or record["payload"]["predecessor_hash"] != active.manifest_hash
