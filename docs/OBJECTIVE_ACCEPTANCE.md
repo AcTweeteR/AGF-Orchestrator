@@ -88,8 +88,12 @@ current Objective completion or fresh provider eligibility.
 
 The generic legacy migration controller cannot activate an Objective candidate or
 replace installed Objective authority with a legacy bundle. Superseding an already
-accepted Objective is outside this publication operation. Generation changes can
-invalidate generation-bound provider evidence; current eligibility must still be
+accepted Objective remains outside this publication operation. After an exact
+owner-authenticated external target advancement, the owner may instead publish a
+successor generation for the same Objective, criteria, session, repository identity,
+and goal, bound to the freshly projected plan. Any change to accepted Objective
+content is rejected. Generation changes can invalidate generation-bound provider
+evidence; current eligibility must still be
 verified and, when required, refreshed through the existing owner-controlled flow.
 
 Tests use ephemeral authority only. Actual owner publication and activation are

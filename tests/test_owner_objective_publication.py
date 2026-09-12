@@ -13,7 +13,7 @@ from agf_orchestrator.authority_generation import (
 )
 from agf_orchestrator.objective_acceptance import read_objective_acceptance
 from tools import owner_ed25519_authority as owner
-from tools.owner_objective_publication import publish
+from tools.owner_objective_publication import _validate_objective_succession, publish
 from tools.prepare_objective_acceptance import prepare_proposal
 
 
@@ -226,3 +226,41 @@ def test_legacy_generation_cannot_remove_installed_objective(tmp_path, monkeypat
     with pytest.raises((RuntimeError, ValueError), match="cannot remove Objective"):
         owner.cutover_ed25519_generation(project.project_id, "generation-4")
     assert store.active(project.project_id).generation_id == "generation-3"
+
+
+def test_same_objective_can_follow_owner_authorized_target_advance(tmp_path, monkeypatch):
+    manager, project, session, store, proposal, _ = setup(tmp_path, monkeypatch)
+    first = publish(project.project_id, "operation-objective", proposal)
+    publish(
+        project.project_id,
+        "operation-objective",
+        proposal,
+        action="activate",
+        expected_manifest=first["manifest_hash"],
+    )
+    session = manager.get(session.session_id)
+    session.artifact_hashes["external_advancement"] = "e" * 64
+    manager.store.save(session)
+    component = copy.deepcopy(proposal["component"])
+    component["generation_id"] = "generation-4"
+    successor = prepare_proposal(session.session_id, component, state_dir=manager.store.state_dir)
+    successor["component"]["approved_plan_sha256"] = "f" * 64
+    import tools.owner_objective_publication as publication
+    monkeypatch.setattr(publication, "_prepare_proposal_locked", lambda *_: successor)
+
+    result = publish(project.project_id, "operation-objective-successor", successor)
+
+    assert result["status"] == "PREPARED_NOT_ACTIVE"
+    assert store.active(project.project_id).generation_id == "generation-3"
+    changed = copy.deepcopy(successor)
+    changed["component"]["objective"]["title"] = "Changed Objective"
+    with pytest.raises(RuntimeError, match="changes accepted content"):
+        _validate_objective_succession(
+            proposal["component"], changed["component"], manager.get(session.session_id)
+        )
+    unchanged_plan = copy.deepcopy(successor["component"])
+    unchanged_plan["approved_plan_sha256"] = proposal["component"]["approved_plan_sha256"]
+    with pytest.raises(RuntimeError, match="freshly projected plan"):
+        _validate_objective_succession(
+            proposal["component"], unchanged_plan, manager.get(session.session_id)
+        )

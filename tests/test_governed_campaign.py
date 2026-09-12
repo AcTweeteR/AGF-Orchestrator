@@ -103,6 +103,42 @@ def test_registration_cannot_replace_budget_or_driver(tmp_path, monkeypatch):
             register_governed_campaign(changed, budget)
 
 
+def test_owner_advanced_session_can_bind_a_successor_campaign(tmp_path, monkeypatch):
+    _, manager, spec, _, _, _ = registered(tmp_path, monkeypatch)
+    session = manager.get(spec.session_id)
+    old_hash = session.artifact_hashes.pop("campaign_binding")
+    session.artifact_hashes["historical:campaign_binding"] = old_hash
+    session.artifact_hashes["external_advancement"] = "e" * 64
+    manager.store.save(session)
+    successor = replace(spec, campaign_id="campaign-successor")
+    binding_path = (
+        manager.store.artifacts_dir / spec.session_id / "campaign-binding.json"
+    )
+    old_binding = binding_path.read_bytes()
+    snapshot = GovernedSessionDriver.snapshot
+    monkeypatch.setattr(
+        GovernedSessionDriver,
+        "snapshot",
+        lambda *_: (_ for _ in ()).throw(GovernedCampaignError("invalid successor")),
+    )
+    with pytest.raises(GovernedCampaignError, match="invalid successor"):
+        register_governed_campaign(successor, 2)
+    assert binding_path.read_bytes() == old_binding
+    monkeypatch.setattr(GovernedSessionDriver, "snapshot", snapshot)
+
+    state = register_governed_campaign(successor, 2)
+    updated = manager.get(spec.session_id)
+
+    assert state.campaign_id == "campaign-successor"
+    assert updated.artifact_hashes["campaign_binding"] != old_hash
+    assert updated.artifact_hashes["historical:campaign_binding"] == old_hash
+    assert (
+        manager.store.artifacts_dir
+        / spec.session_id
+        / "campaign-binding-before-campaign-successor.json"
+    ).is_file()
+
+
 @pytest.mark.parametrize("mode", ["missing-hash", "corrupt", "changed-driver"])
 def test_budget_binding_is_checked_before_work_or_probe(tmp_path, monkeypatch, mode):
     _, manager, spec, _, driver, initial = registered(tmp_path, monkeypatch)
