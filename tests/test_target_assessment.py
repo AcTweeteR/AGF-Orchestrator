@@ -59,6 +59,35 @@ def test_assessment_is_evidence_bound_and_read_only(tmp_path):
     assert context(root) == before
 
 
+def test_assessment_includes_hidden_tracked_paths_and_excludes_ignored_state(tmp_path):
+    root = repo(tmp_path)
+    (root / ".github" / "workflows").mkdir(parents=True)
+    (root / ".github" / "workflows" / "ci.yml").write_text("name: CI\n")
+    (root / ".gitignore").write_text(".completion-worktrees/\n")
+    ignored = root / ".completion-worktrees" / "nested"
+    ignored.mkdir(parents=True)
+    (ignored / "README.md").write_text("ignored local state\n")
+    subprocess.run(
+        ["git", "-C", str(root), "add", ".gitignore", ".github/workflows/ci.yml"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "add CI"],
+        check=True,
+        capture_output=True,
+    )
+
+    evidence = assess(context(root))
+
+    assert ".github/workflows/ci.yml" in evidence.repository_structure
+    assert ".github/workflows/ci.yml" in evidence.ci_markers
+    assert ".github/workflows/ci.yml" not in evidence.protected_paths
+    assert not any(
+        path.startswith(".completion-worktrees/")
+        for path in evidence.repository_structure
+    )
+
+
 def test_missing_proposal_blocks_without_inventing_scope(tmp_path):
     root = repo(tmp_path)
     repository = context(root)
