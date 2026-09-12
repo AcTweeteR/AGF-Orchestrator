@@ -684,6 +684,29 @@ class PersistentCampaignRunner:
             raise CampaignRunnerError("deferred retry path is unsafe")
         return path
 
+    def _legacy_deferred_path(self):
+        path = self.store.path.with_suffix(".deferred-retry.json")
+        if (not path.resolve().is_relative_to(self.store.state_dir)
+                or any(item.is_symlink() for item in (path, *path.parents))):
+            raise CampaignRunnerError("legacy deferred retry path is unsafe")
+        return path
+
+    def _legacy_deferred_candidate(self):
+        """Return an old-format sidecar without mistaking a valid campaign for it."""
+        path = self._legacy_deferred_path()
+        if not path.exists():
+            return None
+        try:
+            state = campaign_from_dict(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, TypeError, KeyError, CampaignRunnerError):
+            return path
+        if (
+            state.project_id == self.store.project_id
+            and state.campaign_id == f"{self.store.campaign_id}.deferred-retry"
+        ):
+            return None
+        return path
+
     @staticmethod
     def _retry_digest(payload):
         return hashlib.sha256(json.dumps(payload, sort_keys=True,
@@ -751,10 +774,19 @@ class PersistentCampaignRunner:
                 temporary.unlink(missing_ok=True)
 
     def _recover_deferred_retry(self):
-        path = self._deferred_path()
-        if not path.exists():
+        paths = []
+        current_path = self._deferred_path()
+        if current_path.exists():
+            paths.append(current_path)
+        legacy_path = self._legacy_deferred_candidate()
+        if legacy_path is not None:
+            paths.append(legacy_path)
+        if not paths:
             return
-        before, after = self._read_deferred(path)
+        records = [self._read_deferred(path) for path in paths]
+        before, after = records[0]
+        if any(record != (before, after) for record in records[1:]):
+            raise CampaignRunnerError("conflicting deferred retry evidence")
         with project_lock(self.store.state_dir, self.store.project_id,
                           "campaign-deferred-retry", timeout=5.0):
             current = self.store._load_unlocked()
@@ -763,7 +795,8 @@ class PersistentCampaignRunner:
             elif current != after:
                 raise CampaignRunnerError("deferred retry conflicts with current campaign state")
             # A crash after save is idempotent: exact 'after' permits cleanup.
-            path.unlink()
+            for path in paths:
+                path.unlink()
 
     def _append(
         self, state: CampaignState, event_type: str, status: str, summary: str
