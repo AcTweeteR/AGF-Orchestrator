@@ -168,6 +168,11 @@ def test_deferred_retry_path_cannot_collide_with_another_campaign(tmp_path, monk
     assert runner._deferred_path() != other.path
     assert runner._deferred_path().exists()
     assert other.load().campaign_id.endswith(".deferred-retry")
+    recovered = PersistentCampaignRunner(store, now=clock).tick(
+        lambda _: pytest.fail("backoff not due"), lambda _: pytest.fail("dispatch")
+    )
+    assert recovered.status is CampaignStatus.RETRY_BACKOFF
+    assert other.load().campaign_id.endswith(".deferred-retry")
 
 
 def test_retry_event_and_state_use_one_recorded_timestamp(tmp_path, monkeypatch):
@@ -186,3 +191,43 @@ def test_retry_event_and_state_use_one_recorded_timestamp(tmp_path, monkeypatch)
     after = runner.tick(lambda _: True, lambda _: (_ for _ in ()).throw(RuntimeError()))
     assert after.updated_at == after.events[-1].timestamp
     assert runner._read_deferred(runner._deferred_path())[1] == after
+
+
+@pytest.mark.parametrize("budget", [0, 3])
+def test_legacy_deferred_retry_is_recovered_before_dispatch(tmp_path, monkeypatch, budget):
+    store, clock, runner, after = defer_with_failed_save(
+        tmp_path, monkeypatch, budget=budget
+    )
+    legacy = runner._legacy_deferred_path()
+    runner._deferred_path().replace(legacy)
+    recovered = PersistentCampaignRunner(store, now=clock).tick(
+        lambda _: pytest.fail("legacy recovery must precede probe"),
+        lambda _: pytest.fail("legacy recovery must precede dispatch"),
+    )
+    assert recovered == after
+    assert recovered.retry_count == (0 if budget == 0 else 1)
+    assert recovered.status is (
+        CampaignStatus.BLOCKED_NON_RETRYABLE
+        if budget == 0
+        else CampaignStatus.RETRY_BACKOFF
+    )
+    assert not legacy.exists()
+
+
+def test_conflicting_current_and_legacy_retries_fail_closed(tmp_path, monkeypatch):
+    store, clock, runner, _ = defer_with_failed_save(tmp_path, monkeypatch)
+    legacy = runner._legacy_deferred_path()
+    legacy.write_bytes(runner._deferred_path().read_bytes())
+    payload = json.loads(legacy.read_text())
+    payload["after"]["reason"] = "different recorded failure"
+    payload["after"]["events"][-1]["summary"] = "different recorded failure"
+    unsigned = {key: value for key, value in payload.items() if key != "sha256"}
+    payload["sha256"] = runner._retry_digest(unsigned)
+    legacy.write_text(json.dumps(payload))
+    with pytest.raises(CampaignRunnerError, match="conflicting deferred retry evidence"):
+        PersistentCampaignRunner(store, now=clock).tick(
+            lambda _: pytest.fail("conflict must not probe"),
+            lambda _: pytest.fail("conflict must not dispatch"),
+        )
+    assert runner._deferred_path().exists()
+    assert legacy.exists()
