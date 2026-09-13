@@ -131,10 +131,6 @@ def test_resolved_validation_commands_are_sent_to_provider(monkeypatch, tmp_path
         return original(self, **kwargs)
 
     monkeypatch.setattr(CodexAdapter, "build_instruction", capture)
-    monkeypatch.setattr(
-        "agf_orchestrator.validation_commands.shutil.which",
-        lambda name: sys.executable if name == "python3" else None,
-    )
     result = Executor(
         CodexAdapter(
             executable=str(fake_codex(tmp_path)), profile=CodexInvocationProfile()
@@ -143,7 +139,7 @@ def test_resolved_validation_commands_are_sent_to_provider(monkeypatch, tmp_path
         plan, "task-001", str(tmp_path), dry_run=False
     )
     assert result.status is ExecutionStatus.COMPLETED
-    assert captured["validation_commands"] == ["python3 -c 'assert True'"]
+    assert captured["validation_commands"] == [f"{sys.executable} -c 'assert True'"]
 
 
 def test_unverified_invocation_syntax_requires_human(monkeypatch, tmp_path):

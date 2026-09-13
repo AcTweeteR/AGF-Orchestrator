@@ -530,6 +530,9 @@ def test_architect_provider_prompt_requires_exact_validation_commands(tmp_path):
     )
     instruction = _AdapterArchitectProvider._instruction(request)
     assert "exact executable command strings" in instruction
+    assert "Python-installed tools MUST use the governed interpreter" in instruction
+    assert "python -m ruff check ." in instruction
+    assert "never a bare tool name such as `ruff`" in instruction
     assert "Never write prose such as 'Run the tests'" in instruction
 
 
