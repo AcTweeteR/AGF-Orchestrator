@@ -69,6 +69,23 @@ def _canonical_plan_hash(payload: dict[str, object]) -> str:
     ).hexdigest()
 
 
+def _objective_validation_bindings(project, session):
+    """Expose authenticated validation bindings to advisory planning."""
+    from .authority_context import resolve_authority
+    from .objective_acceptance import read_objective_acceptance
+
+    runtime = resolve_authority(project.project_id)
+    if (runtime.context is None
+            or "objective_acceptance" not in runtime.context.artifacts):
+        return ()
+    acceptance = read_objective_acceptance(project, session)
+    return tuple({
+        "criterion_id": criterion.criterion_id,
+        "task_ids": list(criterion.task_ids),
+        "validation_commands": list(criterion.validation_commands),
+    } for criterion in acceptance.criteria if criterion.validation_commands)
+
+
 class SessionManagerError(RuntimeError):
     pass
 
@@ -1037,6 +1054,11 @@ class SessionManager:
                                     self._repository_context(project, clean=recovered_clean),
                                     recovered_assessment,
                                     registered_project=project,
+                                    objective_validation_bindings=(
+                                        _objective_validation_bindings(project, session)
+                                        if "objective_validation_bindings" in request_payload
+                                        else ()
+                                    ),
                                 ),
                                 session_id=session.session_id,
                                 plan_path=plan_payload["scope"].get("lineage"),
@@ -1073,6 +1095,11 @@ class SessionManager:
                                     self._repository_context(project, clean=recovered_clean),
                                     recovered_assessment,
                                     registered_project=project,
+                                    objective_validation_bindings=(
+                                        _objective_validation_bindings(project, session)
+                                        if "objective_validation_bindings" in request_payload
+                                        else ()
+                                    ),
                                 ),
                             )
                             if (
@@ -1210,7 +1237,8 @@ class SessionManager:
                     repository, project.project_id, registered_project=project
                 )
                 request = build_architect_request(
-                    session.goal, repository, assessment, registered_project=project
+                    session.goal, repository, assessment, registered_project=project,
+                    objective_validation_bindings=_objective_validation_bindings(project, session),
                 )
                 architect = self.architect or ProviderArchitect(
                     self.architect_candidates,
