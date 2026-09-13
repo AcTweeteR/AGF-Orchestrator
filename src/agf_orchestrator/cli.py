@@ -516,6 +516,9 @@ class _AdapterArchitectProvider:
             + ". Do not cite any other string. For every task, validation_requirements MUST "
             "contain only exact executable command strings, one command per item, beginning "
             "with the executable token (for example: `python -m pytest` or `git diff --check`). "
+            "Python-installed tools MUST use the governed interpreter as `python -m MODULE` "
+            "(for example: `python -m ruff check .`), never a bare tool name such as `ruff`; "
+            "do not assume that a project virtual environment is present on PATH. "
             "Never write prose such as 'Run the tests', never include Markdown backticks, "
             "and never prefix a command with 'Run'.\n"
             + json.dumps(request.to_dict(), ensure_ascii=False, sort_keys=True)

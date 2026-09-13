@@ -5,15 +5,21 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import sys
 from pathlib import Path
 
 SHELL_CONTROL_TOKENS = {";", "&&", "||", "&", "|", ">", "<"}
 EXECUTABLE_ALIASES = {"python": ("python3",)}
+PYTHON_EXECUTABLE_TOKENS = {"python", "python3"}
+PYTHON_MODULE_ENTRY_POINTS = {"pytest", "ruff"}
 
 
 def _resolve_executable(argv: list[str], repository_root: Path) -> str | None:
     executable = Path(argv[0])
     if "/" in argv[0]:
+        governed_python = Path(sys.executable).absolute()
+        if executable.is_absolute() and executable == governed_python:
+            return str(governed_python)
         candidate = (
             (repository_root / executable).resolve()
             if not executable.is_absolute()
@@ -27,6 +33,10 @@ def _resolve_executable(argv: list[str], repository_root: Path) -> str | None:
             return str(candidate)
         return None
 
+    if argv[0] in PYTHON_EXECUTABLE_TOKENS:
+        return str(Path(sys.executable).absolute())
+    if argv[0] in PYTHON_MODULE_ENTRY_POINTS:
+        return None
     resolved = shutil.which(argv[0])
     if resolved is not None:
         return resolved
@@ -57,7 +67,9 @@ def validate_commands(commands: list[str], repository_root: str) -> list[str]:
         resolved = _resolve_executable(argv, root)
         if resolved is None:
             raise ValueError(f"validation executable cannot be resolved: {argv[0]}")
-        if "/" in argv[0] or resolved == shutil.which(argv[0]):
+        if argv[0] in PYTHON_EXECUTABLE_TOKENS:
+            parsed.append(shlex.join([resolved, *argv[1:]]))
+        elif "/" in argv[0] or resolved == shutil.which(argv[0]):
             parsed.append(command)
         else:
             alias = next(
