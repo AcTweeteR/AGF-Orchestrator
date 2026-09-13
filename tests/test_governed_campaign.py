@@ -103,11 +103,17 @@ def test_registration_cannot_replace_budget_or_driver(tmp_path, monkeypatch):
             register_governed_campaign(changed, budget)
 
 
-def test_owner_advanced_session_can_bind_a_successor_campaign(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "historical_key",
+    ["historical:campaign_binding", "historical:historical:campaign_binding"],
+)
+def test_owner_advanced_session_can_bind_a_successor_campaign(
+    tmp_path, monkeypatch, historical_key,
+):
     _, manager, spec, _, _, _ = registered(tmp_path, monkeypatch)
     session = manager.get(spec.session_id)
     old_hash = session.artifact_hashes.pop("campaign_binding")
-    session.artifact_hashes["historical:campaign_binding"] = old_hash
+    session.artifact_hashes[historical_key] = old_hash
     session.artifact_hashes["external_advancement"] = "e" * 64
     manager.store.save(session)
     successor = replace(spec, campaign_id="campaign-successor")
@@ -131,7 +137,7 @@ def test_owner_advanced_session_can_bind_a_successor_campaign(tmp_path, monkeypa
 
     assert state.campaign_id == "campaign-successor"
     assert updated.artifact_hashes["campaign_binding"] != old_hash
-    assert updated.artifact_hashes["historical:campaign_binding"] == old_hash
+    assert updated.artifact_hashes[historical_key] == old_hash
     assert (
         manager.store.artifacts_dir
         / spec.session_id
