@@ -630,7 +630,23 @@ class SessionManager:
                 item.validate()
                 if item.session_id != session_id:
                     raise ExternalAdvancementError("external advancement session mismatch")
-                if item.previous_sha != session.base_sha:
+                replay = (
+                    session.base_sha == item.target_sha
+                    and session.artifact_hashes.get("external_advancement") == item.evidence_hash
+                    and any(
+                        event.operation_id == "external-advance:" + item.advancement_id
+                        for event in session.events
+                    )
+                )
+                replay_recovery = (
+                    replay
+                    and session.status is SessionStatus.READY
+                    and session.current_stage == "READY"
+                    and session.plan_path is None
+                    and "plan" not in session.artifact_hashes
+                    and "planning_origin" not in session.artifact_hashes
+                )
+                if not replay and item.previous_sha != session.base_sha:
                     raise ExternalAdvancementError(
                         "external advancement session baseline mismatch"
                     )
@@ -642,14 +658,17 @@ class SessionManager:
             if previous is not None:
                 if previous != item:
                     raise SessionManagerError("external advancement replay conflicts")
-                if session.artifact_hashes.get("external_advancement") == previous.evidence_hash:
+                if replay and not replay_recovery:
                     return session
             if project.current_head_sha != item.target_sha:
                 raise SessionManagerError(
                     "project target is not reconciled to external advancement"
                 )
             historical = dict(session.artifact_hashes)
-            historical_hashes = {f"historical:{key}": value for key, value in historical.items()}
+            historical_hashes = (
+                historical if replay_recovery
+                else {f"historical:{key}": value for key, value in historical.items()}
+            )
             if _git(root, "status", "--porcelain"):
                 raise SessionManagerError(
                     "external advancement target is dirty during planning recovery"
@@ -728,11 +747,19 @@ class SessionManager:
                 updated,
                 session.status,
                 SessionStatus.READY,
-                "external owner-authorized target advancement reconciled; no AGF delivery asserted",
+                (
+                    "verified external advancement planning checkpoint recovered; "
+                    "no AGF delivery asserted"
+                    if replay_recovery else
+                    "external owner-authorized target advancement reconciled; "
+                    "no AGF delivery asserted"
+                ),
                 [str(Path(evidence_path).resolve())],
                 [],
                 "RELEASE_MANAGER",
-                "external-advance:" + item.advancement_id,
+                (
+                    "external-plan-recovery:" if replay_recovery else "external-advance:"
+                ) + item.advancement_id,
             )
             self._save(updated)
             return updated
