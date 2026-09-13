@@ -246,6 +246,72 @@ def test_external_advance_creates_fresh_planning_checkpoint(tmp_path, monkeypatc
     )
 
 
+def test_external_advance_replay_repairs_legacy_missing_checkpoint(tmp_path, monkeypatch):
+    root, state = registered(tmp_path)
+    manager = SessionManager(state)
+    session = manager.start("alpha", "Reconcile an external target")
+    old_origin_hash = session.artifact_hashes["planning_origin"]
+    (root / "advance").write_text("advance")
+    subprocess.run(["git", "-C", str(root), "add", "advance"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "advance"],
+        check=True, capture_output=True,
+    )
+    target = subprocess.check_output(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    manager.registry.verify("alpha")
+    evidence = tmp_path / "external.json"
+    evidence.write_text("{}")
+    item = SimpleNamespace(
+        session_id=session.session_id,
+        previous_sha=session.base_sha,
+        target_sha=target,
+        advancement_id="external-advance-001",
+        evidence_hash="e" * 64,
+        validate=lambda: None,
+    )
+    monkeypatch.setattr(session_manager_module, "ExternalAdvancement", lambda **_: item)
+    monkeypatch.setattr(session_manager_module, "verify_external_advancement", lambda *_: None)
+
+    class AdvancementStore:
+        def __init__(self, _):
+            pass
+
+        def get(self, *_):
+            return item
+
+    monkeypatch.setattr(session_manager_module, "ExternalAdvancementStore", AdvancementStore)
+    legacy = replace(
+        session,
+        base_sha=target,
+        current_stage="READY",
+        plan_path=None,
+        artifact_hashes={
+            "external_advancement": item.evidence_hash,
+            "historical:planning_origin": old_origin_hash,
+        },
+    )
+    legacy = manager._append_event(
+        legacy, session.status, SessionStatus.READY,
+        "external advance recorded without planning checkpoint", [str(evidence)],
+        [], "RELEASE_MANAGER", "external-advance:" + item.advancement_id,
+    )
+    manager.store.save(legacy)
+
+    repaired = manager.reconcile_external_advance(session.session_id, str(evidence))
+    plan = json.loads(Path(repaired.plan_path).read_text())
+    assert plan["repository"]["head_sha"] == target
+    assert repaired.current_stage == "READY"
+    assert repaired.artifact_hashes["external_advancement"] == item.evidence_hash
+    assert repaired.artifact_hashes["historical:planning_origin"] == old_origin_hash
+    assert repaired.artifact_hashes["plan"]
+    assert repaired.artifact_hashes["planning_origin"]
+    assert repaired.events[-1].operation_id == "external-plan-recovery:external-advance-001"
+    again = manager.reconcile_external_advance(session.session_id, str(evidence))
+    assert again == repaired
+
+
 def test_repair_reconciled_lineage_requires_exact_receipt_binding(tmp_path, monkeypatch):
     _, state = registered(tmp_path)
     manager = SessionManager(state)
