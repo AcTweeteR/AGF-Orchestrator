@@ -299,7 +299,18 @@ def register_governed_campaign(spec, retry_budget):
                                            / "campaign-binding.json")
             rollover = False
             if path.exists() and json.loads(path.read_text()) != binding:
-                historical_hash = session.artifact_hashes.get("historical:campaign_binding")
+                current_binding_hash = store.artifact_hash(str(path))
+                historical_matches = {
+                    value
+                    for key, value in session.artifact_hashes.items()
+                    if key.startswith("historical:")
+                    and key.endswith(":campaign_binding")
+                    and value == current_binding_hash
+                }
+                historical_hash = (
+                    current_binding_hash if historical_matches == {current_binding_hash}
+                    else None
+                )
                 if (
                     session.artifact_hashes.get("campaign_binding") is not None
                     or session.artifact_hashes.get("external_advancement") is None
