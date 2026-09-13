@@ -533,7 +533,75 @@ def test_architect_provider_prompt_requires_exact_validation_commands(tmp_path):
     assert "Python-installed tools MUST use the governed interpreter" in instruction
     assert "python -m ruff check ." in instruction
     assert "never a bare tool name such as `ruff`" in instruction
+    assert "objective_validation_bindings are mandatory" in instruction
     assert "Never write prose such as 'Run the tests'" in instruction
+
+
+def test_architect_enforces_objective_validation_bindings(tmp_path):
+    root = repo(tmp_path)
+    repository = context(root)
+    assessment = assess(repository, PROJECT)
+    request = build_architect_request(
+        "Improve file:README.md", repository, assessment,
+        registered_project=registration(repository),
+        objective_validation_bindings=({
+            "criterion_id": "requirement:test:0",
+            "task_ids": ["task-001"],
+            "validation_commands": ["python -m pytest"],
+        },),
+    )
+    payload = response()
+    payload["proposed_tasks"][0]["validation_requirements"] = ["python -m pytest -q"]
+    with pytest.raises(ArchitectPlanningError, match="omits Objective validation"):
+        validate_architect_response(payload, request)
+    payload["proposed_tasks"][0]["validation_requirements"].append("python -m pytest")
+    validate_architect_response(payload, request)
+
+
+def test_architect_enforces_binding_on_every_designated_task(tmp_path):
+    root = repo(tmp_path)
+    repository = context(root)
+    request = build_architect_request(
+        "Improve file:README.md", repository, assess(repository, PROJECT),
+        registered_project=registration(repository),
+        objective_validation_bindings=({
+            "criterion_id": "requirement:test:0",
+            "task_ids": ["task-001", "task-002"],
+            "validation_commands": ["python -m pytest"],
+        },),
+    )
+    payload = response()
+    second = dict(payload["proposed_tasks"][0])
+    second["objective"] = "Improve file:README.md again"
+    second["validation_requirements"] = ["git diff --check"]
+    payload["proposed_tasks"].append(second)
+    with pytest.raises(ArchitectPlanningError, match="omits Objective validation"):
+        validate_architect_response(payload, request)
+
+
+def test_empty_bindings_preserve_legacy_request_representation(tmp_path):
+    root = repo(tmp_path)
+    repository = context(root)
+    request = build_architect_request(
+        "Improve file:README.md", repository, assess(repository, PROJECT),
+        registered_project=registration(repository),
+    )
+    assert "objective_validation_bindings" not in request.to_dict()
+
+
+def test_architect_rejects_malformed_objective_validation_binding(tmp_path):
+    root = repo(tmp_path)
+    repository = context(root)
+    with pytest.raises(ArchitectPlanningError, match="binding is invalid"):
+        build_architect_request(
+            "Improve file:README.md", repository, assess(repository, PROJECT),
+            registered_project=registration(repository),
+            objective_validation_bindings=({
+                "criterion_id": "requirement:test:0",
+                "task_ids": [],
+                "validation_commands": ["python -m pytest"],
+            },),
+        )
 
 
 def test_adapter_architect_provider_retries_malformed_json_without_accepting_it(tmp_path):

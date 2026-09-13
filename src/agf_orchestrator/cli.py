@@ -519,6 +519,9 @@ class _AdapterArchitectProvider:
             "Python-installed tools MUST use the governed interpreter as `python -m MODULE` "
             "(for example: `python -m ruff check .`), never a bare tool name such as `ruff`; "
             "do not assume that a project virtual environment is present on PATH. "
+            "The request's objective_validation_bindings are mandatory: proposed tasks are "
+            "numbered task-001, task-002, and so on in array order, and each bound task MUST "
+            "include every bound validation command as the exact string supplied. "
             "Never write prose such as 'Run the tests', never include Markdown backticks, "
             "and never prefix a command with 'Run'.\n"
             + json.dumps(request.to_dict(), ensure_ascii=False, sort_keys=True)

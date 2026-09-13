@@ -100,16 +100,31 @@ def architect_response_schema() -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
+class ObjectiveValidationBinding:
+    criterion_id: str
+    task_ids: tuple[str, ...]
+    validation_commands: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "criterion_id": self.criterion_id,
+            "task_ids": list(self.task_ids),
+            "validation_commands": list(self.validation_commands),
+        }
+
+
+@dataclass(frozen=True)
 class ArchitectRequest:
     objective: str
     repository: RepositoryContext
     assessment: TargetAssessment
     constitution_constraints: tuple[str, ...]
     protected_paths: tuple[str, ...]
+    objective_validation_bindings: tuple[ObjectiveValidationBinding, ...]
     request_hash: str
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "objective": self.objective,
             "repository": {
                 "root": self.repository.root,
@@ -123,6 +138,11 @@ class ArchitectRequest:
             "protected_paths": list(self.protected_paths),
             "request_hash": self.request_hash,
         }
+        if self.objective_validation_bindings:
+            payload["objective_validation_bindings"] = [
+                binding.to_dict() for binding in self.objective_validation_bindings
+            ]
+        return payload
 
 def architect_request_hash(payload: dict[str, Any]) -> str:
     value = dict(payload)
@@ -642,6 +662,7 @@ def build_architect_request(
         "preserve Constitution and protected policies",
         "fail closed on unknown scope or authority",
     ),
+    objective_validation_bindings: tuple[dict[str, Any], ...] = (),
 ) -> ArchitectRequest:
     if registered_project is None:
         raise ArchitectPlanningError("registered project binding is required")
@@ -659,6 +680,30 @@ def build_architect_request(
     except RemoteIdentityError as exc:
         raise ArchitectPlanningError("architect request repository origin is invalid") from exc
     assessment.validate(repository)
+    bindings = []
+    for binding in objective_validation_bindings:
+        if not isinstance(binding, dict) or set(binding) != {
+            "criterion_id", "task_ids", "validation_commands",
+        }:
+            raise ArchitectPlanningError("Objective validation binding is invalid")
+        if (not isinstance(binding["criterion_id"], str)
+                or not binding["criterion_id"].strip()
+                or not isinstance(binding["task_ids"], list)
+                or not binding["task_ids"]
+                or not all(isinstance(item, str) and item for item in binding["task_ids"])
+                or not isinstance(binding["validation_commands"], list)
+                or not binding["validation_commands"]
+                or not all(isinstance(item, str) for item in binding["validation_commands"])):
+            raise ArchitectPlanningError("Objective validation binding is invalid")
+        try:
+            validate_commands(binding["validation_commands"], repository.root)
+        except ValueError as exc:
+            raise ArchitectPlanningError(str(exc)) from exc
+        bindings.append(ObjectiveValidationBinding(
+            binding["criterion_id"], tuple(binding["task_ids"]),
+            tuple(binding["validation_commands"]),
+        ))
+    normalized_bindings = tuple(bindings)
     payload = {
         "objective": " ".join(objective.split()),
         "repository": {
@@ -672,12 +717,16 @@ def build_architect_request(
         "constitution_constraints": constitution_constraints,
         "protected_paths": assessment.protected_paths,
     }
+    if normalized_bindings:
+        payload["objective_validation_bindings"] = [
+            binding.to_dict() for binding in normalized_bindings
+        ]
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     if _SECRET.search(serialized):
         raise ArchitectPlanningError("architect request contains secret-like material")
     return ArchitectRequest(
         payload["objective"], repository, assessment, constitution_constraints,
-        assessment.protected_paths, architect_request_hash(payload),
+        assessment.protected_paths, normalized_bindings, architect_request_hash(payload),
     )
 
 
@@ -1018,6 +1067,16 @@ def validate_architect_response(
             dependency not in task_ids for dependency in item["dependencies"]
         ):
             raise ArchitectPlanningError("architect task dependency graph is invalid")
+    for binding in request.objective_validation_bindings:
+        bound_tasks = binding.task_ids
+        if not set(bound_tasks) <= task_ids:
+            raise ArchitectPlanningError("Objective validation binding references unknown task")
+        for task_id in bound_tasks:
+            task = next(item for item in tasks if item["task_id"] == task_id)
+            if not set(binding.validation_commands) <= set(task["validation_commands"]):
+                raise ArchitectPlanningError(
+                    "architect response omits Objective validation command"
+                )
     graph = {item["task_id"]: set(item["dependencies"]) for item in tasks}
     visiting: set[str] = set()
     visited: set[str] = set()
