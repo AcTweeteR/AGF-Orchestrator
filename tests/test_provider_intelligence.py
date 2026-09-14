@@ -335,6 +335,57 @@ def test_explicit_owner_renewal_replaces_fresh_same_target_evidence(tmp_path):
     assert store._load_for_owner_recovery().state_sha256 == renewed.state_sha256
 
 
+def test_explicit_owner_renewal_rebinds_fresh_same_target_to_successor_policy(tmp_path):
+    store = ProviderIntelligenceStore(tmp_path, signing_key=TEST_KEY, staging=True).for_project(
+        PROJECT
+    )
+    old = sign_state(
+        _persisted_state(generation=2, profile_version=1, expired=False), TEST_KEY, staging=True
+    )
+    store.path.parent.mkdir(parents=True)
+    store.path.write_text(json.dumps(old.to_dict()))
+    rebound = sign_state(
+        _persisted_state(
+            generation=3,
+            profile_version=2,
+            expired=False,
+            observed="2026-08-11T12:01:00Z",
+        ),
+        TEST_KEY,
+        staging=True,
+    )
+    store._save_locked(rebound, allow_renewal=True)
+    assert store._load_for_owner_recovery().policy_generation == 3
+    assert store._load_for_owner_recovery().target_sha == old.target_sha
+
+
+@pytest.mark.parametrize("generation", [1, 4])
+def test_explicit_same_target_rebinding_rejects_policy_downgrade_or_skip(
+    tmp_path, generation,
+):
+    store = ProviderIntelligenceStore(tmp_path, signing_key=TEST_KEY, staging=True).for_project(
+        PROJECT
+    )
+    old = sign_state(
+        _persisted_state(generation=2, profile_version=1, expired=False), TEST_KEY, staging=True
+    )
+    store.path.parent.mkdir(parents=True)
+    store.path.write_text(json.dumps(old.to_dict()))
+    invalid = sign_state(
+        _persisted_state(
+            generation=generation,
+            profile_version=2,
+            expired=False,
+            observed="2026-08-11T12:01:00Z",
+        ),
+        TEST_KEY,
+        staging=True,
+    )
+    with pytest.raises(ProviderIntelligenceError, match="different evidence"):
+        store._save_locked(invalid, allow_renewal=True)
+    assert store._load_for_owner_recovery() == old
+
+
 def test_same_target_renewal_requires_explicit_owner_authorization(tmp_path):
     store = ProviderIntelligenceStore(tmp_path, signing_key=TEST_KEY, staging=True).for_project(
         PROJECT

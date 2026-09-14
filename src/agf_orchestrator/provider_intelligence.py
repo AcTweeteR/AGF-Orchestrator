@@ -880,7 +880,9 @@ class ProviderIntelligenceStore:
                     allow_renewal
                     and existing.project_id == state.project_id
                     and existing.target_sha == state.target_sha
-                    and existing.policy_generation == state.policy_generation
+                    and state.policy_generation in {
+                        existing.policy_generation, existing.policy_generation + 1,
+                    }
                     and existing.constitution_id == state.constitution_id
                     and existing.constitution_record_hash == state.constitution_record_hash
                     and existing.requirements_hash == state.requirements_hash
