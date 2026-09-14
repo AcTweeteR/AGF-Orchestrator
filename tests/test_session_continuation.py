@@ -28,6 +28,15 @@ def test_integrated_objective_closes_through_real_acceptance(tmp_path, monkeypat
     assert manager.get(session.session_id).status is SessionStatus.COMPLETED
 
 
+def test_provider_retry_required_is_forwarded_to_bounded_campaign():
+    retry = SimpleNamespace(session_id="session-test", status=SessionStatus.RETRY_REQUIRED,
+                            required_human_actions=[])
+    manager = SimpleNamespace(assess=lambda _: retry)
+    result = SessionContinuation(manager, ForbiddenPipeline())._assess(retry)
+    assert result["status"] == "RETRY"
+    assert result["action"] == "assessment"
+
+
 def test_pending_intent_waits_then_reconciles_real_git_without_redispatch(tmp_path, monkeypatch):
     root, _, manager, session, _, _ = prepared(tmp_path, monkeypatch, integrated=False, single=True)
     driver = SessionContinuation(manager, ForbiddenPipeline())

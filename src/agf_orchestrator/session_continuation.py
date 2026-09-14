@@ -209,5 +209,6 @@ class SessionContinuation:
             return self._result(result, "NO_JUSTIFIED_WORK", "assessment",
                                 "current governed assessment found no justified work")
         return self._result(result, "CONTINUE" if result.status is SessionStatus.READY
+                            else "RETRY" if result.status is SessionStatus.RETRY_REQUIRED
                             else "HUMAN_REQUIRED" if result.required_human_actions else "BLOCKED",
                             "assessment", "assessment persisted")

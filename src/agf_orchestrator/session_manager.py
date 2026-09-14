@@ -1405,11 +1405,19 @@ class SessionManager:
                     if plan.status is PlanStatus.READY
                     else SessionStatus.NO_JUSTIFIED_WORK
                     if plan.status is PlanStatus.NO_JUSTIFIED_WORK
+                    else SessionStatus.RETRY_REQUIRED
+                    if isinstance(architect, ProviderArchitect)
+                    and architect.attempts
+                    and all(attempt["outcome"] in {
+                        "PROVIDER_UNAVAILABLE", "TRANSPORT_FAILURE",
+                    } for attempt in architect.attempts)
                     else SessionStatus.BLOCKED
                 )
                 summary = (
                     "assessment and architecture approved; executable scope persisted"
                     if target_status is SessionStatus.READY
+                    else "provider assessment failed; bounded retry required"
+                    if target_status is SessionStatus.RETRY_REQUIRED
                     else "assessment completed; no bounded executable scope was justified"
                 )
                 updated = self._append_event(
@@ -1420,7 +1428,9 @@ class SessionManager:
                     [assessment_path, request_path, architecture_path, plan_path]
                     + ([evidence_path] if evidence_path else [])
                     + ([response_path] if response_path else []),
-                    [architecture.rationale] if target_status is SessionStatus.BLOCKED else [],
+                    [architecture.rationale]
+                    if target_status in {SessionStatus.BLOCKED, SessionStatus.RETRY_REQUIRED}
+                    else [],
                     "DIRECTOR",
                     "assessment:" + session.session_id,
                 )

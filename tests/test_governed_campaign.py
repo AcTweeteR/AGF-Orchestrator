@@ -1,5 +1,6 @@
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from test_campaign_runner import Clock
@@ -16,6 +17,8 @@ from agf_orchestrator.governed_campaign import (
     GovernedSessionDriverSpec,
     register_governed_campaign,
 )
+from agf_orchestrator.locking import LockError
+from agf_orchestrator.session_continuation import SessionContinuation
 
 
 def registered(tmp_path, monkeypatch, *, integrated=True):
@@ -180,6 +183,42 @@ def test_transient_work_failure_retries_after_restart_with_same_target(tmp_path,
     result = restarted.tick(driver.probe, driver.work)
     assert result.status is CampaignStatus.COMPLETE
     assert result.retry_count == 1
+
+
+def test_persisted_provider_failure_requests_campaign_backoff(tmp_path, monkeypatch):
+    _, _, spec, store, driver, _ = registered(tmp_path, monkeypatch)
+    monkeypatch.setattr(SessionContinuation, "tick", lambda *_, **__: {
+        "status": "RETRY", "reason": "provider transport failed",
+    })
+    result = GovernedCampaignRunner(store, driver).tick(driver.probe, driver.work)
+    assert result.status is CampaignStatus.RETRY_BACKOFF
+    assert result.retry_count == 1
+    assert result.reason == "provider transport failed"
+
+
+def test_provider_retry_keeps_deferred_compare_and_swap_origin(tmp_path, monkeypatch):
+    _, _, spec, store, driver, initial = registered(tmp_path, monkeypatch)
+    advanced = SimpleNamespace(
+        base_sha=initial.target_sha, artifact_hashes={"plan": "f" * 64},
+    )
+    monkeypatch.setattr(driver, "snapshot", lambda _: (None, advanced, None, None))
+    saved = store.save
+    monkeypatch.setattr(
+        store, "save", lambda _: (_ for _ in ()).throw(LockError("contended")),
+    )
+    deferred = GovernedCampaignRunner(store, driver).tick(
+        lambda _: True, lambda _: StepResult("RETRY", reason="provider failed"),
+    )
+    assert deferred.status is CampaignStatus.RETRY_BACKOFF
+    assert deferred.lineage_binding == initial.lineage_binding
+    before, after = GovernedCampaignRunner(store, driver)._read_deferred(
+        GovernedCampaignRunner(store, driver)._deferred_path()
+    )
+    assert before.lineage_binding == after.lineage_binding == initial.lineage_binding
+    monkeypatch.setattr(store, "save", saved)
+    restarted = GovernedCampaignRunner(store, driver)
+    assert restarted.tick(lambda _: pytest.fail("backoff not due"),
+                          lambda _: pytest.fail("duplicate dispatch")) == deferred
 
 
 def test_no_justified_work_is_distinct_persisted_terminal_status(tmp_path, monkeypatch):

@@ -227,7 +227,8 @@ class GovernedSessionDriver:
         if status == "NO_JUSTIFIED_WORK":
             return StepResult("NO_JUSTIFIED_WORK",
                               reason="governed assessment; Objective unsatisfied")
-        outcome = {"CONTINUE": "CONTINUE", "HUMAN_REQUIRED": "HUMAN_REQUIRED"}.get(
+        outcome = {"CONTINUE": "CONTINUE", "RETRY": "RETRY",
+                   "HUMAN_REQUIRED": "HUMAN_REQUIRED"}.get(
             status, "BLOCKED_NON_RETRYABLE",
         )
         return StepResult(outcome, reason=result.get("reason", status))
@@ -246,6 +247,11 @@ class GovernedCampaignRunner(PersistentCampaignRunner):
                 # Retain the old binding until SessionManager reconciles it.
                 return super()._apply_result(state, result)
             raise GovernedCampaignError("session has not reconciled observed delivery")
+        if result.outcome == "RETRY":
+            # The failed assessment already links its new plan to this retained
+            # origin. Keep the persisted binding stable so a deferred retry can
+            # compare-and-swap the exact claimed campaign after a lock failure.
+            return super()._apply_result(state, result)
         state = replace(state, target_sha=session.base_sha,
                         lineage_binding=session.artifact_hashes["plan"])
         return super()._apply_result(state, result)
