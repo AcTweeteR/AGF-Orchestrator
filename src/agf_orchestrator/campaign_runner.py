@@ -407,7 +407,7 @@ class StepResult:
 
     def __post_init__(self) -> None:
         allowed = {
-            "CONTINUE", "WAIT", "COMPLETE", "HUMAN_REQUIRED",
+            "CONTINUE", "WAIT", "RETRY", "COMPLETE", "HUMAN_REQUIRED",
             "BLOCKED_NON_RETRYABLE", "CANCELLED", "NO_JUSTIFIED_WORK",
         }
         if self.outcome not in allowed:
@@ -608,6 +608,10 @@ class PersistentCampaignRunner:
         return updated
 
     def _apply_result(self, state: CampaignState, result: StepResult) -> CampaignState:
+        if result.outcome == "RETRY":
+            return self._schedule_retry(
+                state, result.reason or "governed step requested bounded retry"
+            )
         now = timestamp(self.now())
         if result.outcome == "WAIT":
             wait = result.wait

@@ -244,6 +244,23 @@ def test_continue_keeps_campaign_running_for_next_tick(tmp_path):
     assert result.lease_owner is None
 
 
+def test_governed_retry_result_is_bounded_and_resumes_once_after_restart(tmp_path):
+    store, clock = build(tmp_path, budget=1)
+    runner = PersistentCampaignRunner(store, now=clock, base_backoff_seconds=1)
+    first = runner.tick(lambda _: True, lambda _: StepResult("RETRY", reason="provider failed"))
+    assert first.status is CampaignStatus.RETRY_BACKOFF
+    assert first.retry_count == 1
+    assert first.events[-1].event_type == "RETRY_BACKOFF"
+    clock.advance(2)
+    restarted = PersistentCampaignRunner(store, now=clock, base_backoff_seconds=1)
+    exhausted = restarted.tick(lambda _: True, lambda _: StepResult("RETRY", reason="failed again"))
+    assert exhausted.status is CampaignStatus.BLOCKED_NON_RETRYABLE
+    assert exhausted.retry_count == 1
+    assert exhausted.events[-1].event_type == "RETRY_EXHAUSTED"
+    assert restarted.tick(lambda _: pytest.fail("terminal probe"),
+                          lambda _: pytest.fail("duplicate dispatch")) == exhausted
+
+
 def test_retry_reset_is_bounded_auditable_and_requires_repair_state(tmp_path):
     store, clock = build(tmp_path, budget=1)
     runner = PersistentCampaignRunner(

@@ -26,7 +26,7 @@ from agf_orchestrator.session_manager import (
     _objective_validation_bindings,
 )
 from agf_orchestrator.session_models import SessionStatus
-from tests.test_architect_planning import FakeProvider, profile
+from tests.test_architect_planning import FailingProvider, FakeProvider, profile
 
 
 def registered(tmp_path):
@@ -456,6 +456,32 @@ def test_assess_placeholder_persists_evidence_and_blocks_unsupported_scope(tmp_p
     restarted = SessionManager(state)
     assert restarted.resume(session.session_id).status is SessionStatus.RETRY_REQUIRED
     assert manager.assess(session.session_id).status is SessionStatus.BLOCKED
+
+
+def test_failed_provider_assessment_persists_bounded_retry_and_evidence(tmp_path):
+    _, state = registered(tmp_path)
+    project_id = ProjectRegistry(state).get("alpha").project_id
+    provider_profile = replace(profile("provider-a"), project_id=project_id)
+    provider_profile = replace(
+        provider_profile, profile_sha256=capability_profile_hash(provider_profile)
+    )
+    candidates = (CapabilityCandidate(provider_profile, 0),)
+    gates = SelectionGates(True, True, True, True, True, True)
+    provider = FailingProvider()
+    architect = ProviderArchitect(
+        candidates, {"provider-a": provider}, now="2026-08-10T12:00:00Z",
+        project_id=project_id, gates=gates,
+    )
+    manager = SessionManager(state, architect=architect, architect_candidates=candidates,
+                             architect_providers={"provider-a": provider}, architect_gates=gates)
+    session = manager.start("alpha", "Assess bounded improvement")
+    failed = manager.assess(session.session_id)
+    assert failed.status is SessionStatus.RETRY_REQUIRED
+    assert failed.blocking_issues
+    evidence = json.loads((state / "artifacts" / session.session_id
+                           / "provider-evidence.json").read_text())
+    assert evidence["attempts"][0]["outcome"] == "TRANSPORT_FAILURE"
+    assert SessionManager(state).get(session.session_id).status is SessionStatus.RETRY_REQUIRED
 
 
 def test_changed_provider_authority_requires_fresh_assessment(tmp_path):
