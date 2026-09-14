@@ -237,6 +237,7 @@ def test_delivery_forwards_explicit_codex_path_to_reviewer(tmp_path, monkeypatch
     class FakePipeline:
         def __init__(self, **kwargs):
             captured["reviewer"] = kwargs["reviewer"]
+            captured["validation_timeout"] = kwargs["validation_timeout"]
 
         def deliver(self, *args, **kwargs):
             return type(
@@ -253,7 +254,9 @@ def test_delivery_forwards_explicit_codex_path_to_reviewer(tmp_path, monkeypatch
             "--task", "task-001", "--repository", str(root),
             "--adapter", "openhands", "--reviewer", "codex",
             "--codex-path", "/Applications/ChatGPT.app/Contents/Resources/codex",
+            "--timeout", "432",
             "--output", str(output),
         ],
     ) == 0
     assert captured["executable"] == "/Applications/ChatGPT.app/Contents/Resources/codex"
+    assert captured["validation_timeout"] == 432.0
