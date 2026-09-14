@@ -1139,6 +1139,7 @@ def _delivery_pipeline(args, project):
         reviewer=reviewer,
         compliance=ComplianceChecker(),
         pr_creator=DraftPRCreator(simulate=args.simulate_pr),
+        validation_timeout=args.timeout,
         max_correction_rounds=project.policy.maximum_correction_rounds,
     )
 
