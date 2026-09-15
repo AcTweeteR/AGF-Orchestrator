@@ -291,9 +291,16 @@ def _verify(session_id, plan, required_ids, repository, *, state_dir=None, all_t
             payload = json.loads(sessions.ensure_safe_path(journal).read_text())
             binding = payload if direct else payload["binding"]
             if (binding["session_id"] != session_id
-                    or binding["project_id"] != session.project_id
-                    or binding["plan_sha256"] not in accepted_plan_files):
+                    or binding["project_id"] != session.project_id):
                 raise DependencyEvidenceError("execution journal precedes approved planning")
+            if binding["plan_sha256"] not in accepted_plan_files:
+                if not direct:
+                    raise DependencyEvidenceError(
+                        "execution journal precedes approved planning"
+                    )
+                from .execution_journal import verified_failed_execution_journal
+
+                verified_failed_execution_journal(sessions, session, plan, binding)
     if set(proofs) != set(required):
         raise MissingIntegrationEvidence("dependency has no verified integrated delivery")
     return [proofs[key] for key in sorted(proofs)]

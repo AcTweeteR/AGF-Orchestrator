@@ -54,9 +54,57 @@ def require_unexecuted_planning(session, store):
            for event in session.events):
         raise ObjectiveAcceptanceError("execution history prevents first-plan binding")
     artifacts = store.ensure_safe_path(store.artifacts_dir / session.session_id)
-    if any(path.name.startswith(("continuation-", "execution-started-"))
-           for path in artifacts.iterdir()):
-        raise ObjectiveAcceptanceError("dispatch history requires reconciliation before binding")
+    dispatch_history = any(
+        path.name.startswith(("continuation-", "execution-started-"))
+        for path in artifacts.iterdir()
+    )
+    if dispatch_history:
+        # A same-Objective successor after an authenticated external advance must
+        # retain known failed invocations, including their consumed budget. An
+        # unresolved dispatch or any history predating Objective binding remains
+        # ineligible for projection.
+        if not any(key.endswith(":objective_binding") for key in session.artifact_hashes):
+            raise ObjectiveAcceptanceError(
+                "dispatch history requires reconciliation before binding"
+            )
+        from .external_advancement import ExternalAdvancementStore
+
+        operations = [
+            event.operation_id.split(":", 1)[1]
+            for event in session.events
+            if event.operation_id.startswith(
+                ("external-advance:", "external-plan-recovery:")
+            )
+        ]
+        advancement = (
+            ExternalAdvancementStore(store.state_dir).get(session.project_id, operations[-1])
+            if operations else None
+        )
+        if (advancement is None or advancement.target_sha != session.base_sha
+                or advancement.evidence_hash
+                != session.artifact_hashes.get("external_advancement")):
+            raise ObjectiveAcceptanceError(
+                "dispatch history requires authenticated external reconciliation"
+            )
+        from .execution_journal import (
+            ExecutionRecoveryRequired,
+            require_reconciled_execution,
+        )
+        from .models import plan_from_dict
+
+        try:
+            plan = plan_from_dict(json.loads(
+                store.ensure_safe_path(session.plan_path).read_text()
+            ))
+            failures = require_reconciled_execution(store, session, plan)
+        except ExecutionRecoveryRequired as exc:
+            raise ObjectiveAcceptanceError(
+                "dispatch history requires reconciliation before binding"
+            ) from exc
+        if failures == 0:
+            raise ObjectiveAcceptanceError(
+                "dispatch history requires reconciliation before binding"
+            )
 
 
 def project_objective_plan(plan, session, objective, criteria):

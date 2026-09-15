@@ -19,10 +19,10 @@ from agf_orchestrator.project_registry import ProjectRegistry
 from agf_orchestrator.session_models import SessionStatus
 
 
-def approved_first_plan(tmp_path, monkeypatch, *, wrong_hash=False):
+def approved_first_plan(tmp_path, monkeypatch, *, wrong_hash=False, persist_intent=False):
     root, state, manager, session, plan, item = prepared(
-        tmp_path, monkeypatch, single=True, integrated=False, persist_intent=False,
-        preserve_planning_lineage=True,
+        tmp_path, monkeypatch, single=True, integrated=False,
+        preserve_planning_lineage=True, persist_intent=persist_intent,
     )
     registry = ProjectRegistry(state)
     project = registry.get(session.project_id)
