@@ -234,6 +234,25 @@ def test_known_failure_survives_external_target_rebinding(tmp_path, monkeypatch)
     from agf_orchestrator.task_dependencies import _read_verified
 
     component = contract(manager.registry.get(session.project_id), rebound)
+    from agf_orchestrator.locking import LockError
+    from tools.owner_objective_publication import _final_validation
+    from tools.prepare_objective_acceptance import prepare_proposal
+
+    proposal = prepare_proposal(
+        rebound.session_id, component, state_dir=manager.store.state_dir,
+    )
+    project = manager.registry.get(session.project_id)
+    predecessor = object()
+    authority = SimpleNamespace(active=lambda _: predecessor)
+    with _final_validation(
+        manager.registry, project, manager.store, rebound, proposal, authority, predecessor,
+    ):
+        # Publication still excludes registry writers after validating the
+        # historical failed dispatch; it must not reacquire its own lock.
+        with pytest.raises(LockError):
+            with manager.registry._lock("competing-writer"):
+                pytest.fail("publication released the registry lock before commit")
+
     objective = objective_from_dict(component["objective"])
     criteria = tuple(AcceptanceCriterion(**item) for item in component["criteria"])
     projected = project_objective_plan(replacement, rebound, objective, criteria)

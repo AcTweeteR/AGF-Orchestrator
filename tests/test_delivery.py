@@ -115,7 +115,10 @@ def test_delivery_attempt_checks_cleanup_before_completing(tmp_path, monkeypatch
             (Path(repository) / "allowed.txt").write_text("after\n")
             if failure == "caller_dirty":
                 (root / "unexpected.txt").write_text("preserve this evidence\n")
-            return CodexProcessResult("test execution", 0, "", "", final_message="done")
+            return CodexProcessResult(
+                "test execution", 0, "", "", final_message="done",
+                execution_observation={"observed": {"model": "test-model"}},
+            )
 
     def remove(repository, worktree):
         assert original_remove(repository, worktree)
@@ -131,6 +134,10 @@ def test_delivery_attempt_checks_cleanup_before_completing(tmp_path, monkeypatch
     artifact_dir = tmp_path / "artifacts"
     artifact_dir.mkdir()
     attempt = _run_attempt(plan, plan.tasks[0], str(root), EditingAdapter(), artifact_dir, None, 10)
+
+    assert 'adapter execution observation: {"observed": {"model": "test-model"}}' in (
+        attempt.evidence
+    )
 
     assert attempt.caller_clean is (failure not in {"caller_dirty", "caller_unreadable"})
     if failure == "none":
@@ -573,6 +580,37 @@ def test_correction_succeeds_on_first_retry(tmp_path):
     assert report.status == "COMPLETED"
     assert report.correction_rounds == 1
     assert reviewer.calls == 2
+
+
+@pytest.mark.parametrize("fail_correction", [False, True])
+def test_all_correction_observations_survive_delivery(tmp_path, fail_correction):
+    from dataclasses import replace
+
+    root = setup_repo(tmp_path)
+    adapter = fake_adapter(tmp_path)
+    execute = adapter.execute
+    calls = []
+
+    def observed(*args, **kwargs):
+        result = execute(*args, **kwargs)
+        calls.append(len(calls))
+        return replace(
+            result, exit_code=7 if fail_correction and len(calls) == 2 else result.exit_code,
+            execution_observation={"invocation": calls[-1]},
+        )
+
+    adapter.execute = observed
+    report = DeliveryPipeline(
+        adapter=adapter, reviewer=CorrectOnRetryReviewer(),
+        pr_creator=DraftPRCreator(simulate=True), artifact_dir=tmp_path / "artifacts",
+    ).deliver(plan_for(root), "task-001", str(root), execute=True)
+    assert calls == [0, 1]
+    assert report.status == ("BLOCKED" if fail_correction else "COMPLETED")
+    assert [item for item in report.to_dict()["evidence"]
+            if item.startswith("adapter execution observation: ")] == [
+        'adapter execution observation: {"invocation": 0}',
+        'adapter execution observation: {"invocation": 1}',
+    ]
 
 
 class ResolutionCanaryReviewer:

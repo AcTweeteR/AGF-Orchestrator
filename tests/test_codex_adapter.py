@@ -69,7 +69,10 @@ def test_fake_executable_captures_output(tmp_path):
         "  if [ \"$1\" = \"--output-last-message\" ]; then "
         "sleep 0.1; printf 'final\\n' > \"$2\"; shift 2; else shift; fi\n"
         "done\n"
-        "printf 'fake stdout\\n'\nprintf 'fake stderr\\n' >&2\n"
+        "printf 'fake stdout\\n'\n"
+        "printf 'OpenAI Codex v1.2.3 (research preview)\\n--------\\n"
+        "model: test-model\\nprovider: test-provider\\n--------\\n"
+        "fake stderr\\n' >&2\n"
     )
     fake.chmod(0o755)
     result = CodexAdapter(
@@ -80,6 +83,54 @@ def test_fake_executable_captures_output(tmp_path):
     assert "fake stderr" in result.stderr_summary
     assert result.invocation_verified is True
     assert result.output_last_message_fresh is True
+    assert result.execution_observation["observed"] == {
+        "model": "test-model", "provider": "test-provider", "cli_version": "1.2.3",
+    }
+    assert result.execution_observation["timeout_seconds"] == 2
+    assert result.execution_observation["elapsed_seconds"] > 0
+    assert result.execution_observation["exit_code"] == 0
+
+
+@pytest.mark.parametrize("stderr", [
+    "model: invented\nprovider: invented\n",
+    "OpenAI Codex v1.2\n--------\nmodel: first\nmodel: second\n--------\n",
+    "OpenAI Codex v1.2\n--------\nmodel: invalid value\nmodel: second\n--------\n",
+    "OpenAI Codex vsk-abcdefghijklmnop\n--------\nworkdir: /private\n--------\n",
+    "OpenAI Codex v1.2\n--------\nmodel: sk-abcdefghijklmnop\n--------\n",
+    "OpenAI Codex v1.2\n--------\nworkdir: /private\n--------\n"
+    "user\nmodel: invented\nprovider: invented\n",
+])
+def test_execution_observation_never_uses_agent_text_or_ambiguous_model(stderr):
+    observation = codex_module._execution_observation(
+        stderr, timeout=3, elapsed=1, exit_code=1, timed_out=False,
+    )
+    assert observation["observed"]["model"] == "UNKNOWN"
+    assert observation["observed"]["provider"] == "UNKNOWN"
+    assert "private" not in str(observation)
+    assert "abcdefghijklmnop" not in str(observation)
+    assert observation["token_usage"] == "UNKNOWN"
+
+
+def test_timeout_retains_observation_without_transcript(tmp_path, monkeypatch):
+    executable = fake_version_executable(tmp_path)
+    original = codex_module.subprocess.run
+
+    def timeout(command, **kwargs):
+        if command[-1] == "--version":
+            return original(command, **kwargs)
+        raise subprocess.TimeoutExpired(command, 3, stderr=(
+            b"OpenAI Codex v1.2.3\n--------\nmodel: test-model\n"
+            b"provider: test-provider\n--------\nuser\nsecret transcript"
+        ))
+
+    monkeypatch.setattr(codex_module.subprocess, "run", timeout)
+    result = CodexAdapter(str(executable), timeout=3, profile=CodexInvocationProfile()).execute(
+        "instruction", str(tmp_path),
+    )
+    assert result.execution_observation["observed"]["model"] == "test-model"
+    assert result.execution_observation["timed_out"]
+    assert result.execution_observation["exit_code"] is None
+    assert "secret transcript" not in str(result.execution_observation)
 
 
 def test_missing_output_last_message_is_precise(tmp_path):
