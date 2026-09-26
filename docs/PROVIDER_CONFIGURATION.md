@@ -4,6 +4,20 @@ This is operational adapter documentation. Providers supply execution and
 observations; AGF retains planning, policy, scope, evidence, review and
 completion authority.
 
+## Delivery execution observations
+
+Delivery evidence retains a bounded observation from each Codex implementation attempt,
+including failures and timeouts: the CLI header's model, transport provider and
+version, elapsed time, configured timeout, exit outcome and stderr digest. The
+existing execution-result journal retains this evidence with its dispatch binding.
+Only the initial CLI header is parsed; prompts, responses and full configuration
+are not included in this observation. Missing or ambiguous identity is `UNKNOWN`.
+
+These observations do not authorize execution or prove an upstream gateway's
+actual model selection. Token usage and monetary cost remain `UNKNOWN` when not
+observed. Invocation, correction and timeout limits retain their existing budget
+semantics; elapsed time is an observation, not a price estimate.
+
 ## Configuration identity
 
 The Codex adapter preserves the host's `CODEX_HOME` when launching Codex. If it

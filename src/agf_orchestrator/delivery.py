@@ -209,6 +209,11 @@ def _run_attempt(
             instruction += "\nCorrection request (accepted findings only):\n" + correction
         process = adapter.execute(instruction, worktree)
         evidence.append(f"adapter invoked: {adapter.name}: yes")
+        observation = getattr(process, "execution_observation", None)
+        if observation:
+            evidence.append("adapter execution observation: " + json.dumps(
+                observation, sort_keys=True, ensure_ascii=False,
+            ))
         if adapter.name == "openhands":
             if getattr(adapter, "uses_typed_events", False):
                 callback_terminal = (
@@ -756,6 +761,7 @@ class DeliveryPipeline:
             previous_findings: list[ReviewFinding] = []
             previous_patch_sha: str | None = None
             previous_patch = ""
+            execution_observations: list[str] = []
             for _round_number in range(self.max_correction_rounds + 1):
                 attempt = _run_attempt(
                     plan,
@@ -769,6 +775,15 @@ class DeliveryPipeline:
                     self.validation_timeout,
                     session_id=session_id,
                 )
+                execution_observations.extend(
+                    item for item in attempt.evidence
+                    if item.startswith("adapter execution observation: ")
+                )
+                attempt = replace(attempt, evidence=[
+                    *execution_observations,
+                    *(item for item in attempt.evidence
+                      if not item.startswith("adapter execution observation: ")),
+                ])
                 if (
                     attempt.execution_status is not ExecutionStatus.COMPLETED
                     or attempt.patch is None

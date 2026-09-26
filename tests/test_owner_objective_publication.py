@@ -192,6 +192,30 @@ def test_disable_during_signing_prevents_activation(tmp_path, monkeypatch):
     assert store.active(project.project_id) == previous
 
 
+def test_disable_after_final_proposal_validation_prevents_publication(tmp_path, monkeypatch):
+    import tools.owner_objective_publication as publication
+    from agf_orchestrator.project_models import ProjectStatus
+
+    manager, project, _, store, proposal, previous = setup(tmp_path, monkeypatch)
+    validate = publication._prepare_proposal_locked
+    calls = 0
+
+    def disable_after_validation(*args):
+        nonlocal calls
+        result = validate(*args)
+        calls += 1
+        if calls == 2:
+            manager.registry.set_status(project.project_id, ProjectStatus.DISABLED)
+        return result
+
+    monkeypatch.setattr(publication, "_prepare_proposal_locked", disable_after_validation)
+    with pytest.raises(RuntimeError, match="project changed"):
+        publish(project.project_id, "operation-objective", proposal)
+    assert calls == 2
+    assert store.active(project.project_id) == previous
+    assert not store._generation_path(project.project_id, "generation-3").exists()
+
+
 def test_failed_write_before_atomic_publication_leaves_retry_possible(tmp_path, monkeypatch):
     import tools.owner_objective_publication as publication
 

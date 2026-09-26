@@ -11,7 +11,6 @@ import tempfile
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 from agf_orchestrator.authority_context import AuthorityContext
 from agf_orchestrator.authority_generation import (
@@ -79,6 +78,15 @@ def _validate_objective_succession(previous, component, session):
 
 @contextmanager
 def _final_validation(registry, project, sessions, session, proposal, store, predecessor):
+    # The caller retains session/project locks throughout validation and commit.
+    # Lineage verification reads the registry itself, so complete it before
+    # taking the registry writer lock, then recheck the registration under that
+    # lock and retain it through publication.
+    if registry.get(project.project_id) != project:
+        raise RuntimeError("project changed before publication commit")
+    if _prepare_proposal_locked(session, project, proposal["component"], sessions,
+                                registry) != proposal:
+        raise RuntimeError("canonical proposal changed before publication commit")
     # Registry writers use a separate lock from project execution transactions.
     with registry._lock("owner-objective-final-validation"):
         def get_locked(identity):
@@ -92,9 +100,6 @@ def _final_validation(registry, project, sessions, session, proposal, store, pre
         current = sessions.load(session.session_id)
         if current != session or store.active(project.project_id) != predecessor:
             raise RuntimeError("session or authority changed before publication commit")
-        if _prepare_proposal_locked(current, project, proposal["component"], sessions,
-                                    SimpleNamespace(get=get_locked)) != proposal:
-            raise RuntimeError("canonical proposal changed before publication commit")
         yield
 
 

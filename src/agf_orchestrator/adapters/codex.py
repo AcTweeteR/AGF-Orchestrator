@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -10,7 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 SECRET_PATTERNS = (
@@ -93,6 +94,36 @@ class CodexProcessResult:
     output_last_message_fresh: bool = False
     output_last_message_bytes: int = 0
     invocation_verified: bool = False
+    execution_observation: dict = field(default_factory=dict)
+
+
+def _execution_observation(stderr, *, timeout, elapsed, exit_code, timed_out):
+    """Observe only the CLI header, never interpret agent text as authority."""
+    text = _as_text(stderr)
+    header = re.match(r"\AOpenAI Codex v([^\n]{1,100})\n--------\n(.*?)\n--------\n",
+                      text[:4096], re.DOTALL)
+    values = {"model": "UNKNOWN", "provider": "UNKNOWN", "cli_version": "UNKNOWN"}
+    if header:
+        version = header.group(1).split(" ", 1)[0]
+        if (re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9._+-]{0,60}", version)
+                and redact_secrets(version) == version):
+            values["cli_version"] = version
+        for key in ("model", "provider"):
+            matches = re.findall(rf"^{key}:(.*)$",
+                                 header.group(2), re.MULTILINE)
+            if len(matches) == 1:
+                value = matches[0].strip()
+                if (re.fullmatch(r"[A-Za-z0-9._:/+-]{1,128}", value)
+                        and redact_secrets(value) == value):
+                    values[key] = value
+    return {
+        "source": "codex-cli-header", "authority_effect": "NONE",
+        "observed": values, "requested_model": "HOST_CONFIGURATION",
+        "timeout_seconds": timeout, "elapsed_seconds": round(elapsed, 6),
+        "exit_code": exit_code, "timed_out": timed_out,
+        "token_usage": "UNKNOWN", "monetary_cost": "UNKNOWN",
+        "stderr_sha256": hashlib.sha256(text.encode()).hexdigest(),
+    }
 
 
 @dataclass(frozen=True)
@@ -250,6 +281,7 @@ class CodexAdapter:
             f'codex -c approval_policy="never" -s {sandbox} '
             "exec --output-last-message <approved-temp-file> <task-instruction>"
         )
+        process_started = time.monotonic()
         try:
             completed = subprocess.run(
                 command,
@@ -279,6 +311,11 @@ class CodexAdapter:
                 output_last_message_created=_evidence_bool(evidence, "created"),
                 output_last_message_fresh=_evidence_bool(evidence, "fresh"),
                 output_last_message_bytes=_evidence_int(evidence, "bytes"),
+                execution_observation=_execution_observation(
+                    exc.stderr, timeout=self.timeout,
+                    elapsed=time.monotonic() - process_started,
+                    exit_code=None, timed_out=True,
+                ),
             )
             shutil.rmtree(approved_dir, ignore_errors=True)
             return result
@@ -315,6 +352,11 @@ class CodexAdapter:
             },
             transport_error=transport_error,
             transport_evidence=evidence,
+            execution_observation=_execution_observation(
+                completed.stderr, timeout=self.timeout,
+                elapsed=time.monotonic() - process_started,
+                exit_code=completed.returncode, timed_out=False,
+            ),
             executable_resolved=True, process_started=True,
             process_completed=True,
             output_last_message_created=_evidence_bool(evidence, "created"),
