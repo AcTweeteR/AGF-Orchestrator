@@ -273,7 +273,10 @@ def test_external_advance_creates_fresh_planning_checkpoint(tmp_path, monkeypatc
     )
 
 
-def test_external_advance_replay_repairs_legacy_missing_checkpoint(tmp_path, monkeypatch):
+@pytest.mark.parametrize("stale_missing_plan", [False, True])
+def test_external_advance_replay_repairs_legacy_missing_checkpoint(
+    tmp_path, monkeypatch, stale_missing_plan,
+):
     root, state = registered(tmp_path)
     manager = SessionManager(state)
     session = manager.start("alpha", "Reconcile an external target")
@@ -309,20 +312,29 @@ def test_external_advance_replay_repairs_legacy_missing_checkpoint(tmp_path, mon
             return item
 
     monkeypatch.setattr(session_manager_module, "ExternalAdvancementStore", AdvancementStore)
+    checkpoint_status = SessionStatus.STALE if stale_missing_plan else SessionStatus.READY
+    checkpoint_stage = "STALE" if stale_missing_plan else "READY"
     legacy = replace(
         session,
         base_sha=target,
-        current_stage="READY",
+        status=checkpoint_status,
+        current_stage=checkpoint_stage,
         plan_path=None,
+        blocking_issues=(
+            ["required plan artifact is missing"] if stale_missing_plan else []
+        ),
+        required_human_actions=(
+            ["inspect or restore session evidence"] if stale_missing_plan else []
+        ),
         artifact_hashes={
             "external_advancement": item.evidence_hash,
             "historical:planning_origin": old_origin_hash,
         },
     )
     legacy = manager._append_event(
-        legacy, session.status, SessionStatus.READY,
+        legacy, session.status, checkpoint_status,
         "external advance recorded without planning checkpoint", [str(evidence)],
-        [], "RELEASE_MANAGER", "external-advance:" + item.advancement_id,
+        legacy.blocking_issues, "RELEASE_MANAGER", "external-advance:" + item.advancement_id,
     )
     manager.store.save(legacy)
 

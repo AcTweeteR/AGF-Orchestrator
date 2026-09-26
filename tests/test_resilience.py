@@ -85,6 +85,147 @@ def test_lineage_requires_real_valid_transition_and_rejects_tamper(tmp_path):
     assert doctor(s, store)[-1].status is DiagnosticStatus.FAIL
 
 
+def test_lineage_accepts_persisted_ready_observation_events(tmp_path):
+    s = valid_session_with_lineage()
+    s.events.append(SessionEvent(
+        "event-2", "external-advance:external-advance-1", "2026-08-24T00:01:00Z", s.session_id,
+        "READY_TO_READY", "READY", "READY", "external target reconciled",
+        [f"/state/external-advancements/{s.project_id}/external-advance-1.json"], [],
+        "RELEASE_MANAGER",
+    ))
+    store = SessionStore(tmp_path / "state")
+
+    assert doctor(s, store)[-1].status is DiagnosticStatus.PASS
+
+
+def test_lineage_accepts_authenticated_blocked_external_reconciliation(tmp_path):
+    s = valid_session_with_lineage()
+    s.events.append(SessionEvent(
+        "event-2", "external-advance-1", "2026-08-24T00:01:00Z", s.session_id,
+        "READY_TO_BLOCKED", "READY", "BLOCKED", "blocked pending external merge",
+        [], [], "DIRECTOR",
+    ))
+    s.events.append(SessionEvent(
+        "event-3", "external-advance:external-advance-1",
+        "2026-08-24T00:02:00Z", s.session_id, "BLOCKED_TO_READY", "BLOCKED", "READY",
+        "external target reconciled",
+        [f"/state/external-advancements/{s.project_id}/external-advance-1.json"], [],
+        "RELEASE_MANAGER",
+    ))
+    store = SessionStore(tmp_path / "state")
+
+    assert doctor(s, store)[-1].status is DiagnosticStatus.PASS
+
+
+def test_lineage_accepts_distinct_assessment_events_under_session_operation(tmp_path):
+    s = valid_session_with_lineage()
+    for index in range(2):
+        s.events.append(SessionEvent(
+            f"event-assessment-{index}", f"assessment:{s.session_id}",
+            f"2026-08-24T00:0{index + 1}:00Z", s.session_id,
+            "READY_TO_READY", "READY", "READY", "assessment persisted",
+            [f"/state/artifacts/{s.session_id}/assessment-v{index + 1}.json"],
+            [], "DIRECTOR",
+        ))
+    store = SessionStore(tmp_path / "state")
+
+    assert doctor(s, store)[-1].status is DiagnosticStatus.PASS
+
+
+def test_lineage_rejects_replayed_assessment_evidence(tmp_path):
+    s = valid_session_with_lineage()
+    for index in range(2):
+        s.events.append(SessionEvent(
+            f"event-assessment-{index}", f"assessment:{s.session_id}",
+            f"2026-08-24T00:0{index + 1}:00Z", s.session_id,
+            "READY_TO_READY", "READY", "READY", "assessment persisted",
+            [f"/state/artifacts/{s.session_id}/assessment-v1.json"], [], "DIRECTOR",
+        ))
+    store = SessionStore(tmp_path / "state")
+
+    assert doctor(s, store)[-1].status is DiagnosticStatus.FAIL
+
+
+def test_doctor_resolves_owner_external_advance_hash_from_canonical_store(
+    tmp_path, monkeypatch,
+):
+    import agf_orchestrator.external_advancement as external
+
+    p = project(tmp_path)
+    store = SessionStore(tmp_path / "state")
+    s = session()
+    digest = "a" * 64
+    s.artifact_hashes["external_advancement"] = digest
+    directory = tmp_path / "state" / "external-advancements" / p.project_id
+    directory.mkdir(parents=True)
+    (directory / "advance-one.json").write_text("{}\n")
+    item = type("Advance", (), {"evidence_hash": digest, "session_id": s.session_id})()
+
+    class Store:
+        root = tmp_path / "state" / "external-advancements"
+
+        def __init__(self, _):
+            pass
+
+        def get(self, *_):
+            return item
+
+    monkeypatch.setattr(external, "ExternalAdvancementStore", Store)
+    monkeypatch.setattr(external, "verify_external_advancement", lambda *_args, **_kwargs: None)
+
+    finding = next(x for x in doctor(s, store, project=p)
+                   if x.check == "artifact:external_advancement")
+
+    assert finding.status is DiagnosticStatus.PASS
+
+
+def test_doctor_resolves_objective_hash_from_signed_generation_artifact(
+    tmp_path, monkeypatch,
+):
+    import agf_orchestrator.authority_context as authority_context
+    import agf_orchestrator.authority_generation as authority_generation
+
+    p = project(tmp_path)
+    store = SessionStore(tmp_path / "state")
+    s = session()
+    digest = "b" * 64
+    s.artifact_hashes["objective_binding"] = digest
+    directory = tmp_path / "state" / "authority-generations" / p.project_id
+    directory.mkdir(parents=True)
+    (directory / "generation-1.json").write_text("{}\n")
+    component = type("Component", (), {"name": "objective_acceptance",
+                                        "artifact_hash": digest})()
+    generation = type("Generation", (), {
+        "status": authority_generation.GenerationStatus.SUPERSEDED,
+        "components": [component],
+    })()
+
+    class Store:
+        root = tmp_path / "state"
+
+        def __init__(self, _):
+            pass
+
+        def _directory(self, _):
+            return directory
+
+        def load(self, *_):
+            return generation
+
+    monkeypatch.setattr(authority_generation, "AuthorityGenerationStore", Store)
+    monkeypatch.setattr(
+        authority_context.AuthorityContext, "_verify_artifacts",
+        staticmethod(lambda *_args, **_kwargs: {
+            "objective_acceptance": {"session_id": s.session_id},
+        }),
+    )
+
+    finding = next(x for x in doctor(s, store, project=p)
+                   if x.check == "artifact:objective_binding")
+
+    assert finding.status is DiagnosticStatus.PASS
+
+
 def test_lineage_rejects_reordering_and_replay(tmp_path):
     s = valid_session_with_lineage()
     s.events.append(replace(

@@ -657,11 +657,22 @@ class SessionManager:
                 )
                 replay_recovery = (
                     replay
-                    and session.status is SessionStatus.READY
-                    and session.current_stage == "READY"
                     and session.plan_path is None
                     and "plan" not in session.artifact_hashes
                     and "planning_origin" not in session.artifact_hashes
+                    and (
+                        (
+                            session.status is SessionStatus.READY
+                            and session.current_stage == "READY"
+                        )
+                        or (
+                            session.status is SessionStatus.STALE
+                            and session.current_stage == "STALE"
+                            and session.blocking_issues == ["required plan artifact is missing"]
+                            and session.required_human_actions
+                            == ["inspect or restore session evidence"]
+                        )
+                    )
                 )
                 if not replay and item.previous_sha != session.base_sha:
                     raise ExternalAdvancementError(
