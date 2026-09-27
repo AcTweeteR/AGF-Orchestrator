@@ -62,7 +62,7 @@ from .risk_engine import assess_risk, risk_evidence
 from .risk_models import RiskAssessment, RollbackDifficulty, risk_from_dict
 from .validation_commands import validate_commands
 
-MAX_CORRECTION_ROUNDS = 2
+MAX_CORRECTION_ROUNDS = 3
 _PROTECTED_PATH_MARKERS = (
     ".git",
     "constitution",

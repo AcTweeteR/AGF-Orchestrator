@@ -216,9 +216,10 @@ def test_delivery_rejects_no_human_merge_and_passes_effective_limit(tmp_path, mo
     assert invoke(monkeypatch, state, args) == 2
 
 
-def test_correction_limit_above_two_is_rejected(tmp_path):
+def test_correction_limit_is_bounded_at_three():
+    assert ProjectPolicy(maximum_correction_rounds=3).maximum_correction_rounds == 3
     with pytest.raises(ValueError):
-        ProjectPolicy(maximum_correction_rounds=3)
+        ProjectPolicy(maximum_correction_rounds=4)
 
 
 def test_delivery_forwards_explicit_codex_path_to_reviewer(tmp_path, monkeypatch):
