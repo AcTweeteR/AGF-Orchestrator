@@ -62,7 +62,8 @@ from .risk_engine import assess_risk, risk_evidence
 from .risk_models import RiskAssessment, RollbackDifficulty, risk_from_dict
 from .validation_commands import validate_commands
 
-MAX_CORRECTION_ROUNDS = 2
+DEFAULT_CORRECTION_ROUNDS = 2
+MAX_CORRECTION_ROUNDS = 3
 _PROTECTED_PATH_MARKERS = (
     ".git",
     "constitution",
@@ -646,7 +647,7 @@ class DeliveryPipeline:
         pr_creator: DraftPRCreator | None = None,
         artifact_dir: str | Path | None = None,
         validation_timeout: float = 60.0,
-        max_correction_rounds: int = MAX_CORRECTION_ROUNDS,
+        max_correction_rounds: int = DEFAULT_CORRECTION_ROUNDS,
     ):
         self.adapter = adapter or CodexAdapter()
         self.deterministic_reviewer = deterministic_reviewer or (
@@ -660,7 +661,7 @@ class DeliveryPipeline:
         self.artifact_dir = Path(artifact_dir or tempfile.gettempdir())
         self.validation_timeout = validation_timeout
         if not 0 <= max_correction_rounds <= MAX_CORRECTION_ROUNDS:
-            raise ValueError("maximum correction rounds must be between 0 and 2")
+            raise ValueError("maximum correction rounds must be between 0 and 3")
         self.max_correction_rounds = max_correction_rounds
 
     def deliver(self, plan, task_id, repository, *, execute, merge_decision=None,
