@@ -17,6 +17,7 @@ from agf_orchestrator.delivery_reconciliation import DeliveryIntentStore
 from agf_orchestrator.execution_journal import require_reconciled_execution
 from agf_orchestrator.objective_plan import require_unexecuted_planning
 from agf_orchestrator.session_continuation import SessionContinuation
+from agf_orchestrator.session_manager import SessionManager
 from agf_orchestrator.session_models import SessionStatus
 
 FLAGS = dict(execute=True, confirm_execution=True, confirm_delivery=True)
@@ -489,6 +490,127 @@ def test_paired_failed_delivery_outcomes_preserve_bounded_retries(tmp_path, monk
     directory = manager.store.artifacts_dir / session.session_id
     assert len(list(directory.glob("execution-started-*.json"))) == 3
     assert len(list(directory.glob("execution-finished-*.json"))) == 3
+
+
+def test_exhausted_delivery_budget_stays_closed_after_resume_and_restart(tmp_path, monkeypatch):
+    import agf_orchestrator.session_continuation as continuation
+    from agf_orchestrator.delivery import DeliveryPipeline
+    from agf_orchestrator.project_models import ProjectPolicy
+
+    _, _, manager, session, _, _ = prepared(tmp_path, monkeypatch)
+    project = manager.registry.get(session.project_id)
+    policy = ProjectPolicy(**{
+        **project.policy.__dict__, "maximum_correction_rounds": 3,
+    })
+    with manager.registry._lock("test-policy-limit"):
+        entries = manager.registry._load()
+        manager.registry._save([
+            replace(item, policy=policy) if item.project_id == project.project_id else item
+            for item in entries
+        ])
+    monkeypatch.setattr(continuation, "admit_live_delivery", lambda *args: None)
+    monkeypatch.setattr(SessionContinuation, "_objective_gate", lambda *args: None)
+    dispatches = []
+
+    def failed(self, plan, task_id, *args, **kwargs):
+        dispatches.append(self.max_correction_rounds)
+        return SimpleNamespace(to_dict=lambda: {
+            "plan_id": plan.plan_id, "task_id": task_id,
+            "status": "BLOCKED", "execution_status": "FAILED", "review_status": "NOT_RUN",
+            "push_status": "NOT_REQUESTED", "commit_sha": None, "correction_rounds": 0,
+        })
+
+    monkeypatch.setattr(DeliveryPipeline, "_deliver", failed)
+    for _ in range(4):
+        result = SessionContinuation(manager, DeliveryPipeline()).tick(
+            session.session_id, **FLAGS,
+        )
+        assert result["status"] == "CONTINUE", result
+    assert dispatches == [3, 2, 1, 0]
+
+    restarted = SessionManager(manager.store.state_dir)
+    resumed = restarted.resume(session.session_id)
+    assert resumed.status is SessionStatus.READY
+    directory = restarted.store.artifacts_dir / session.session_id
+    assert len(list(directory.glob("execution-started-*.json"))) == 4
+    assert len(list(directory.glob("execution-finished-*.json"))) == 4
+
+    result = SessionContinuation(restarted, ForbiddenPipeline()).tick(
+        session.session_id, **FLAGS,
+    )
+    assert result["status"] == "BLOCKED", result
+    assert result["action"] == "retry-budget"
+    assert dispatches == [3, 2, 1, 0]
+    assert len(list(directory.glob("execution-started-*.json"))) == 4
+
+
+def test_session_authorized_extra_delivery_attempt_is_one_shot_across_resume(
+    tmp_path, monkeypatch,
+):
+    import agf_orchestrator.session_continuation as continuation
+    from agf_orchestrator.delivery import DeliveryPipeline
+    from agf_orchestrator.project_models import ProjectPolicy
+
+    _, _, manager, session, _, _ = prepared(tmp_path, monkeypatch)
+    project = manager.registry.get(session.project_id)
+    policy = ProjectPolicy(**{
+        **project.policy.__dict__, "maximum_correction_rounds": 3,
+    })
+    with manager.registry._lock("test-policy-limit"):
+        entries = manager.registry._load()
+        manager.registry._save([
+            replace(item, policy=policy) if item.project_id == project.project_id else item
+            for item in entries
+        ])
+    monkeypatch.setattr(continuation, "admit_live_delivery", lambda *args: None)
+    monkeypatch.setattr(SessionContinuation, "_objective_gate", lambda *args: None)
+    dispatches = []
+
+    def failed(self, plan, task_id, *args, **kwargs):
+        dispatches.append(self.max_correction_rounds)
+        return SimpleNamespace(to_dict=lambda: {
+            "plan_id": plan.plan_id, "task_id": task_id,
+            "status": "BLOCKED", "execution_status": "FAILED", "review_status": "NOT_RUN",
+            "push_status": "NOT_REQUESTED", "commit_sha": None, "correction_rounds": 0,
+        })
+
+    monkeypatch.setattr(DeliveryPipeline, "_deliver", failed)
+    for _ in range(4):
+        assert SessionContinuation(manager, DeliveryPipeline()).tick(
+            session.session_id, **FLAGS,
+        )["status"] == "CONTINUE"
+
+    extended = manager.authorize_additional_delivery_attempt(
+        session.session_id, expected_base_sha=session.base_sha,
+        expected_attempt_limit=4, new_attempt_limit=5,
+    )
+    assert extended.attempts["delivery_attempt_limit"] == 5
+    assert sum("execution-started-" in ref for event in extended.events
+               for ref in event.evidence_refs) >= 4
+    assert sum("execution-finished-" in ref for event in extended.events
+               for ref in event.evidence_refs) >= 4
+    assert extended.events[-1].actor == "HUMAN"
+
+    restarted = SessionManager(manager.store.state_dir)
+    resumed = restarted.resume(session.session_id)
+    assert resumed.attempts["delivery_attempt_limit"] == 5
+    fifth = SessionContinuation(restarted, DeliveryPipeline()).tick(
+        session.session_id, **FLAGS,
+    )
+    assert fifth["action"] == "delivery", fifth
+    assert dispatches == [3, 2, 1, 0, 0]
+
+    after_fifth_restart = SessionManager(manager.store.state_dir)
+    after_fifth_restart.resume(session.session_id)
+    exhausted = SessionContinuation(after_fifth_restart, ForbiddenPipeline()).tick(
+        session.session_id, **FLAGS,
+    )
+    assert exhausted["status"] == "BLOCKED", exhausted
+    assert exhausted["action"] == "retry-budget"
+    assert dispatches == [3, 2, 1, 0, 0]
+    directory = after_fifth_restart.store.artifacts_dir / session.session_id
+    assert len(list(directory.glob("execution-started-*.json"))) == 5
+    assert len(list(directory.glob("execution-finished-*.json"))) == 5
 
 
 def test_direct_known_failure_consumes_continuation_retry_budget(tmp_path, monkeypatch):

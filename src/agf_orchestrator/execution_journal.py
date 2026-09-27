@@ -13,6 +13,17 @@ class ExecutionRecoveryRequired(ValueError):
     """Prior dispatch must be reconciled before another invocation is allowed."""
 
 
+def delivery_attempt_limit(session, project) -> int:
+    """Return the project limit or one session-scoped owner extension."""
+    project_limit = project.policy.maximum_correction_rounds + 1
+    session_limit = session.attempts.get("delivery_attempt_limit")
+    if session_limit is None:
+        return project_limit
+    if type(session_limit) is not int or session_limit != project_limit + 1:
+        raise SessionStoreError("session delivery attempt limit is invalid")
+    return session_limit
+
+
 def _journal_plan(store, session, current_plan, started):
     """Resolve the exact current or externally-retired plan for one journal."""
     digest = started.get("plan_sha256")
@@ -264,13 +275,14 @@ def _record(store, session_id, plan, task_id):
     from .project_registry import ProjectRegistry
 
     project = ProjectRegistry(store.state_dir).get(session.project_id)
-    if failures >= project.policy.maximum_correction_rounds + 1:
+    attempt_limit = delivery_attempt_limit(session, project)
+    if failures >= attempt_limit:
         raise ExecutionRecoveryRequired("registered execution retry budget exhausted")
     payload = {"schema_version": "1.0", "session_id": session_id,
                "project_id": session.project_id, "plan_sha256": session.artifact_hashes["plan"],
                "task_id": task_id, "base_sha": session.base_sha,
                "invocation_id": uuid4().hex, "worktrees_sha256": _worktrees(plan),
-               "remaining_attempts": project.policy.maximum_correction_rounds + 1 - failures}
+               "remaining_attempts": attempt_limit - failures}
     store.write_artifact(session_id, f"execution-started-{content_hash(payload)}.json",
                          json.dumps(payload, sort_keys=True) + "\n")
     return payload

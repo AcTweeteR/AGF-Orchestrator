@@ -173,10 +173,10 @@ class SessionContinuation:
 
     def _dispatch(self, session, project, plan, task, binding):
         store = self.manager.store
-        from .execution_journal import require_reconciled_execution
+        from .execution_journal import delivery_attempt_limit, require_reconciled_execution
 
         failed_invocations = require_reconciled_execution(store, session, plan)
-        remaining = project.policy.maximum_correction_rounds + 1 - failed_invocations
+        remaining = delivery_attempt_limit(session, project) - failed_invocations
         if remaining <= 0:
             return self._result(session, "BLOCKED", "retry-budget",
                                 "bounded delivery budget exhausted")
