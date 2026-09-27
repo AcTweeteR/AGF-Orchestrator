@@ -789,6 +789,12 @@ def test_two_correction_rounds_are_allowed_and_approval_proceeds(tmp_path):
     assert git(root, "status", "--porcelain").stdout == ""
 
 
+def test_default_correction_rounds_stays_two_while_three_is_allowed(tmp_path):
+    adapter = round_adapter(tmp_path)
+    assert DeliveryPipeline(adapter=adapter).max_correction_rounds == 2
+    assert DeliveryPipeline(adapter=adapter, max_correction_rounds=3).max_correction_rounds == 3
+
+
 class RepeatingRequestReviewer:
     name = "repeating-request-reviewer"
 
