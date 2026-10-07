@@ -244,7 +244,6 @@ def verified_failed_execution_journal(store, session, plan, started):
     cleanup = set(report.get("evidence", ()))
     if (result.get("started_sha256") != digest
             or (current_binding and started.get("base_sha") != session.base_sha)
-            or (current_binding and started.get("worktrees_sha256") != _worktrees(plan))
             or report.get("execution_status") != "FAILED"
             or report.get("review_status") != "NOT_RUN"
             or report.get("push_status") != "NOT_REQUESTED"
@@ -255,8 +254,10 @@ def verified_failed_execution_journal(store, session, plan, started):
             or (not current_binding and report.get("base_sha") != started.get("base_sha"))
             or type(report.get("correction_rounds")) is not int
             or report["correction_rounds"] != 0
-            or (not current_binding and "cleanup succeeded: yes" not in cleanup)
-            or (not current_binding and "caller repository clean: yes" not in cleanup)):
+            or ((not current_binding
+                 or started.get("worktrees_sha256") != _worktrees(plan))
+                and ("cleanup succeeded: yes" not in cleanup
+                     or "caller repository clean: yes" not in cleanup))):
         raise ExecutionRecoveryRequired("prior execution requires canonical reconciliation")
     return True
 
