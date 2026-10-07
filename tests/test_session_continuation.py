@@ -536,6 +536,7 @@ def test_exhausted_delivery_budget_stays_closed_after_resume_and_restart(tmp_pat
             "plan_id": plan.plan_id, "task_id": task_id,
             "status": "BLOCKED", "execution_status": "FAILED", "review_status": "NOT_RUN",
             "push_status": "NOT_REQUESTED", "commit_sha": None, "correction_rounds": 0,
+            "evidence": ["cleanup succeeded: yes", "caller repository clean: yes"],
         })
 
     monkeypatch.setattr(DeliveryPipeline, "_deliver", failed)
@@ -565,6 +566,7 @@ def test_exhausted_delivery_budget_stays_closed_after_resume_and_restart(tmp_pat
 def test_session_authorized_extra_delivery_attempt_is_one_shot_across_resume(
     tmp_path, monkeypatch,
 ):
+    import agf_orchestrator.execution_journal as journal
     import agf_orchestrator.session_continuation as continuation
     from agf_orchestrator.delivery import DeliveryPipeline
     from agf_orchestrator.project_models import ProjectPolicy
@@ -590,6 +592,7 @@ def test_session_authorized_extra_delivery_attempt_is_one_shot_across_resume(
             "plan_id": plan.plan_id, "task_id": task_id,
             "status": "BLOCKED", "execution_status": "FAILED", "review_status": "NOT_RUN",
             "push_status": "NOT_REQUESTED", "commit_sha": None, "correction_rounds": 0,
+            "evidence": ["cleanup succeeded: yes", "caller repository clean: yes"],
         })
 
     monkeypatch.setattr(DeliveryPipeline, "_deliver", failed)
@@ -597,6 +600,7 @@ def test_session_authorized_extra_delivery_attempt_is_one_shot_across_resume(
         assert SessionContinuation(manager, DeliveryPipeline()).tick(
             session.session_id, **FLAGS,
         )["status"] == "CONTINUE"
+    monkeypatch.setattr(journal, "_worktrees", lambda _plan: "later-unrelated-worktrees")
 
     import agf_orchestrator.owner_authority as runtime_owner
     from tools import owner_ed25519_authority as owner
@@ -668,6 +672,39 @@ def test_session_authorized_extra_delivery_attempt_is_one_shot_across_resume(
     directory = after_fifth_restart.store.artifacts_dir / session.session_id
     assert len(list(directory.glob("execution-started-*.json"))) == 5
     assert len(list(directory.glob("execution-finished-*.json"))) == 5
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [[], ["cleanup succeeded: yes"], ["caller repository clean: yes"]],
+)
+def test_current_failed_journal_requires_cleanup_proof_when_worktree_inventory_changes(
+    tmp_path, monkeypatch, evidence,
+):
+    import agf_orchestrator.execution_journal as journal
+    import agf_orchestrator.session_continuation as continuation
+    from agf_orchestrator.delivery import DeliveryPipeline
+
+    _, _, manager, session, plan, _ = prepared(tmp_path, monkeypatch)
+    monkeypatch.setattr(continuation, "admit_live_delivery", lambda *args: None)
+    monkeypatch.setattr(SessionContinuation, "_objective_gate", lambda *args: None)
+    monkeypatch.setattr(
+        DeliveryPipeline, "_deliver",
+        lambda self, plan, task_id, *args, **kwargs: SimpleNamespace(
+            to_dict=lambda: {
+                "plan_id": plan.plan_id, "task_id": task_id, "status": "BLOCKED",
+                "execution_status": "FAILED", "review_status": "NOT_RUN",
+                "push_status": "NOT_REQUESTED", "commit_sha": None,
+                    "correction_rounds": 0, "evidence": evidence,
+            },
+        ),
+    )
+    assert SessionContinuation(manager, DeliveryPipeline()).tick(
+        session.session_id, **FLAGS,
+    )["action"] == "delivery"
+    monkeypatch.setattr(journal, "_worktrees", lambda _plan: "changed-after-failure")
+    with pytest.raises(journal.ExecutionRecoveryRequired, match="canonical reconciliation"):
+        require_reconciled_execution(manager.store, manager.get(session.session_id), plan)
 
 
 def test_owner_extra_attempt_consumed_by_successful_integrated_dispatch(tmp_path, monkeypatch):
