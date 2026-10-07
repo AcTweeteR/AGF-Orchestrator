@@ -13,15 +13,95 @@ class ExecutionRecoveryRequired(ValueError):
     """Prior dispatch must be reconciled before another invocation is allowed."""
 
 
-def delivery_attempt_limit(session, project) -> int:
-    """Return the project limit or one session-scoped owner extension."""
+def _delivery_budget(session, project, store=None):
+    """Return the effective limit and verified grant payload, if one is present."""
     project_limit = project.policy.maximum_correction_rounds + 1
-    session_limit = session.attempts.get("delivery_attempt_limit")
-    if session_limit is None:
-        return project_limit
-    if type(session_limit) is not int or session_limit != project_limit + 1:
-        raise SessionStoreError("session delivery attempt limit is invalid")
-    return session_limit
+    store = store or SessionStore()
+    authorization_hash = session.artifact_hashes.get("delivery_budget_authorization")
+    if authorization_hash is None:
+        authorization_path = store.ensure_safe_path(
+            store.artifacts_dir / session.session_id / "delivery-budget-authorization.json"
+        )
+        historical_grant = any(
+            key.startswith("historical:") and key.endswith(":delivery_budget_authorization")
+            for key in session.artifact_hashes
+        )
+        if historical_grant or authorization_path.exists():
+            raise SessionStoreError(
+                "owner delivery authorization lost its active target binding"
+            )
+        return project_limit, None
+    if not isinstance(authorization_hash, str) or len(authorization_hash) != 64:
+        raise SessionStoreError("session delivery authorization reference is invalid")
+    path = store.ensure_safe_path(
+        store.artifacts_dir / session.session_id / "delivery-budget-authorization.json"
+    )
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        payload, envelope = document["payload"], document["envelope"]
+        if store.artifact_hash(str(path)) != authorization_hash:
+            raise SessionStoreError("delivery authorization artifact hash differs")
+        from .owner_authority import verify_envelope
+
+        verify_envelope(payload, envelope)
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise SessionStoreError("owner delivery authorization is invalid") from exc
+    if (set(payload) != {
+            "schema_version", "operation_id", "project_id", "session_id", "target_sha",
+            "original_limit", "new_limit", "original_dispatches", "issued_at",
+        }
+            or payload["schema_version"] != "1.0"
+            or payload["project_id"] != session.project_id
+            or payload["session_id"] != session.session_id
+            or payload["target_sha"] != session.base_sha
+            or type(payload["original_limit"]) is not int
+            or payload["original_limit"] != project_limit
+            or type(payload["new_limit"]) is not int
+            or payload["new_limit"] != project_limit + 1
+            or payload["operation_id"]
+            != f"owner-session-delivery-budget-{session.session_id}-{session.base_sha}"
+            or not isinstance(payload["original_dispatches"], list)
+            or len(payload["original_dispatches"]) != project_limit
+            or any(not isinstance(item, str) or len(item) != 64
+                   for item in payload["original_dispatches"])
+            or len(set(payload["original_dispatches"])) != project_limit):
+        raise SessionStoreError("owner delivery authorization binding differs")
+    return payload["new_limit"], payload
+
+
+def delivery_attempt_limit(session, project, store=None) -> int:
+    """Return the project limit or one cryptographically owner-authorized extension."""
+    return _delivery_budget(session, project, store)[0]
+
+
+def _dispatch_count(store, session):
+    directory = store.ensure_safe_path(store.artifacts_dir / session.session_id)
+    starts = sorted(directory.glob("execution-started-*.json"))
+    digests = []
+    for candidate in starts:
+        path = store.ensure_safe_path(candidate)
+        started = json.loads(path.read_text(encoding="utf-8"))
+        digest = content_hash(started)
+        if (path.name != f"execution-started-{digest}.json"
+                or started.get("session_id") != session.session_id
+                or started.get("project_id") != session.project_id):
+            raise SessionStoreError("execution journal binding is inconsistent")
+        digests.append(digest)
+    return digests
+
+
+def remaining_delivery_attempts(store, session, project, failed_invocations):
+    """Apply a one-dispatch owner grant as a consumed start, including success."""
+    limit, payload = _delivery_budget(session, project, store)
+    if payload is None:
+        return limit - failed_invocations
+    dispatches = _dispatch_count(store, session)
+    authorized = set(payload["original_dispatches"])
+    if (not authorized <= set(dispatches)
+            or len(dispatches) > limit
+            or len(dispatches) < len(authorized)):
+        raise SessionStoreError("owner delivery authorization dispatch history differs")
+    return max(0, limit - len(dispatches))
 
 
 def _journal_plan(store, session, current_plan, started):
@@ -275,14 +355,14 @@ def _record(store, session_id, plan, task_id):
     from .project_registry import ProjectRegistry
 
     project = ProjectRegistry(store.state_dir).get(session.project_id)
-    attempt_limit = delivery_attempt_limit(session, project)
-    if failures >= attempt_limit:
+    remaining = remaining_delivery_attempts(store, session, project, failures)
+    if remaining <= 0:
         raise ExecutionRecoveryRequired("registered execution retry budget exhausted")
     payload = {"schema_version": "1.0", "session_id": session_id,
                "project_id": session.project_id, "plan_sha256": session.artifact_hashes["plan"],
                "task_id": task_id, "base_sha": session.base_sha,
                "invocation_id": uuid4().hex, "worktrees_sha256": _worktrees(plan),
-               "remaining_attempts": attempt_limit - failures}
+               "remaining_attempts": remaining}
     store.write_artifact(session_id, f"execution-started-{content_hash(payload)}.json",
                          json.dumps(payload, sort_keys=True) + "\n")
     return payload

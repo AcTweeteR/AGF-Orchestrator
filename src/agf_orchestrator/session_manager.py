@@ -493,64 +493,6 @@ class SessionManager:
                     self._save(session)
                     return session
 
-    def authorize_additional_delivery_attempt(
-        self, session_id: str, *, expected_base_sha: str,
-        expected_attempt_limit: int, new_attempt_limit: int,
-    ) -> Session:
-        """Persist exactly one exhausted-budget extension for this session."""
-        from .execution_journal import delivery_attempt_limit, require_reconciled_execution
-
-        with session_lock(
-            self.store.state_dir, session_id, "delivery-budget-authorization",
-        ):
-            session = self.store.load(session_id)
-            project = self.registry.get(session.project_id)
-            with project_lock(
-                self.store.state_dir, project.project_id, "delivery-budget-authorization",
-            ):
-                session = self.store.load(session_id)
-                project = self.registry.get(project.project_id)
-                if session.base_sha != expected_base_sha:
-                    raise SessionManagerError("delivery budget target differs")
-                if session.status not in {SessionStatus.READY, SessionStatus.RETRY_REQUIRED}:
-                    raise SessionManagerError("delivery budget session is not resumable")
-                current_limit = delivery_attempt_limit(session, project)
-                if ("delivery_attempt_limit" in session.attempts
-                        or expected_attempt_limit != current_limit
-                        or new_attempt_limit != current_limit + 1):
-                    raise SessionManagerError(
-                        "delivery budget extension is not exactly one attempt"
-                    )
-                plan = plan_from_dict(json.loads(
-                    self.store.ensure_safe_path(session.plan_path).read_text()
-                ))
-                failures = require_reconciled_execution(self.store, session, plan)
-                if failures != current_limit:
-                    raise SessionManagerError("delivery budget may extend only when exhausted")
-                if new_attempt_limit != project.policy.maximum_correction_rounds + 2:
-                    raise SessionManagerError("session delivery extension exceeds its bound")
-                session.attempts["delivery_attempt_limit"] = new_attempt_limit
-                directory = self.store.ensure_safe_path(
-                    self.store.artifacts_dir / session_id
-                )
-                evidence_refs = sorted(
-                    str(path) for pattern in (
-                        "execution-started-*.json", "execution-finished-*.json",
-                    ) for path in directory.glob(pattern)
-                )
-                operation_id = (
-                    f"delivery-budget:{expected_base_sha}:{current_limit}:{new_attempt_limit}"
-                )
-                session = self._append_event(
-                    session, session.status, session.status,
-                    f"owner-authorized one session-only delivery attempt; cumulative limit "
-                    f"increased from {current_limit} to {new_attempt_limit}; "
-                    "prior failures retained",
-                    evidence_refs, session.blocking_issues, "HUMAN", operation_id,
-                )
-                self._save(session)
-                return session
-
     def complete(self, session_id: str, *, execute=False, confirm_execution=False) -> dict:
         """Record completion only from freshly computed canonical acceptance.
 
