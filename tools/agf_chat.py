@@ -7,6 +7,7 @@ import argparse
 import fcntl
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -238,7 +239,9 @@ def execute_tests(root: Path, argv: list[str], timeout: int = 90) -> tuple[bool,
     result = subprocess.run(
         argv, cwd=root, capture_output=True, text=True, timeout=timeout, env=env
     )
-    return result.returncode == 0, (result.stdout + "\n" + result.stderr)[-7000:]
+    report = (result.stdout + "\n" + result.stderr)[-7000:]
+    zero_unittest = any("unittest" in arg for arg in argv) and "Ran 0 tests" in report
+    return result.returncode == 0 and not zero_unittest, report
 
 
 def run_mission(state_dir: Path, mission_id: str) -> dict:
@@ -356,9 +359,8 @@ def parse_args():
     task_mode.add_argument("--objective", help="Natural-language objective, planned locally")
     create.add_argument(
         "--test-command",
-        nargs="+",
-        default=["python3", "-m", "unittest", "discover"],
-        help="Fixed test command argv for a natural-language mission",
+        default="python3 -m unittest discover",
+        help="Single quoted, fixed test command; parsed as argv without a shell",
     )
     create.add_argument("--model", default=DEFAULT_MODELS[0])
     create.add_argument("--fallback-model", default=DEFAULT_MODELS[1])
@@ -429,7 +431,9 @@ def main():
             tasks = json.loads(args.tasks.read_text())
             planning_usage = None
         else:
-            tasks, planning_usage = plan_objective(root, args.objective, args.test_command)
+            tasks, planning_usage = plan_objective(
+                root, args.objective, shlex.split(args.test_command)
+            )
         if not isinstance(tasks, list) or not tasks:
             raise SystemExit("tasks must be a nonempty JSON array")
         for item in tasks:

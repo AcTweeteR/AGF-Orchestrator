@@ -180,3 +180,11 @@ def test_dependent_tasks_only_require_final_integrated_tests(repo, tmp_path, mon
     assert result["index"] == 2
     assert len([e for e in result["events"] if e.get("committed")]) == 2
     assert (repo / "logic.py").read_text().endswith("return 0\n")
+
+
+def test_approved_unittest_command_cannot_pass_with_zero_tests(tmp_path):
+    ok, evidence = agf_full.chat.execute_tests(
+        tmp_path, [sys.executable, "-m", "unittest", "discover"]
+    )
+    assert not ok
+    assert "Ran 0 tests" in evidence

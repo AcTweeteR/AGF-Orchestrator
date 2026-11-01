@@ -193,3 +193,21 @@ Three local-model attempts are permitted for malformed or unauthorized JSON
 patches, with no additional files permitted; a failed attempt is rejected
 before any source file is changed. The live accepted execution recorded
 314 prompt tokens and 610 completion tokens, zero paid API charges.
+
+### Selecting actual project validation
+
+The new CLI accepts a **single quoted** test command and parses it as an
+argument vector, without shell evaluation. Example for an AGF-approved Kodi
+Python regression suite (choose the existing test location beforehand):
+
+    agf-chat start --project-wide \
+      --repository "$HOME/Documents/Codex/TweeteR-Kodi" \
+      --scope addons/service.actweeter \
+      --objective "Fix the automatic preview bug without Trakt regressions" \
+      --test-command "python3 -m pytest -q tests/test_preview.py"
+
+The example test file is illustrative and must be replaced by a known,
+existing test. A unittest discovery that reports zero executed tests now
+**fails**, rather than producing false acceptance. If an approved check is
+missing, supply the correct fixed command or add a real test as a separate,
+authorized task; do not interpret zero tests as project completion.
