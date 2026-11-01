@@ -16,6 +16,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .adapters.codex import CodexAdapter, resolve_codex_executable
+from .adapters.free_first import FreeFirstGatewayAdapter
 from .adapters.ollama import OllamaOpenHandsAdapter
 from .adapters.openhands import OpenHandsSDKAdapter
 from .architect_planning import (
@@ -118,7 +119,10 @@ def build_parser() -> argparse.ArgumentParser:
     execute.add_argument("--session", help="managed session for dependency evidence")
     execute.add_argument("--repository", help="target Git repository")
     execute.add_argument("--project", help="registered project name or ID")
-    execute.add_argument("--adapter", choices=["codex", "openhands", "ollama"], default="codex")
+    execute.add_argument(
+        "--adapter", choices=["codex", "openhands", "ollama", "free-first"],
+        default="codex",
+    )
     execute.add_argument("--allow-openhands-llm-env", action="store_true")
     execute.add_argument("--dry-run", action="store_true", help="explicitly request dry-run")
     execute.add_argument("--execute", action="store_true", help="allow live execution")
@@ -135,7 +139,10 @@ def build_parser() -> argparse.ArgumentParser:
     deliver.add_argument("--session", help="persist delivery intent for a managed session")
     deliver.add_argument("--repository")
     deliver.add_argument("--project", help="registered project name or ID")
-    deliver.add_argument("--adapter", choices=["codex", "openhands", "ollama"], default="codex")
+    deliver.add_argument(
+        "--adapter", choices=["codex", "openhands", "ollama", "free-first"],
+        default="codex",
+    )
     deliver.add_argument("--allow-openhands-llm-env", action="store_true")
     deliver.add_argument("--output", required=True)
     deliver.add_argument("--execute", action="store_true")
@@ -198,7 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     continuation.add_argument("--confirm-delivery", action="store_true")
     continuation.add_argument("--max-steps", type=int, default=10)
     continuation.add_argument(
-        "--adapter", choices=["codex", "openhands", "ollama"], default="codex",
+        "--adapter", choices=["codex", "openhands", "ollama", "free-first"], default="codex",
     )
     continuation.add_argument("--allow-openhands-llm-env", action="store_true")
     continuation.add_argument("--codex-path", default=None)
@@ -281,8 +288,10 @@ def build_parser() -> argparse.ArgumentParser:
     campaign_session.add_argument("--campaign-id", required=True)
     campaign_session.add_argument("--retry-budget", type=int, default=3)
     campaign_session.add_argument("--poll-seconds", type=int, default=30)
-    campaign_session.add_argument("--adapter", choices=("codex", "openhands", "ollama"),
-                                  default="codex")
+    campaign_session.add_argument(
+        "--adapter", choices=("codex", "openhands", "ollama", "free-first"),
+        default="codex",
+    )
     campaign_session.add_argument("--timeout", type=float, default=300.0)
     campaign_session.add_argument("--architect-config")
     campaign_session.add_argument("--codex-path")
@@ -1072,7 +1081,9 @@ def run_execute(args: argparse.Namespace) -> int:
                     "execution report must not be written inside the target repository"
                 )
         adapter = (
-            OllamaOpenHandsAdapter(
+            FreeFirstGatewayAdapter(timeout=args.timeout)
+            if args.adapter == "free-first"
+            else OllamaOpenHandsAdapter(
                 executable=args.openhands_path,
                 timeout=args.timeout,
                 allow_llm_env=True,
@@ -1115,7 +1126,9 @@ def run_execute(args: argparse.Namespace) -> int:
 
 def _delivery_pipeline(args, project):
     adapter = (
-        OllamaOpenHandsAdapter(
+        FreeFirstGatewayAdapter(timeout=args.timeout)
+        if args.adapter == "free-first"
+        else OllamaOpenHandsAdapter(
             executable=args.openhands_path,
             timeout=args.timeout,
             allow_llm_env=True,

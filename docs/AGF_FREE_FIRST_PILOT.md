@@ -95,3 +95,27 @@ through the shared master prompt; this is an owner-side pilot bridge, not a
 fully governed Director integration.
 ChatGPT Chat cannot receive unsolicited messages and continue reasoning
 without new model executions. These are explicit pending tasks, not successes.
+
+## Governed AGF-Orchestrator execution
+
+A native `FreeFirstGatewayAdapter` is now selectable in the existing AGF
+Executor and DeliveryPipeline using `--adapter free-first`. The inherited AGF
+plan/project/session permissions, worktree isolation, scope checks, validation,
+review and delivery policies remain active. The pilot adapter deliberately
+accepts **one existing Python source file** in the approved task scope and
+routes only the fixed Ollama model via the localhost OmniRoute gateway.
+
+Install a **separate** development CLI (without replacing the existing global
+Codex CLI or AGF environment):
+
+    python3 tools/agf_install_governed_cli.py
+    agf-governed execute --help
+
+Then use `agf-governed execute` / `deliver` with `--adapter free-first` and the
+same registered-project, accepted-plan and explicit execution authorizations
+required by AGF's normal commands. The native adapter has executed a real
+source-code change through OmniRoute and passed a post-execution check.
+This is not evidence that a complete production governed delivery campaign
+has passed: full campaign acceptance, review and PR delivery still depend on
+AGF's active project and policy. The separate `agf-chat` path remains the
+practical natural-language mission interface for now.

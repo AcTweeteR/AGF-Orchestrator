@@ -85,6 +85,9 @@ class ModelGatewayProvider:
                 "model": model,
                 "messages": messages,
                 "temperature": 0,
+                "max_tokens": 2400,
+                "think": False,
+                "response_format": {"type": "json_object"},
                 "stream": False,
             },
         )
