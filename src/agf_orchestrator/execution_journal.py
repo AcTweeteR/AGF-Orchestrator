@@ -226,6 +226,15 @@ def _worktrees(plan):
     ).decode())
 
 
+def _worktree_paths(plan):
+    """Worktree identities, independent of HEAD/branch metadata drift."""
+    data = subprocess.check_output(
+        ["git", "-C", plan.repository.root, "worktree", "list", "--porcelain", "-z"],
+    ).decode()
+    return sorted(line[len("worktree "):] for line in data.split("\0")
+                  if line.startswith("worktree "))
+
+
 def verified_failed_execution_journal(store, session, plan, started):
     """Return whether one exact failed invocation is safely accounted for."""
     directory = store.ensure_safe_path(store.artifacts_dir / session.session_id)
@@ -254,8 +263,13 @@ def verified_failed_execution_journal(store, session, plan, started):
             or (not current_binding and report.get("base_sha") != started.get("base_sha"))
             or type(report.get("correction_rounds")) is not int
             or report["correction_rounds"] != 0
-            or ((not current_binding
-                 or started.get("worktrees_sha256") != _worktrees(plan))
+            # Path identities distinguish a newly linked worktree from benign
+            # changes to the HEAD/branch metadata in Git's porcelain output.
+            # Legacy journals lacking a path snapshot fail closed on any drift.
+            or (started.get("worktree_paths") != _worktree_paths(plan)
+                if "worktree_paths" in started
+                else started.get("worktrees_sha256") != _worktrees(plan))
+            or (not current_binding
                 and ("cleanup succeeded: yes" not in cleanup
                      or "caller repository clean: yes" not in cleanup))):
         raise ExecutionRecoveryRequired("prior execution requires canonical reconciliation")
@@ -363,6 +377,7 @@ def _record(store, session_id, plan, task_id):
                "project_id": session.project_id, "plan_sha256": session.artifact_hashes["plan"],
                "task_id": task_id, "base_sha": session.base_sha,
                "invocation_id": uuid4().hex, "worktrees_sha256": _worktrees(plan),
+               "worktree_paths": _worktree_paths(plan),
                "remaining_attempts": remaining}
     store.write_artifact(session_id, f"execution-started-{content_hash(payload)}.json",
                          json.dumps(payload, sort_keys=True) + "\n")

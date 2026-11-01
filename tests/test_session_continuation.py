@@ -676,9 +676,10 @@ def test_session_authorized_extra_delivery_attempt_is_one_shot_across_resume(
 
 @pytest.mark.parametrize(
     "evidence",
-    [[], ["cleanup succeeded: yes"], ["caller repository clean: yes"]],
+    [[], ["cleanup succeeded: yes"], ["caller repository clean: yes"],
+     ["cleanup succeeded: yes", "caller repository clean: yes"]],
 )
-def test_current_failed_journal_requires_cleanup_proof_when_worktree_inventory_changes(
+def test_current_failed_journal_rejects_worktree_drift_even_with_cleanup_proof(
     tmp_path, monkeypatch, evidence,
 ):
     import agf_orchestrator.execution_journal as journal
@@ -702,7 +703,14 @@ def test_current_failed_journal_requires_cleanup_proof_when_worktree_inventory_c
     assert SessionContinuation(manager, DeliveryPipeline()).tick(
         session.session_id, **FLAGS,
     )["action"] == "delivery"
-    monkeypatch.setattr(journal, "_worktrees", lambda _plan: "changed-after-failure")
+    journal_paths = journal._worktree_paths(plan)
+    assert journal_paths
+    # An added linked worktree must block dispatch even when cleanup markers
+    # report success and the caller repository remains clean.
+    monkeypatch.setattr(
+        journal, "_worktree_paths",
+        lambda _plan: [*journal_paths, "/tmp/leftover-worktree"],
+    )
     with pytest.raises(journal.ExecutionRecoveryRequired, match="canonical reconciliation"):
         require_reconciled_execution(manager.store, manager.get(session.session_id), plan)
 
