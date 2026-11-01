@@ -233,7 +233,11 @@ def execute_tests(root: Path, argv: list[str], timeout: int = 90) -> tuple[bool,
     if not argv or not all(isinstance(a, str) for a in argv):
         raise ValueError("test command must be a nonempty argument array")
     # This owner-supplied command is never generated or modified by an LLM.
-    result = subprocess.run(argv, cwd=root, capture_output=True, text=True, timeout=timeout)
+    env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    result = subprocess.run(
+        argv, cwd=root, capture_output=True, text=True, timeout=timeout, env=env
+    )
     return result.returncode == 0, (result.stdout + "\n" + result.stderr)[-7000:]
 
 
@@ -361,6 +365,9 @@ def parse_args():
     create.add_argument("--omniroute-model", help="Explicit ollama/ model, optional")
     create.add_argument("--max-attempts", type=int, default=3)
     create.add_argument("--background", action="store_true")
+    create.add_argument(
+        "--project-wide", action="store_true", help="isolated multi-file mission with local commits"
+    )
     for name in ("run", "status", "report", "pause", "resume", "stop"):
         c = sub.add_parser(name)
         c.add_argument("mission_id")
@@ -392,6 +399,23 @@ def main():
         print(json.dumps({"missions": missions}, ensure_ascii=False))
         return
     if args.command == "start":
+        if args.project_wide:
+            if __package__:
+                from . import agf_full
+            else:
+                import agf_full
+            result = agf_full.start(
+                state_dir,
+                args.repository.expanduser(),
+                objective=args.objective,
+                tasks_path=args.tasks,
+                tests=args.test_command,
+                model=args.omniroute_model or "ollama/qwen3.5:9b-q4_K_M",
+                max_attempts=args.max_attempts,
+                background=args.background,
+            )
+            print(json.dumps(result, ensure_ascii=False))
+            return
         root = args.repository.expanduser().resolve()
         if not root.is_dir():
             raise SystemExit("repository does not exist")
@@ -457,7 +481,14 @@ def main():
             try:
                 state = json.loads(record.read_text())
                 if state.get("status") in ("PENDING", "RUNNING"):
-                    run_mission(state_dir, state["mission_id"])
+                    if state.get("engine") == "full":
+                        if __package__:
+                            from . import agf_full
+                        else:
+                            import agf_full
+                        agf_full.run_mission(state_dir, state["mission_id"])
+                    else:
+                        run_mission(state_dir, state["mission_id"])
             except (KeyError, OSError, ValueError, json.JSONDecodeError):
                 pass
         print(json.dumps({"status": "WORKER_CHECKED"}))
@@ -469,8 +500,16 @@ def main():
     if args.command in ("run", "resume"):
         if args.command == "resume" and state["status"] in ("PAUSED", "BLOCKED"):
             state["status"] = "PENDING"
+            state.pop("reason", None)
             write_json(path, state)
-        state = run_mission(state_dir, args.mission_id)
+        if state.get("engine") == "full":
+            if __package__:
+                from . import agf_full
+            else:
+                import agf_full
+            state = agf_full.run_mission(state_dir, args.mission_id)
+        else:
+            state = run_mission(state_dir, args.mission_id)
     elif args.command in ("pause", "stop"):
         state["status"] = "PAUSED" if args.command == "pause" else "STOPPED"
         write_json(path, state)
@@ -487,6 +526,9 @@ def main():
                         "pid",
                         "api_budget_eur",
                         "codex_calls",
+                        "worktree",
+                        "branch",
+                        "engine",
                     )
                 },
                 ensure_ascii=False,

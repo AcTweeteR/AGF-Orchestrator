@@ -119,3 +119,77 @@ This is not evidence that a complete production governed delivery campaign
 has passed: full campaign acceptance, review and PR delivery still depend on
 AGF's active project and policy. The separate `agf-chat` path remains the
 practical natural-language mission interface for now.
+
+## Multi-file project missions (2026-11-01)
+
+The owner-side persistent Director now supports an **isolated multi-file mode**:
+
+    agf-chat start --project-wide \
+      --repository /absolute/path/to/repository \
+      --objective 'Correct the preview issue while preserving Trakt behavior' \
+      --scope addons/service.actweeter \
+      --omniroute-model ollama/qwen3.5:9b-q4_K_M
+
+It selects only existing tracked source files (Python, XML, JavaScript,
+TypeScript, Swift, JSON, YAML, TOML and Markdown). Path ranking uses the
+objective; `--scope` restricts work to a repository-relative path. AGF limits
+local model context by selecting source excerpts and requires unambiguous
+**exact find/replace** operations. Source paths cannot be invented by the model.
+Each task may touch up to four files. At most four planning tasks are generated
+per natural-language mission; the CLI also accepts an owner-supplied task JSON
+file with up to 30 tasks, each using `files`, `instruction` and fixed `tests`.
+
+**Isolation:** the mission creates a new Git worktree under
+`~/.local/share/agf-free-first/worktrees/<mission-id>` and a local branch
+`agf/free-first-<mission-id>`. Existing local changes in the caller's checkout
+are not copied or overwritten. Changed files receive syntax/static validation.
+Intermediate tasks defer full integration tests when later tasks are still
+pending; the final integrated task runs the approved full tests. Each accepted
+task gets its own local commit, with no automatic push, merge, release or Kodi
+installation. `status` and `report` return the worktree path and branch.
+
+A live multi-file mission edited Python and XML, passed the final tests and
+committed locally without touching the original repo. A second **natural
+language** mission generated two dependent tasks and completed the same full
+Python/XML test suite after its first false-blocking validation rule was fixed.
+The persistent macOS worker automatically picked up the queued mission, and
+OmniRoute/locally served Ollama handled coding with zero Codex GPT calls and
+zero paid API calls. A scoped dry inventory of the live Kodi repository found
+real trailer/Trakt modules without changing them.
+
+AGF Desktop Free-first Preview now uses `--project-wide` by default and shows
+the generated branch. The existing AGF constitutional Director, independent
+Review/Compliance, original historic campaigns, external device QA and safe
+Beta/Stable publication remain separate governance steps. Passing unit tests
+alone does **not** authorize publishing a Kodi release. A broad goal like
+"finish every Kodi issue" must be split into milestones with meaningful tests;
+these bounded missions are not an unlimited general-purpose autonomous coder.
+
+Historical AGF campaign daemon: its installed older runtime could not parse
+seven newer `governed-session/1` specs. Its eight existing driver records and
+configuration were backed up under
+`~/.agf-orchestrator/backup-campaign-daemon-20261101`, then that legacy
+LaunchAgent was disabled to avoid restart storms and unexpectedly resuming
+three stored RUNNING campaigns. This does not affect the newer Free-first
+`launchd` worker. Do not reenable those old campaigns without migration and
+review of their provider usage.
+
+### Native governed adapter update
+
+The native `FreeFirstGatewayAdapter` now supports up to four exact approved
+source paths per AGF task, using the same bounded JSON exact-match patch
+contract. It no longer assumes every task is a single Python file. AGF's
+normal Executor/DeliveryPipeline still owns isolated worktrees, status,
+validation commands, review, Compliance, publishing permissions and evidence.
+The adapter neither promotes a model to a paid route nor authorizes a release.
+The owner-side persistent runner remains the execution system for standalone
+ChatGPT Chat/AGF Desktop missions, while the native adapter exposes the same
+free local inference to AGF's constitutional workflows.
+
+Final native integration smoke: the governed adapter directly received an
+approved two-file task (Python and XML), returned bounded source changes via
+OmniRoute and Qwen, and both independent post-execution assertions passed.
+Three local-model attempts are permitted for malformed or unauthorized JSON
+patches, with no additional files permitted; a failed attempt is rejected
+before any source file is changed. The live accepted execution recorded
+314 prompt tokens and 610 completion tokens, zero paid API charges.

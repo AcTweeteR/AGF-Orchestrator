@@ -37,6 +37,7 @@ def main():
     STATE.mkdir(parents=True, exist_ok=True)
     RUNTIME.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(SOURCE, RUNTIME)
+    shutil.copy2(SOURCE.with_name("agf_full.py"), RUNTIME.with_name("agf_full.py"))
     launcher = Path.home() / ".local/bin/agf-chat"
     launcher.parent.mkdir(parents=True, exist_ok=True)
     launcher.write_text("#!/bin/sh\nexec " + sys.executable + " " + str(RUNTIME) + ' "$@"\n')
