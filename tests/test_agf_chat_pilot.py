@@ -84,6 +84,56 @@ class FreeMissionTests(unittest.TestCase):
         self.assertEqual(sum(x["api_eur"] for x in result["usage"]), 0)
         self.assertIn("return 42", (self.repo / "value.py").read_text())
 
+    def test_natural_language_planner_uses_approved_file_only(self):
+        reply = {
+            "message": {
+                "content": json.dumps(
+                    {
+                        "tasks": [
+                            {"file": "value.py", "instruction": "Implement answer returning 42"}
+                        ]
+                    }
+                )
+            },
+            "model": "qwen3.5:9b-q4_K_M",
+            "prompt_eval_count": 40,
+            "eval_count": 18,
+        }
+        with patch.object(agf_chat, "request", return_value=reply):
+            tasks, usage = agf_chat.plan_objective(
+                self.repo,
+                "Make the existing answer function return 42",
+                [sys.executable, "-m", "unittest", "-q", "test_value"],
+            )
+        self.assertEqual(tasks[0]["file"], "value.py")
+        self.assertEqual(usage["api_eur"], 0)
+
+    def test_natural_language_planner_refuses_new_paths(self):
+        reply = {
+            "message": {
+                "content": json.dumps(
+                    {"tasks": [{"file": "../../outside.py", "instruction": "Create unsafe path"}]}
+                )
+            }
+        }
+        with patch.object(agf_chat, "request", return_value=reply):
+            with self.assertRaises(ValueError):
+                agf_chat.plan_objective(self.repo, "Write a file", [sys.executable])
+
+    def test_omniroute_exact_ollama_model_alias(self):
+        reply = {
+            "model": "qwen3.5:9b-q4_K_M",
+            "choices": [{"message": {"content": json.dumps({"content": "print(42)"})}}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+        }
+        with patch.object(agf_chat, "request", return_value=reply):
+            content, usage = agf_chat.ask_model(
+                "write code", provider="omniroute", model="ollama/qwen3.5:9b-q4_K_M"
+            )
+        self.assertEqual(content["content"], "print(42)")
+        self.assertEqual(usage["provider"], "omniroute/ollama")
+        self.assertEqual(usage["effective_model"], "qwen3.5:9b-q4_K_M")
+
     def test_rejects_path_escape(self):
         with self.assertRaises(ValueError):
             agf_chat.safe_target(self.repo, "../../outside.py")

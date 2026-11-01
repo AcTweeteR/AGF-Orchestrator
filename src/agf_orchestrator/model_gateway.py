@@ -89,7 +89,11 @@ class ModelGatewayProvider:
             },
         )
         effective = response.get("model")
-        if effective != model:
+        # Local Ollama passthrough reports the bare upstream model name.
+        allowed_effective = {model}
+        if model.startswith("ollama/"):
+            allowed_effective.add(model.removeprefix("ollama/"))
+        if effective not in allowed_effective:
             raise ModelGatewayError("gateway selected a different effective model")
         try:
             content = response["choices"][0]["message"]["content"]
@@ -99,8 +103,8 @@ class ModelGatewayProvider:
             raise ModelGatewayError("gateway response text invalid")
         usage = response.get("usage") or {}
         return GatewayResult(
-            model=effective,
-            provider=effective.split("/", 1)[0] if "/" in effective else "unknown",
+            model=model,
+            provider=model.split("/", 1)[0] if "/" in model else "unknown",
             content=content,
             prompt_tokens=int(usage.get("prompt_tokens") or 0),
             completion_tokens=int(usage.get("completion_tokens") or 0),

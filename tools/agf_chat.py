@@ -119,19 +119,25 @@ def ask_model(prompt: str, *, provider: str, model: str) -> tuple[dict, dict]:
                 "messages": messages,
                 "stream": False,
                 "temperature": 0,
+                "max_tokens": 2400,
+                "think": False,
                 "response_format": {"type": "json_object"},
             },
             token=key,
             timeout=180,
         )
         used = reply.get("model")
-        if used != model:
+        # OmniRoute reports the Ollama upstream's bare model ID even for an
+        # explicitly addressed ollama/<id> request. Permit only that exact
+        # canonical alias; never permit unrelated fallbacks or auto routing.
+        if used not in {model, model.removeprefix("ollama/")}:
             raise ValueError(f"OmniRoute model substitution not approved: {used!r}")
         raw = reply["choices"][0]["message"]["content"]
         usage_data = reply.get("usage") or {}
         usage = {
-            "provider": "omniroute",
-            "model": used,
+            "provider": "omniroute/ollama",
+            "model": model,
+            "effective_model": used,
             "prompt_tokens": usage_data.get("prompt_tokens", 0),
             "completion_tokens": usage_data.get("completion_tokens", 0),
             "api_eur": 0,
@@ -142,6 +148,76 @@ def ask_model(prompt: str, *, provider: str, model: str) -> tuple[dict, dict]:
     if not isinstance(output, dict) or not isinstance(output.get("content"), str):
         raise ValueError("model failed to return content as JSON string")
     return output, usage
+
+
+def plan_objective(root: Path, objective: str, tests: list[str]) -> tuple[list[dict], dict]:
+    """Build a bounded task plan using the local free model, no paid provider."""
+    if not objective.strip() or len(objective) > 4000:
+        raise ValueError("objective must contain 1-4000 characters")
+    sources = sorted(
+        p.relative_to(root).as_posix()
+        for p in root.rglob("*.py")
+        if ".git" not in p.parts
+        and ".venv" not in p.parts
+        and "node_modules" not in p.parts
+        and "__pycache__" not in p.parts
+        and len(p.relative_to(root).parts) <= 6
+        and not p.name.startswith("test_")
+        and not p.name.endswith("_test.py")
+    )[:80]
+    if not sources:
+        raise ValueError("natural language planner currently requires Python source files")
+    prompt = (
+        "Create a small, ordered software engineering plan for the objective below. "
+        "Return JSON object with tasks array. Every item has file and instruction "
+        "as strings. Choose ONLY existing filenames from list. One task per file "
+        "unless a multi-step task is essential. At most three tasks. "
+        "Do not touch tests or invent paths. If unclear, pick the most relevant file. "
+        f"Objective: {objective}\nAllowed source files: {json.dumps(sources)}"
+    )
+    reply = request(
+        OLLAMA_URL + "/api/chat",
+        {
+            "model": DEFAULT_MODELS[0],
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a software task planner. Respond with JSON only.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "think": False,
+            "format": "json",
+            "options": {"num_predict": 650, "temperature": 0},
+        },
+        timeout=150,
+    )
+    data = json.loads(reply["message"]["content"])
+    raw_tasks = data.get("tasks") if isinstance(data, dict) else None
+    if not isinstance(raw_tasks, list) or not 1 <= len(raw_tasks) <= 3:
+        raise ValueError("planner did not return between one and three tasks")
+    tasks = []
+    for item in raw_tasks:
+        if (
+            not isinstance(item, dict)
+            or item.get("file") not in sources
+            or not isinstance(item.get("instruction"), str)
+            or not 5 <= len(item["instruction"]) <= 1200
+        ):
+            raise ValueError("planner proposed an invalid or unapproved task")
+        tasks.append(
+            {"file": item["file"], "instruction": item["instruction"], "tests": list(tests)}
+        )
+    usage = {
+        "provider": "ollama",
+        "model": reply.get("model", DEFAULT_MODELS[0]),
+        "prompt_tokens": reply.get("prompt_eval_count", 0),
+        "completion_tokens": reply.get("eval_count", 0),
+        "api_eur": 0,
+        "purpose": "planning",
+    }
+    return tasks, usage
 
 
 def safe_target(root: Path, name: str) -> Path:
@@ -271,8 +347,14 @@ def parse_args():
     sub.add_parser("list")
     create = sub.add_parser("start")
     create.add_argument("--repository", type=Path, required=True)
+    task_mode = create.add_mutually_exclusive_group(required=True)
+    task_mode.add_argument("--tasks", type=Path, help="JSON array of approved file tasks")
+    task_mode.add_argument("--objective", help="Natural-language objective, planned locally")
     create.add_argument(
-        "--tasks", type=Path, required=True, help="JSON array of {file,instruction,tests:[argv]}"
+        "--test-command",
+        nargs="+",
+        default=["python3", "-m", "unittest", "discover"],
+        help="Fixed test command argv for a natural-language mission",
     )
     create.add_argument("--model", default=DEFAULT_MODELS[0])
     create.add_argument("--fallback-model", default=DEFAULT_MODELS[1])
@@ -319,7 +401,11 @@ def main():
             text=True,
             check=True,
         )
-        tasks = json.loads(args.tasks.read_text())
+        if args.tasks:
+            tasks = json.loads(args.tasks.read_text())
+            planning_usage = None
+        else:
+            tasks, planning_usage = plan_objective(root, args.objective, args.test_command)
         if not isinstance(tasks, list) or not tasks:
             raise SystemExit("tasks must be a nonempty JSON array")
         for item in tasks:
@@ -345,8 +431,9 @@ def main():
             "index": 0,
             "max_attempts": max(1, min(5, args.max_attempts)),
             "routes": routes,
-            "usage": [],
+            "usage": [planning_usage] if planning_usage else [],
             "events": [],
+            "objective": args.objective if not args.tasks else None,
             "api_budget_eur": 0,
             "codex_calls": 0,
             "created_at": time.time(),

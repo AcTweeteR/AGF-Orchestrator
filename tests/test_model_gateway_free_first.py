@@ -63,3 +63,23 @@ def test_gateway_substitution_fails_closed():
                 eligible_models=frozenset({"ollama/qwen"}),
                 verified_zero_cost=True,
             )
+
+
+def test_local_ollama_bare_model_id_is_accepted_as_exact_alias():
+    expected = {
+        "model": "qwen3.5:9b-q4_K_M",
+        "choices": [{"message": {"content": "ok"}}],
+        "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+    }
+    with patch(
+        "agf_orchestrator.model_gateway.urlopen",
+        return_value=Response(json.dumps(expected).encode()),
+    ):
+        result = ModelGatewayProvider().complete(
+            model="ollama/qwen3.5:9b-q4_K_M",
+            messages=[{"role": "user", "content": "hi"}],
+            eligible_models=frozenset({"ollama/qwen3.5:9b-q4_K_M"}),
+            verified_zero_cost=True,
+        )
+    assert result.provider == "ollama"
+    assert result.model == "ollama/qwen3.5:9b-q4_K_M"
