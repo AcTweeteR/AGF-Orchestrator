@@ -61,13 +61,15 @@ def provider_status() -> dict:
         result["ollama_error"] = str(err)[:200]
     key = os.environ.get("AGF_OMNIROUTE_KEY")
     try:
-        result["omniroute"] = {"reachable": True}
+        health = request(OMNI_URL + "/api/health", timeout=5)
+        result["omniroute"] = {
+            "reachable": health.get("status") == "ok",
+            "endpoint": OMNI_URL,
+            "free_local_route": "ollama/qwen3.5:9b-q4_K_M",
+        }
         if key:
             models = request(OMNI_URL + "/v1/models", token=key)
             result["omniroute"]["model_count"] = len(models.get("data", []))
-        else:
-            result["omniroute"]["authentication"] = "key not configured"
-            request(OMNI_URL + "/api/health", timeout=5)
     except (OSError, ValueError) as err:
         result["omniroute"] = {"reachable": False, "reason": str(err)[:180]}
     return result
