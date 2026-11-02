@@ -367,6 +367,7 @@ def parse_args():
     create.add_argument("--model", default=DEFAULT_MODELS[0])
     create.add_argument("--fallback-model", default=DEFAULT_MODELS[1])
     create.add_argument("--omniroute-model", help="Explicit ollama/ model, optional")
+    create.add_argument("--scope", default="", help="Restrict all changes to a repository-relative path prefix")
     create.add_argument("--max-attempts", type=int, default=3)
     create.add_argument("--background", action="store_true")
     create.add_argument(
@@ -417,6 +418,7 @@ def main():
                 model=args.omniroute_model or "ollama/qwen3.5:9b-q4_K_M",
                 max_attempts=args.max_attempts,
                 background=args.background,
+                scope=args.scope,
             )
             print(json.dumps(result, ensure_ascii=False))
             return

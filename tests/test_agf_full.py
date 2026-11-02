@@ -230,3 +230,20 @@ def test_planning_record_is_saved_before_model_call(repo, tmp_path, monkeypatch)
     assert result["status"] == "BLOCKED"
     recorded = json.loads((state_dir / (result["mission_id"] + ".json")).read_text())
     assert "planning_pid" not in recorded
+
+
+def test_inventory_excludes_fixtures_unless_explicit(repo):
+    fixture = repo / "tests" / "fixtures" / "valid_state.json"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text('{"state": "ready"}\n')
+    test_file = repo / "tests" / "test_report.py"
+    test_file.write_text("def test_report(): pass\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    ordinary = agf_full.inventory(repo, query="Improve mission reporting")
+    assert "tests/fixtures/valid_state.json" not in ordinary
+    assert "tests/test_report.py" not in ordinary
+    testing = agf_full.inventory(repo, query="Improve reporting tests")
+    assert "tests/test_report.py" in testing
+    assert "tests/fixtures/valid_state.json" not in testing
+    fixtures = agf_full.inventory(repo, query="Improve reporting test fixtures")
+    assert "tests/fixtures/valid_state.json" in fixtures
