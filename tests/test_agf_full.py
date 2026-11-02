@@ -472,6 +472,17 @@ def test_resume_does_not_cancel_pause_while_worker_active(tmp_path, monkeypatch,
     assert json.loads(path.read_text())["status"] == "PAUSED"
 
 
+def test_pause_keeps_legacy_runner_status_compatible(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "legacy.json"
+    agf_full.chat.write_json(path, {"mission_id": "legacy", "status": "RUNNING",
+                                   "index": 0, "usage": []})
+    monkeypatch.setattr(sys, "argv", ["agf-chat", "--state-dir", str(tmp_path),
+                                     "pause", "legacy"])
+    agf_full.chat.main()
+    assert json.loads(capsys.readouterr().out)["status"] == "PAUSED"
+    assert json.loads(path.read_text())["status"] == "PAUSED"
+
+
 def test_stop_during_execution_error_preserves_owner_fields(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
     state_dir = tmp_path / "state"

@@ -570,7 +570,8 @@ def main():
     elif args.command in ("pause", "stop"):
         with control_lock(path):
             state = json.loads(path.read_text())
-            target = ("PAUSING" if state["status"] in {"RUNNING", "PAUSING"}
+            target = ("PAUSING" if state.get("engine") == "full"
+                      and state["status"] in {"RUNNING", "PAUSING"}
                       else "PAUSED") if args.command == "pause" else "STOPPED"
             allowed = {"PENDING", "PLANNING", "RUNNING"}
             if args.command == "stop":
