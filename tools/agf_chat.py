@@ -51,8 +51,8 @@ def write_json(path: Path, record: dict) -> None:
     with control_lock(path):
         if path.is_file() and record.get("engine") == "full":
             current = json.loads(path.read_text())
-            if current.get("status") in {"PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
-                for key in ("usage", "events", "updated_at"):
+            if current.get("status") in {"PAUSING", "PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
+                for key in ("usage", "events", "updated_at", "attempt"):
                     if key in record:
                         current[key] = record[key]
                 if "pid" not in record:
@@ -570,10 +570,11 @@ def main():
     elif args.command in ("pause", "stop"):
         with control_lock(path):
             state = json.loads(path.read_text())
-            target = "PAUSED" if args.command == "pause" else "STOPPED"
+            target = ("PAUSING" if state["status"] in {"RUNNING", "PAUSING"}
+                      else "PAUSED") if args.command == "pause" else "STOPPED"
             allowed = {"PENDING", "PLANNING", "RUNNING"}
             if args.command == "stop":
-                allowed.update({"PAUSED", "BLOCKED"})
+                allowed.update({"PAUSING", "PAUSED", "BLOCKED"})
             if state["status"] not in allowed | {target}:
                 raise SystemExit("mission status does not permit this control action")
             state["status"] = target

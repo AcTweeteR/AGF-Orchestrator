@@ -360,6 +360,37 @@ def test_stop_during_execution_clears_pid(repo, tmp_path, monkeypatch):
     assert result["owner_note"] == "retain"
 
 
+@pytest.mark.parametrize("test_passes", [True, False])
+def test_pause_waits_for_inflight_task_without_discarding_edits(
+    repo, tmp_path, monkeypatch, capsys, test_passes,
+):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{
+        "files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable],
+    }]))
+    queued = agf_full.start(state_dir, repo, objective=None, tasks_path=tasks,
+                            tests=[sys.executable], model="ollama/local")
+
+    def request_pause(*args, **kwargs):
+        monkeypatch.setattr(sys, "argv", ["agf-chat", "--state-dir", str(state_dir),
+                                         "pause", queued["mission_id"]])
+        agf_full.chat.main()
+        assert json.loads(capsys.readouterr().out)["status"] == "PAUSING"
+        return {"logic.py": "def answer():\n    return 42\n"}, {
+            "provider": "ollama", "model": "local",
+        }
+
+    with patch.object(agf_full, "propose_edits", side_effect=request_pause), \
+         patch.object(agf_full.chat, "execute_tests", return_value=(test_passes, "test result")):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == ("PAUSED" if test_passes else "HUMAN_REQUIRED")
+    assert (Path(queued["worktree"]) / "logic.py").read_text().endswith("return 42\n")
+    assert result["index"] == (1 if test_passes else 0)
+    assert any(event.get("committed") for event in result["events"]) == test_passes
+
+
 def test_stop_after_validation_prevents_local_commit(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
     state_dir = tmp_path / "state"

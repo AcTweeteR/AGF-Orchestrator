@@ -471,7 +471,7 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
         state = json.loads(path.read_text())
         if state["status"] in {"COMPLETED", "BLOCKED", "PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
             return state
-        if state["status"] == "RUNNING":
+        if state["status"] in {"RUNNING", "PAUSING"}:
             state["status"] = "HUMAN_REQUIRED"
             state["reason"] = "execution interrupted; reconcile the worktree before resuming"
             state.pop("pid", None)
@@ -593,11 +593,22 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                         )
                     if not safe:
                         failure = info[-3200:]
-                    # Restore failed attempt so the next model repairs known baseline
-                    # rather than being conditioned on broken intermediate source.
-                    if not safe:
-                        for name, original in backups.items():
-                            chat.safe_target(root, name).write_text(original, encoding="utf-8")
+                        current = json.loads(path.read_text())
+                        if current["status"] in {"STOPPED", "PAUSING"}:
+                            with chat.control_lock(path):
+                                current = json.loads(path.read_text())
+                                if current["status"] == "PAUSING":
+                                    current["status"] = "HUMAN_REQUIRED"
+                                    current["reason"] = (
+                                        "failed in-flight edits require reconciliation after pause"
+                                    )
+                                current["usage"] = state["usage"]
+                                current["events"].append({"task": index, "attempt": attempt,
+                                                          "error": failure[:500]})
+                                current.pop("pid", None)
+                                chat._write_json_unlocked(path, current)
+                                return current
+                    # Failed edits remain isolated and are included in the next correction.
                     current = json.loads(path.read_text())
                     if not recorded_usage:
                         state["usage"].append(usage)
@@ -632,8 +643,20 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     subprocess.CalledProcessError,
                     subprocess.TimeoutExpired,
                 ) as exc:
-                    for name, original in backups.items():
-                        chat.safe_target(root, name).write_text(original, encoding="utf-8")
+                    current = json.loads(path.read_text())
+                    if current["status"] in {"STOPPED", "PAUSING"}:
+                        with chat.control_lock(path):
+                            current = json.loads(path.read_text())
+                            if current["status"] == "PAUSING":
+                                current["status"] = "HUMAN_REQUIRED" if backups else "PAUSED"
+                                current["reason"] = (
+                                    "in-flight attempt ended during pause: " + str(exc)[:400]
+                                )
+                            current["events"].append({"task": index, "attempt": attempt,
+                                                      "error": str(exc)[:500]})
+                            current.pop("pid", None)
+                            chat._write_json_unlocked(path, current)
+                            return current
                     failure = str(exc)[-2000:]
                     state["events"].append(
                         {"task": index, "attempt": attempt, "error": failure[:500]}
@@ -700,6 +723,11 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                         ).strip(),
                     }
                 )
+                if state["status"] == "PAUSING":
+                    state["status"] = "PAUSED"
+                    state.pop("pid", None)
+                    chat._write_json_unlocked(path, state)
+                    return state
                 chat._write_json_unlocked(path, state)
         with chat.control_lock(path):
             state = json.loads(path.read_text())
