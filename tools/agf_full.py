@@ -9,6 +9,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -269,10 +270,10 @@ def start(
             tasks = json.loads(tasks_path.read_text())
             planning = None
         else:
-            tasks, planning = plan(worktree, objective or "", tests, model=model, scope=scope)
-        if not isinstance(tasks, list) or not 1 <= len(tasks) <= 30:
+            tasks, planning = None, None
+        if tasks is not None and (not isinstance(tasks, list) or not 1 <= len(tasks) <= 30):
             raise ValueError("must have between 1 and 30 tasks")
-        for task in tasks:
+        for task in tasks or []:
             check_task(worktree, task)
             if scope and any(
                 not (name == scope or name.startswith(scope.rstrip("/") + "/"))
@@ -289,6 +290,9 @@ def start(
             "objective": objective,
             "scope": scope,
             "tasks": tasks,
+            "planning_tests": shlex.split(tests) if isinstance(tests, str) else tests,
+            "planning_model": model,
+            "planning_attempts": 0,
             "index": 0,
             "attempt": 0,
             "max_attempts": max(1, min(5, max_attempts)),
@@ -452,6 +456,36 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
             state["reason"] = "isolated mission worktree is missing"
             chat.write_json(path, state)
             return state
+        if state.get("tasks") is None:
+            if state.get("planning_attempts", 0) >= 2:
+                state["status"] = "BLOCKED"
+                state["reason"] = "planning retry limit reached after interruption"
+                state.pop("pid", None)
+                chat.write_json(path, state)
+                return state
+            state["status"] = "PLANNING"
+            state["planning_attempts"] = state.get("planning_attempts", 0) + 1
+            state["pid"] = os.getpid()
+            chat.write_json(path, state)
+            try:
+                tasks, usage = plan(root, state.get("objective") or "", state["planning_tests"],
+                                    model=state["planning_model"], scope=state.get("scope", ""))
+                for task in tasks:
+                    check_task(root, task)
+                latest = json.loads(path.read_text())
+                state["tasks"] = tasks
+                state["usage"].append(usage)
+                if latest["status"] in {"PAUSED", "STOPPED"}:
+                    state["status"] = latest["status"]
+                    state.pop("pid", None)
+                    chat.write_json(path, state)
+                    return state
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+                state["status"] = "BLOCKED"
+                state["reason"] = "planning failed: " + str(exc)[:500]
+                state.pop("pid", None)
+                chat.write_json(path, state)
+                return state
         state["status"] = "RUNNING"
         state.pop("reason", None)
         state["pid"] = os.getpid()

@@ -188,3 +188,64 @@ def test_approved_unittest_command_cannot_pass_with_zero_tests(tmp_path):
     )
     assert not ok
     assert "Ran 0 tests" in evidence
+
+
+def test_planning_is_persisted_before_dispatch_and_interruption_is_recoverable(
+    repo, tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(
+        state_dir, repo, objective="Fix both files", tasks_path=None,
+        tests=[sys.executable, "-m", "unittest", "-q", "test_logic"], model="ollama/local",
+    )
+    path = state_dir / (queued["mission_id"] + ".json")
+    assert json.loads(path.read_text())["status"] == "PENDING"
+    with patch.object(agf_full, "plan", side_effect=KeyboardInterrupt):
+        with pytest.raises(KeyboardInterrupt):
+            agf_full.run_mission(state_dir, queued["mission_id"])
+    assert json.loads(path.read_text())["status"] == "PLANNING"
+    task = {"files": ["logic.py", "addon.xml"], "instruction": "fix both",
+            "tests": [sys.executable, "-m", "unittest", "-q", "test_logic"]}
+    changes = {"logic.py": "def answer():\n    return 42\n",
+               "addon.xml": '<addon id="a" name="After"/>\n'}
+    with patch.object(agf_full, "plan", return_value=([task], {"provider": "ollama"})), \
+         patch.object(agf_full, "propose_edits", return_value=(changes, {
+             "provider": "ollama", "model": "local",
+         })):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == "COMPLETED"
+    assert result["mission_id"] == queued["mission_id"]
+    assert result["planning_attempts"] == 2
+
+
+def test_interrupted_planning_has_bounded_recovery(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(
+        state_dir, repo, objective="Fix both files", tasks_path=None,
+        tests=[sys.executable, "-m", "unittest"], model="ollama/local",
+    )
+    with patch.object(agf_full, "plan", side_effect=KeyboardInterrupt):
+        for _ in range(2):
+            with pytest.raises(KeyboardInterrupt):
+                agf_full.run_mission(state_dir, queued["mission_id"])
+    with patch.object(agf_full, "plan", side_effect=AssertionError("unexpected redispatch")):
+        blocked = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert blocked["status"] == "BLOCKED"
+    assert blocked["planning_attempts"] == 2
+
+
+def test_planning_failure_keeps_mission_and_reason(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(
+        state_dir, repo, objective="Fix both files", tasks_path=None,
+        tests=[sys.executable, "-m", "unittest"], model="ollama/local",
+    )
+    with patch.object(agf_full, "plan", side_effect=ValueError("provider unavailable")):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    saved = json.loads((state_dir / (queued["mission_id"] + ".json")).read_text())
+    assert saved["status"] == result["status"] == "BLOCKED"
+    assert "provider unavailable" in saved["reason"]
+    assert Path(saved["worktree"]).is_dir()

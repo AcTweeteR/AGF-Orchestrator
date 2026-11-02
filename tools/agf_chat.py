@@ -486,7 +486,7 @@ def main():
         for record in state_dir.glob("*.json"):
             try:
                 state = json.loads(record.read_text())
-                if state.get("status") in ("PENDING", "RUNNING"):
+                if state.get("status") in ("PENDING", "RUNNING", "PLANNING"):
                     if state.get("engine") == "full":
                         if __package__:
                             from . import agf_full
