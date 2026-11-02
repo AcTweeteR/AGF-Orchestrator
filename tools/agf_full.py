@@ -487,7 +487,10 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     chat.write_json(path, state)
                     return state
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
-                state["status"] = "BLOCKED"
+                latest = json.loads(path.read_text())
+                state["status"] = (
+                    latest["status"] if latest["status"] in {"PAUSED", "STOPPED"} else "BLOCKED"
+                )
                 state["reason"] = "planning failed: " + str(exc)[:500]
                 state.pop("pid", None)
                 chat.write_json(path, state)

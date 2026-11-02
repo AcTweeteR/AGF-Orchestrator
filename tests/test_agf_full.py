@@ -251,6 +251,27 @@ def test_planning_failure_keeps_mission_and_reason(repo, tmp_path, monkeypatch):
     assert Path(saved["worktree"]).is_dir()
 
 
+def test_stop_during_planning_failure_is_preserved(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(
+        state_dir, repo, objective="Fix both files", tasks_path=None,
+        tests=[sys.executable, "-m", "unittest"], model="ollama/local",
+    )
+    path = state_dir / (queued["mission_id"] + ".json")
+
+    def stop_then_fail(*args, **kwargs):
+        current = json.loads(path.read_text())
+        current["status"] = "STOPPED"
+        agf_full.chat.write_json(path, current)
+        raise ValueError("provider unavailable")
+
+    with patch.object(agf_full, "plan", side_effect=stop_then_fail):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == "STOPPED"
+    assert json.loads(path.read_text())["status"] == "STOPPED"
+
+
 def test_interrupted_execution_does_not_redispatch(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
     tasks = tmp_path / "tasks.json"
