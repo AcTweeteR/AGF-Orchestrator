@@ -192,6 +192,24 @@ def test_initial_planning_recovers_existing_immutable_plan(tmp_path, monkeypatch
     assert path.read_bytes() == original
 
 
+def test_initial_plan_is_not_published_after_worktree_changes(tmp_path, monkeypatch):
+    root, state = registered(tmp_path)
+    manager = SessionManager(state)
+    create = manager.director.create_plan
+
+    def change_during_planning(*args, **kwargs):
+        plan = create(*args, **kwargs)
+        (root / "x").write_text("changed during planning")
+        return plan
+
+    monkeypatch.setattr(manager.director, "create_plan", change_during_planning)
+    with pytest.raises(SessionManagerError, match="worktree changed"):
+        manager.start("alpha", "Add contributor link validation")
+    session = manager.list()[0]
+    assert session.status is SessionStatus.PLANNING and session.plan_path is None
+    assert SessionManager(state).resume(session.session_id).status is SessionStatus.STALE
+
+
 def test_initial_planning_recovery_rejects_changed_worktree(tmp_path, monkeypatch):
     root, state = registered(tmp_path)
     manager = SessionManager(state)
@@ -201,6 +219,34 @@ def test_initial_planning_recovery_rejects_changed_worktree(tmp_path, monkeypatc
     session = manager.list()[0]
     (root / "x").write_text("changed")
     assert SessionManager(state).resume(session.session_id).status is SessionStatus.STALE
+
+
+@pytest.mark.parametrize("change_after_interrupt", ["none", "tracked", "untracked"])
+def test_dirty_initial_planning_recovers_only_unchanged_content(
+    tmp_path, monkeypatch, change_after_interrupt,
+):
+    root, state = registered(tmp_path)
+    registry = ProjectRegistry(state)
+    with registry._lock("dirty-test-policy"):
+        entries = registry._load()
+        registry._save([replace(item, policy=replace(item.policy, allow_dirty_planning=True))
+                        for item in entries])
+    (root / "x").write_text("original dirty contents")
+    (root / "untracked").write_text("untracked contents")
+    manager = SessionManager(state)
+    monkeypatch.setattr(manager.director, "create_plan", lambda *a, **k: 1 / 0)
+    with pytest.raises(ZeroDivisionError):
+        manager.start("alpha", "Add contributor link validation")
+    session = manager.list()[0]
+    if change_after_interrupt == "tracked":
+        (root / "x").write_text("different dirty contents")
+    elif change_after_interrupt == "untracked":
+        (root / "untracked").write_text("changed untracked contents")
+    recovered = SessionManager(state).resume(session.session_id)
+    expected = SessionStatus.READY if change_after_interrupt == "none" else SessionStatus.STALE
+    assert recovered.status is expected
+    if change_after_interrupt == "none":
+        assert json.loads(Path(recovered.plan_path).read_text())["repository"]["clean"] is False
 
 
 def test_canonical_target_reconcile_retires_historical_checkpoint(tmp_path):
