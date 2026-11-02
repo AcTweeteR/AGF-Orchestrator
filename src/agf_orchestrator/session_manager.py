@@ -288,24 +288,11 @@ class SessionManager:
             dirty = bool(_git(Path(project.repository_root), "status", "--porcelain"))
             if dirty and not project.policy.allow_dirty_planning:
                 raise SessionManagerError("project is dirty and policy disallows dirty planning")
-            plan = self.director.create_plan(
-                goal, self._repository_context(project, clean=not dirty)
-            )
             session_id = (
                 "session-"
                 + hashlib.sha256(
                     f"{project.project_id}:{goal}:{project.current_head_sha}:{uuid4()}".encode()
                 ).hexdigest()[:20]
-            )
-            plan_path, plan_hash = self.store.write_artifact(
-                session_id,
-                "plan.json",
-                json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n",
-            )
-            status = (
-                SessionStatus.READY
-                if plan.status is PlanStatus.READY
-                else SessionStatus.HUMAN_REQUIRED
             )
             session = Session(
                 session_id=session_id,
@@ -314,38 +301,68 @@ class SessionManager:
                 created_at=_now(),
                 updated_at=_now(),
                 base_sha=project.current_head_sha,
-                current_stage=status.value,
-                status=status,
-                plan_path=plan_path,
-                blocking_issues=(
-                    []
-                    if status is SessionStatus.READY
-                    else ["generated plan requires human clarification"]
-                ),
-                required_human_actions=(
-                    [] if status is SessionStatus.READY else ["clarify the goal"]
-                ),
-                artifact_hashes={"plan": plan_hash},
+                current_stage=SessionStatus.PLANNING.value,
+                status=SessionStatus.PLANNING,
             )
+            with session_lock(self.store.state_dir, session_id, "session-start"):
+                self._save(session)
+                return self._finish_initial_plan(session, project, clean=not dirty)
+
+    def _finish_initial_plan(self, session: Session, project, *, clean: bool) -> Session:
+        attempts = session.attempts.get("initial_planning", 0)
+        if type(attempts) is not int or attempts < 0:
+            raise SessionManagerError("initial planning attempt history is invalid")
+        if attempts >= 2:
             session = self._append_event(
-                session,
-                SessionStatus.PLANNING,
-                status,
-                "session started and plan generated",
-                [plan_path],
-                session.blocking_issues,
-                "DIRECTOR",
-                "session-start",
+                session, SessionStatus.PLANNING, SessionStatus.BLOCKED,
+                "initial planning retry budget exhausted", [],
+                ["initial planning retry budget exhausted"], "SYSTEM", "initial-planning-exhausted",
             )
-            origin = {"schema_version": "1.0", "protocol": "governed-session/1",
-                      "session_id": session_id, "project_id": project.project_id,
-                      "initial_plan_sha256": plan_hash}
-            _, origin_hash = self.store.write_artifact(
-                session_id, "planning-origin.json", json.dumps(origin, sort_keys=True) + "\n",
-            )
-            session.artifact_hashes["planning_origin"] = origin_hash
             self._save(session)
             return session
+        session.attempts["initial_planning"] = attempts + 1
+        self._save(session)
+        plan = self.director.create_plan(
+            session.goal, self._repository_context(project, clean=clean)
+        )
+        session_id = session.session_id
+        plan_path, plan_hash = self.store.write_artifact(
+            session_id,
+            "plan.json",
+            json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n",
+        )
+        status = (
+            SessionStatus.READY
+            if plan.status is PlanStatus.READY
+            else SessionStatus.HUMAN_REQUIRED
+        )
+        session.plan_path = plan_path
+        session.blocking_issues = (
+            [] if status is SessionStatus.READY else ["generated plan requires human clarification"]
+        )
+        session.required_human_actions = (
+            [] if status is SessionStatus.READY else ["clarify the goal"]
+        )
+        session.artifact_hashes["plan"] = plan_hash
+        session = self._append_event(
+            session,
+            SessionStatus.PLANNING,
+            status,
+            "session started and plan generated",
+            [plan_path],
+            session.blocking_issues,
+            "DIRECTOR",
+            "session-start",
+        )
+        origin = {"schema_version": "1.0", "protocol": "governed-session/1",
+                  "session_id": session_id, "project_id": project.project_id,
+                  "initial_plan_sha256": plan_hash}
+        _, origin_hash = self.store.write_artifact(
+            session_id, "planning-origin.json", json.dumps(origin, sort_keys=True) + "\n",
+        )
+        session.artifact_hashes["planning_origin"] = origin_hash
+        self._save(session)
+        return session
 
     @staticmethod
     def _repository_context(project, *, clean: bool):
@@ -1723,6 +1740,18 @@ class SessionManager:
                 f"base SHA drifted: expected {session.base_sha}, found {head}",
                 "review the drift and start a new session if appropriate",
             )
+        if session.status is SessionStatus.PLANNING and not session.plan_path:
+            if (session.artifact_hashes or session.events
+                    or project.current_head_sha != session.base_sha):
+                return self._mark_stale(
+                    session, "initial planning state is inconsistent", "inspect session evidence",
+                )
+            if _git(root, "status", "--porcelain"):
+                return self._mark_stale(
+                    session, "worktree changed during initial planning",
+                    "restore the original state",
+                )
+            return self._finish_initial_plan(session, project, clean=True)
         try:
             self._validate_plan_identity(session, project)
             self._validate_plan_lineage(session, project)

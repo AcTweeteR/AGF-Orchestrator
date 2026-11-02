@@ -2,6 +2,8 @@ import hashlib
 import json
 import shutil
 import subprocess
+import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -99,6 +101,106 @@ def test_start_is_ready_and_resume_is_idempotent(tmp_path):
     stale = manager.resume(session.session_id)
     assert stale.status is SessionStatus.STALE
     assert "base SHA" in stale.blocking_issues[0]
+
+
+def test_initial_session_is_saved_before_planning_and_recovers(tmp_path, monkeypatch):
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+
+    def interrupt(*args, **kwargs):
+        current = manager.list()
+        assert len(current) == 1 and current[0].status is SessionStatus.PLANNING
+        assert current[0].attempts["initial_planning"] == 1
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(manager.director, "create_plan", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        manager.start("alpha", "Add contributor link validation")
+    pending = manager.list()[0]
+    assert pending.plan_path is None
+    recovered = SessionManager(state).resume(pending.session_id)
+    assert recovered.status is SessionStatus.READY
+    assert recovered.attempts["initial_planning"] == 2
+    assert recovered.session_id == pending.session_id
+    assert recovered.artifact_hashes["planning_origin"]
+
+
+def test_initial_planning_recovers_after_process_is_killed(tmp_path):
+    _, state = registered(tmp_path)
+    code = (
+        "import sys,time; sys.path.insert(0,sys.argv[2]); "
+        "from agf_orchestrator.session_manager import SessionManager; "
+        "m=SessionManager(sys.argv[1]); "
+        "m.director.create_plan=lambda *a,**k: time.sleep(60); "
+        "m.start('alpha','Add contributor link validation')"
+    )
+    source = Path(__file__).resolve().parents[1] / "src"
+    process = subprocess.Popen([sys.executable, "-c", code, str(state), str(source)])
+    try:
+        deadline = time.monotonic() + 10
+        manager = SessionManager(state)
+        while True:
+            sessions = manager.list()
+            if sessions and sessions[0].attempts.get("initial_planning") == 1:
+                break
+            assert process.poll() is None and time.monotonic() < deadline
+            time.sleep(0.05)
+    finally:
+        process.kill()
+        process.wait(timeout=5)
+    recovered = SessionManager(state).resume(sessions[0].session_id)
+    assert recovered.status is SessionStatus.READY
+    assert recovered.attempts["initial_planning"] == 2
+
+
+def test_initial_planning_does_not_restart_after_budget_exhaustion(tmp_path, monkeypatch):
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(manager.director, "create_plan", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        manager.start("alpha", "Add contributor link validation")
+    session = manager.list()[0]
+    with pytest.raises(KeyboardInterrupt):
+        manager.resume(session.session_id)
+    blocked = SessionManager(state).resume(session.session_id)
+    assert blocked.status is SessionStatus.BLOCKED
+    assert blocked.attempts["initial_planning"] == 2
+
+
+def test_initial_planning_recovers_existing_immutable_plan(tmp_path, monkeypatch):
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    write = manager.store.write_artifact
+
+    def interrupt_origin(session_id, name, content):
+        if name == "planning-origin.json":
+            raise KeyboardInterrupt()
+        return write(session_id, name, content)
+
+    monkeypatch.setattr(manager.store, "write_artifact", interrupt_origin)
+    with pytest.raises(KeyboardInterrupt):
+        manager.start("alpha", "Add contributor link validation")
+    session = manager.list()[0]
+    path = manager.store.artifacts_dir / session.session_id / "plan.json"
+    original = path.read_bytes()
+    recovered = SessionManager(state).resume(session.session_id)
+    assert recovered.status is SessionStatus.READY
+    assert path.read_bytes() == original
+
+
+def test_initial_planning_recovery_rejects_changed_worktree(tmp_path, monkeypatch):
+    root, state = registered(tmp_path)
+    manager = SessionManager(state)
+    monkeypatch.setattr(manager.director, "create_plan", lambda *a, **k: 1 / 0)
+    with pytest.raises(ZeroDivisionError):
+        manager.start("alpha", "Add contributor link validation")
+    session = manager.list()[0]
+    (root / "x").write_text("changed")
+    assert SessionManager(state).resume(session.session_id).status is SessionStatus.STALE
 
 
 def test_canonical_target_reconcile_retires_historical_checkpoint(tmp_path):
