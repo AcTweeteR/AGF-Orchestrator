@@ -413,7 +413,7 @@ def main():
                 args.repository.expanduser(),
                 objective=args.objective,
                 tasks_path=args.tasks,
-                tests=args.test_command,
+                tests=shlex.split(args.test_command),
                 model=args.omniroute_model or "ollama/qwen3.5:9b-q4_K_M",
                 max_attempts=args.max_attempts,
                 background=args.background,
