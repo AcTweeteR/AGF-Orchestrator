@@ -503,9 +503,11 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
             task = state["tasks"][index]
             failure = ""
             passed = False
-            for attempt in range(1, state["max_attempts"] + 1):
+            for attempt in range(state.get("attempt", 0) + 1, state["max_attempts"] + 1):
                 if json.loads(path.read_text()).get("status") in {"STOPPED", "PAUSED"}:
                     return json.loads(path.read_text())
+                state["attempt"] = attempt
+                chat.write_json(path, state)
                 backups = {}
                 try:
                     check_task(root, task)
@@ -607,6 +609,7 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                 chat.write_json(path, state)
                 return state
             state["index"] = index + 1
+            state["attempt"] = 0
             state["updated_at"] = time.time()
             state["events"].append(
                 {

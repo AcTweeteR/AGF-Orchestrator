@@ -321,6 +321,26 @@ def test_interrupted_execution_does_not_redispatch(repo, tmp_path, monkeypatch):
     assert result["index"] == 0
 
 
+def test_resume_does_not_reset_exhausted_task_attempts(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{
+        "files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable],
+    }]))
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(state_dir, repo, objective=None, tasks_path=tasks,
+                            tests=[sys.executable], model="ollama/local", max_attempts=1)
+    with patch.object(agf_full, "propose_edits", side_effect=ValueError("failure")) as dispatch:
+        blocked = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert blocked["status"] == "BLOCKED" and blocked["attempt"] == 1
+    assert dispatch.call_count == 1
+    blocked["status"] = "PENDING"  # The CLI's existing resume transition.
+    agf_full.chat.write_json(state_dir / (queued["mission_id"] + ".json"), blocked)
+    with patch.object(agf_full, "propose_edits", side_effect=AssertionError("redispatch")):
+        exhausted = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert exhausted["status"] == "BLOCKED" and exhausted["attempt"] == 1
+
+
 def test_cli_scope_restricts_owner_supplied_tasks(repo, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
     tasks = tmp_path / "tasks.json"
