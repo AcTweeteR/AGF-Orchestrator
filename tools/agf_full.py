@@ -460,6 +460,19 @@ def check_edits(worktree: Path, names: list[str]) -> tuple[bool, str]:
     return True, "static checks passed"
 
 
+def restore_paused_edits(root: Path, backups: dict[str, str], changes: dict[str, str]) -> bool:
+    try:
+        targets = {name: chat.safe_target(root, name) for name in backups}
+        for name, path in targets.items():
+            if path.read_text(encoding="utf-8") not in {backups[name], changes[name]}:
+                return False
+        for name, path in targets.items():
+            path.write_text(backups[name], encoding="utf-8")
+        return True
+    except (OSError, ValueError, KeyError):
+        return False
+
+
 def run_mission(state_dir: Path, mission_id: str) -> dict:
     path = state_dir / (mission_id + ".json")
     lock = state_dir / (mission_id + ".lock")
@@ -614,6 +627,13 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     )
                     state["updated_at"] = time.time()
                     if current["status"] in {"STOPPED", "PAUSED"}:
+                        if current["status"] == "PAUSED" and not restore_paused_edits(
+                            root, backups, changes,
+                        ):
+                            current["status"] = "HUMAN_REQUIRED"
+                            current["reason"] = (
+                                "worktree changed during pause; reconcile before resume"
+                            )
                         current["usage"] = state["usage"]
                         current["events"] = state["events"]
                         current["updated_at"] = state["updated_at"]
@@ -655,6 +675,11 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
             with chat.control_lock(path):
                 current = json.loads(path.read_text())
                 if current.get("status") in {"STOPPED", "PAUSED", "HUMAN_REQUIRED"}:
+                    if current["status"] == "PAUSED" and not restore_paused_edits(
+                        root, backups, changes,
+                    ):
+                        current["status"] = "HUMAN_REQUIRED"
+                        current["reason"] = "worktree changed during pause; reconcile before resume"
                     current.pop("pid", None)
                     chat._write_json_unlocked(path, current)
                     return current

@@ -360,6 +360,40 @@ def test_stop_during_execution_clears_pid(repo, tmp_path, monkeypatch):
     assert result["owner_note"] == "retain"
 
 
+@pytest.mark.parametrize("external_change", [False, True])
+def test_pause_restores_only_owned_edits(repo, tmp_path, monkeypatch, external_change):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{
+        "files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable],
+    }]))
+    queued = agf_full.start(state_dir, repo, objective=None, tasks_path=tasks,
+                            tests=[sys.executable], model="ollama/local")
+    path = state_dir / (queued["mission_id"] + ".json")
+    target = Path(queued["worktree"]) / "logic.py"
+
+    def pause_then_edit(*args, **kwargs):
+        current = json.loads(path.read_text())
+        current["status"] = "PAUSED"
+        agf_full.chat.write_json(path, current)
+        return {"logic.py": "def answer():\n    return 42\n"}, {
+            "provider": "ollama", "model": "local",
+        }
+
+    def validate(*args, **kwargs):
+        if external_change:
+            target.write_text("external change\n")
+        return True, "passed"
+
+    with patch.object(agf_full, "propose_edits", side_effect=pause_then_edit), \
+         patch.object(agf_full.chat, "execute_tests", side_effect=validate):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == ("HUMAN_REQUIRED" if external_change else "PAUSED")
+    assert target.read_text() == ("external change\n" if external_change
+                                  else "def answer():\n    return 0\n")
+
+
 def test_stop_after_validation_prevents_local_commit(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
     state_dir = tmp_path / "state"
