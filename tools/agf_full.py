@@ -448,7 +448,13 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
         except BlockingIOError:
             return {"mission_id": mission_id, "status": "ALREADY_RUNNING"}
         state = json.loads(path.read_text())
-        if state["status"] in {"COMPLETED", "BLOCKED", "PAUSED", "STOPPED"}:
+        if state["status"] in {"COMPLETED", "BLOCKED", "PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
+            return state
+        if state["status"] == "RUNNING":
+            state["status"] = "HUMAN_REQUIRED"
+            state["reason"] = "execution interrupted; reconcile the worktree before resuming"
+            state.pop("pid", None)
+            chat.write_json(path, state)
             return state
         root = Path(state["worktree"]).resolve()
         if not root.is_dir():

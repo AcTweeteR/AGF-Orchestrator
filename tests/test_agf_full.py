@@ -249,3 +249,23 @@ def test_planning_failure_keeps_mission_and_reason(repo, tmp_path, monkeypatch):
     assert saved["status"] == result["status"] == "BLOCKED"
     assert "provider unavailable" in saved["reason"]
     assert Path(saved["worktree"]).is_dir()
+
+
+def test_interrupted_execution_does_not_redispatch(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{
+        "files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable],
+    }]))
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(state_dir, repo, objective=None, tasks_path=tasks,
+                            tests=[sys.executable], model="ollama/local")
+    path = state_dir / (queued["mission_id"] + ".json")
+    state = json.loads(path.read_text())
+    state["status"] = "RUNNING"
+    agf_full.chat.write_json(path, state)
+    with patch.object(agf_full, "propose_edits", side_effect=AssertionError("redispatch")):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+        assert agf_full.run_mission(state_dir, queued["mission_id"])["status"] == "HUMAN_REQUIRED"
+    assert result["status"] == "HUMAN_REQUIRED"
+    assert result["index"] == 0
