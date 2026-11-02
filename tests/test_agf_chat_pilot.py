@@ -138,6 +138,16 @@ class FreeMissionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             agf_chat.safe_target(self.repo, "../../outside.py")
 
+    def test_normalizes_root_and_rejects_target_symlink(self):
+        alias = self.base / "repo-alias"
+        alias.symlink_to(self.repo, target_is_directory=True)
+        self.assertEqual(
+            agf_chat.safe_target(alias, "value.py"), (self.repo / "value.py").resolve()
+        )
+        (self.repo / "link.py").symlink_to(self.repo / "value.py")
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            agf_chat.safe_target(alias, "link.py")
+
     def test_refuses_remote_gateway(self):
         with self.assertRaises(ValueError):
             agf_chat.request("https://example.org/llm")

@@ -224,11 +224,13 @@ def plan_objective(root: Path, objective: str, tests: list[str]) -> tuple[list[d
 
 
 def safe_target(root: Path, name: str) -> Path:
-    p = (root / name).resolve()
+    root = root.resolve()
+    target = root / name
+    if target.is_symlink():
+        raise ValueError("symlink target not allowed")
+    p = target.resolve()
     if not p.is_relative_to(root) or p == root:
         raise ValueError("target file outside approved repository")
-    if p.is_symlink():
-        raise ValueError("symlink target not allowed")
     return p
 
 
