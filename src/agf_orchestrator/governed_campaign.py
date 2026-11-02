@@ -59,7 +59,7 @@ class GovernedSessionDriverSpec:
         if (isinstance(self.timeout, bool) or not isinstance(self.timeout, (int, float))
                 or not math.isfinite(self.timeout) or self.timeout <= 0):
             raise GovernedCampaignError("timeout must be finite and positive")
-        if self.adapter not in {"codex", "openhands", "ollama"}:
+        if self.adapter not in {"codex", "openhands", "ollama", "free-first"}:
             raise GovernedCampaignError("unknown execution adapter")
         if type(self.allow_openhands_llm_env) is not bool:
             raise GovernedCampaignError("environment forwarding setting is invalid")
@@ -198,7 +198,9 @@ class GovernedSessionDriver:
         if SessionStore().state_dir != Path(self.spec.state_dir).resolve():
             raise GovernedCampaignError("daemon state differs from configured session state")
         args = SimpleNamespace(**asdict(self.spec), session=session.session_id,
-                               session_command="continue", reviewer="codex", simulate_pr=False)
+                               session_command="continue",
+                               reviewer="deterministic" if self.spec.adapter == "free-first"
+                               else "codex", simulate_pr=False)
         if self.pipeline_factory is None:
             from .cli import _delivery_pipeline
             pipeline = _delivery_pipeline(args, project)
