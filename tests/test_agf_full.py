@@ -3,6 +3,7 @@
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -234,6 +235,34 @@ def test_interrupted_planning_has_bounded_recovery(repo, tmp_path, monkeypatch):
         blocked = agf_full.run_mission(state_dir, queued["mission_id"])
     assert blocked["status"] == "BLOCKED"
     assert blocked["planning_attempts"] == 2
+
+
+def test_killed_planner_can_be_recovered_after_process_restart(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(state_dir, repo, objective="Fix both files", tasks_path=None,
+                            tests=[sys.executable], model="ollama/local")
+    path = state_dir / (queued["mission_id"] + ".json")
+    code = (
+        "import sys,time; from pathlib import Path; from tools import agf_full; "
+        "agf_full.plan=lambda *a,**k: time.sleep(60); "
+        "agf_full.run_mission(Path(sys.argv[1]),sys.argv[2])"
+    )
+    process = subprocess.Popen([sys.executable, "-c", code, str(state_dir), queued["mission_id"]])
+    try:
+        deadline = time.monotonic() + 10
+        while json.loads(path.read_text())["status"] != "PLANNING":
+            assert process.poll() is None and time.monotonic() < deadline
+            time.sleep(0.05)
+    finally:
+        process.kill()
+        process.wait(timeout=5)
+    assert json.loads(path.read_text())["planning_attempts"] == 1
+    with patch.object(agf_full, "plan", side_effect=ValueError("recovered planner invoked")):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == "BLOCKED"
+    assert result["planning_attempts"] == 2
+    assert "recovered planner invoked" in result["reason"]
 
 
 def test_planning_failure_keeps_mission_and_reason(repo, tmp_path, monkeypatch):
