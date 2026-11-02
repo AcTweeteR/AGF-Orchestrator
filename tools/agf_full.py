@@ -203,7 +203,7 @@ def plan(
     return tasks, evidence
 
 
-def check_task(root: Path, task: dict) -> None:
+def check_task(root: Path, task: dict, *, approved_files: list[str] | None = None) -> None:
     names = task.get("files")
     if (
         not isinstance(names, list)
@@ -211,8 +211,9 @@ def check_task(root: Path, task: dict) -> None:
         or len(set(names)) != len(names)
     ):
         raise ValueError("task must select 1-4 distinct files")
+    allowed = approved_files if approved_files is not None else inventory(root)
     for name in names:
-        if not isinstance(name, str) or name not in inventory(root):
+        if not isinstance(name, str) or name not in allowed:
             raise ValueError("task includes an unknown, unavailable, or unsafe source")
         target = chat.safe_target(root, name)
         if not target.is_file() or target.is_symlink():
@@ -311,8 +312,9 @@ def start(
             tasks, planning = plan(worktree, objective or "", tests, model=model, scope=scope)
         if not isinstance(tasks, list) or not 1 <= len(tasks) <= 30:
             raise ValueError("must have between 1 and 30 tasks")
+        approved = inventory(worktree, query=objective or "", scope=scope)
         for task in tasks:
-            check_task(worktree, task)
+            check_task(worktree, task, approved_files=approved)
             if scope and any(
                 not (name == scope or name.startswith(scope.rstrip("/") + "/"))
                 for name in task["files"]
@@ -497,6 +499,9 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
         state.pop("reason", None)
         state["pid"] = os.getpid()
         chat.write_json(path, state)
+        approved = inventory(
+            root, query=state.get("objective") or "", scope=state.get("scope") or ""
+        )
         for index in range(state["index"], len(state["tasks"])):
             task = state["tasks"][index]
             failure = ""
@@ -506,7 +511,7 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     return json.loads(path.read_text())
                 backups = {}
                 try:
-                    check_task(root, task)
+                    check_task(root, task, approved_files=approved)
                     changes, usage = propose_edits(root, task, failure)
                     backups = {
                         name: chat.safe_target(root, name).read_text(encoding="utf-8")

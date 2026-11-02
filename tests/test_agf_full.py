@@ -196,9 +196,13 @@ def test_planning_failure_keeps_queryable_mission(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
     with patch.object(agf_full, "plan", side_effect=TimeoutError("planner timed out")):
         result = agf_full.start(
-            state_dir, repo, objective="Improve answer calculation",
-            tasks_path=None, tests=[sys.executable, "-m", "unittest", "test_logic"],
-            model="ollama/qwen3.5:9b-q4_K_M", background=False,
+            state_dir,
+            repo,
+            objective="Improve answer calculation",
+            tasks_path=None,
+            tests=[sys.executable, "-m", "unittest", "test_logic"],
+            model="ollama/qwen3.5:9b-q4_K_M",
+            background=False,
         )
     assert result["status"] == "BLOCKED"
     persisted = json.loads((state_dir / (result["mission_id"] + ".json")).read_text())
@@ -223,7 +227,10 @@ def test_planning_record_is_saved_before_model_call(repo, tmp_path, monkeypatch)
 
     with patch.object(agf_full, "plan", side_effect=check_record):
         result = agf_full.start(
-            state_dir, repo, objective="Improve answer calculation", tasks_path=None,
+            state_dir,
+            repo,
+            objective="Improve answer calculation",
+            tasks_path=None,
             tests=[sys.executable, "-m", "unittest", "test_logic"],
             model="ollama/qwen3.5:9b-q4_K_M",
         )
@@ -247,3 +254,17 @@ def test_inventory_excludes_fixtures_unless_explicit(repo):
     assert "tests/fixtures/valid_state.json" not in testing
     fixtures = agf_full.inventory(repo, query="Improve reporting test fixtures")
     assert "tests/fixtures/valid_state.json" in fixtures
+
+
+def test_check_task_respects_objective_approved_tests_and_rejects_unapproved(repo):
+    allowed = agf_full.inventory(repo, query="Improve tests")
+    task = {
+        "files": ["test_logic.py"],
+        "instruction": "Improve assertions",
+        "tests": [sys.executable, "-m", "unittest", "test_logic"],
+    }
+    agf_full.check_task(repo, task, approved_files=allowed)
+    with pytest.raises(ValueError, match="unavailable, or unsafe"):
+        agf_full.check_task(repo, task)
+    with pytest.raises(ValueError, match="unavailable, or unsafe"):
+        agf_full.check_task(repo, {**task, "files": ["../outside.py"]}, approved_files=allowed)
