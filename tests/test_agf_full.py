@@ -114,7 +114,7 @@ def test_durable_mission_isolated_from_caller_and_committed(repo, tmp_path, monk
     assert worktree.is_dir()
     attempts = [0]
 
-    def fake_changes(worktree, task, failure):
+    def fake_changes(worktree, task, failure, **kwargs):
         attempts[0] += 1
         if attempts[0] == 1:
             return {"logic.py": "def answer():\n    return 0\n"}, {
@@ -162,7 +162,7 @@ def test_dependent_tasks_only_require_final_integrated_tests(repo, tmp_path, mon
         state_dir, repo, objective=None, tasks_path=tasksfile, tests=tests, model="ollama/local"
     )
 
-    def edits(root, task, previous):
+    def edits(root, task, previous, **kwargs):
         if "logic.py" in task["files"]:
             return {"logic.py": "def answer():\n    return 42\n"}, {
                 "provider": "ollama",
@@ -339,6 +339,25 @@ def test_resume_does_not_reset_exhausted_task_attempts(repo, tmp_path, monkeypat
     with patch.object(agf_full, "propose_edits", side_effect=AssertionError("redispatch")):
         exhausted = agf_full.run_mission(state_dir, queued["mission_id"])
     assert exhausted["status"] == "BLOCKED" and exhausted["attempt"] == 1
+
+
+def test_invalid_model_patch_preserves_usage(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{
+        "files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable],
+    }]))
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(state_dir, repo, objective=None, tasks_path=tasks,
+                            tests=[sys.executable], model="ollama/local", max_attempts=1)
+    usage = {"provider": "ollama", "model": "local", "completion_tokens": 12}
+    response = {"changes": [{"file": "logic.py", "find": "missing", "replace": "x"}]}
+    with patch.object(agf_full, "route_json", return_value=(response, usage)):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == "BLOCKED"
+    saved = json.loads((state_dir / (queued["mission_id"] + ".json")).read_text())
+    assert saved["usage"] == [usage]
+    assert "missing edit anchor" in saved["events"][0]["error"]
 
 
 def test_cli_scope_restricts_owner_supplied_tasks(repo, tmp_path, monkeypatch, capsys):

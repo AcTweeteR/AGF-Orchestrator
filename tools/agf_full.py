@@ -354,7 +354,8 @@ def relevant_excerpt(content: str, objective: str, limit: int = 2800) -> str:
 
 
 def propose_edits(
-    root: Path, task: dict, previous_error: str, *, model="ollama/qwen3.5:9b-q4_K_M"
+    root: Path, task: dict, previous_error: str, *, model="ollama/qwen3.5:9b-q4_K_M",
+    usage_observer=None,
 ) -> tuple[dict[str, str], dict]:
     current = {
         name: chat.safe_target(root, name).read_text(encoding="utf-8") for name in task["files"]
@@ -380,6 +381,8 @@ def propose_edits(
         f"\nALLOWED FILES:\n{context}"
     )
     result, usage = route_json(prompt, purpose="implementation", model=model)
+    if usage_observer is not None:
+        usage_observer(usage)
     operations = result.get("changes")
     if not isinstance(operations, list) or not 1 <= len(operations) <= 12:
         raise ValueError("model returned no bounded change list")
@@ -511,7 +514,16 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                 backups = {}
                 try:
                     check_task(root, task)
-                    changes, usage = propose_edits(root, task, failure)
+                    recorded_usage = []
+
+                    def record_usage(usage):
+                        current = json.loads(path.read_text())
+                        current["usage"].append(usage)
+                        chat.write_json(path, current)
+                        state["usage"] = current["usage"]
+                        recorded_usage.append(usage)
+
+                    changes, usage = propose_edits(root, task, failure, usage_observer=record_usage)
                     backups = {
                         name: chat.safe_target(root, name).read_text(encoding="utf-8")
                         for name in changes
@@ -537,7 +549,8 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                         for name, original in backups.items():
                             chat.safe_target(root, name).write_text(original, encoding="utf-8")
                     current = json.loads(path.read_text())
-                    state["usage"].append(usage)
+                    if not recorded_usage:
+                        state["usage"].append(usage)
                     state["events"].append(
                         {
                             "task": index,
@@ -572,6 +585,12 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     state["events"].append(
                         {"task": index, "attempt": attempt, "error": failure[:500]}
                     )
+                    current = json.loads(path.read_text())
+                    if current["status"] in {"STOPPED", "PAUSED"}:
+                        state["status"] = current["status"]
+                        state.pop("pid", None)
+                        chat.write_json(path, state)
+                        return state
                     chat.write_json(path, state)
             if not passed:
                 state["status"] = "BLOCKED"
