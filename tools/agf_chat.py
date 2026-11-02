@@ -51,9 +51,7 @@ def write_json(path: Path, record: dict) -> None:
     with control_lock(path):
         if path.is_file() and record.get("engine") == "full":
             current = json.loads(path.read_text())
-            if (current.get("status") in {"PAUSED", "STOPPED", "HUMAN_REQUIRED"}
-                    and not (current.get("status") == "PAUSED"
-                             and record.get("status") == "HUMAN_REQUIRED")):
+            if current.get("status") in {"PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
                 for key in ("usage", "events", "updated_at"):
                     if key in record:
                         current[key] = record[key]
