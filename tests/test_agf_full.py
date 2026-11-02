@@ -341,6 +341,24 @@ def test_resume_does_not_reset_exhausted_task_attempts(repo, tmp_path, monkeypat
     assert exhausted["status"] == "BLOCKED" and exhausted["attempt"] == 1
 
 
+def test_legacy_failure_events_count_against_attempt_budget(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{
+        "files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable],
+    }]))
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(state_dir, repo, objective=None, tasks_path=tasks,
+                            tests=[sys.executable], model="ollama/local", max_attempts=1)
+    path = state_dir / (queued["mission_id"] + ".json")
+    legacy = json.loads(path.read_text())
+    legacy["events"].append({"task": 0, "attempt": 1, "error": "old failure"})
+    agf_full.chat.write_json(path, legacy)
+    with patch.object(agf_full, "propose_edits", side_effect=AssertionError("redispatch")):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == "BLOCKED" and result["attempt"] == 1
+
+
 def test_invalid_model_patch_preserves_usage(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
     tasks = tmp_path / "tasks.json"

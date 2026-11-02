@@ -504,6 +504,11 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
         chat.write_json(path, state)
         for index in range(state["index"], len(state["tasks"])):
             task = state["tasks"][index]
+            historical_attempts = sum(
+                1 for event in state["events"]
+                if event.get("task") == index and type(event.get("attempt")) is int
+            )
+            state["attempt"] = max(state.get("attempt", 0), historical_attempts)
             failure = ""
             passed = False
             for attempt in range(state.get("attempt", 0) + 1, state["max_attempts"] + 1):
