@@ -13,6 +13,7 @@
   "roadmap_version": "1",
   "schema_version": "1.0",
   "scheduler_id": "scheduler-main",
+  "reporting_mode": "detailed",
   "status": "CREATED",
   "updated_at": "2026-08-05T00:00:00Z"
 }
