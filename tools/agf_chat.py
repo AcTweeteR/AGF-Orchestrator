@@ -369,6 +369,7 @@ def parse_args():
     create.add_argument("--omniroute-model", help="Explicit ollama/ model, optional")
     create.add_argument("--max-attempts", type=int, default=3)
     create.add_argument("--background", action="store_true")
+    create.add_argument("--scope", default="", help="Repository-relative project-wide scope")
     create.add_argument(
         "--project-wide", action="store_true", help="isolated multi-file mission with local commits"
     )
@@ -417,9 +418,12 @@ def main():
                 model=args.omniroute_model or "ollama/qwen3.5:9b-q4_K_M",
                 max_attempts=args.max_attempts,
                 background=args.background,
+                scope=args.scope,
             )
             print(json.dumps(result, ensure_ascii=False))
             return
+        if args.scope:
+            raise SystemExit("--scope requires --project-wide")
         root = args.repository.expanduser().resolve()
         if not root.is_dir():
             raise SystemExit("repository does not exist")

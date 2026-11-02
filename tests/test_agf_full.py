@@ -269,3 +269,25 @@ def test_interrupted_execution_does_not_redispatch(repo, tmp_path, monkeypatch):
         assert agf_full.run_mission(state_dir, queued["mission_id"])["status"] == "HUMAN_REQUIRED"
     assert result["status"] == "HUMAN_REQUIRED"
     assert result["index"] == 0
+
+
+def test_cli_scope_restricts_owner_supplied_tasks(repo, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{
+        "files": ["addon.xml"], "instruction": "rename addon", "tests": [sys.executable],
+    }]))
+    monkeypatch.setattr(sys, "argv", [
+        "agf-chat", "--state-dir", str(tmp_path / "state"), "start", "--project-wide",
+        "--repository", str(repo), "--tasks", str(tasks), "--scope", "logic.py",
+    ])
+    with pytest.raises(ValueError, match="outside owner-selected scope"):
+        agf_full.chat.main()
+    assert not list((tmp_path / "state").glob("*.json"))
+    tasks.write_text(json.dumps([{
+        "files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable],
+    }]))
+    agf_full.chat.main()
+    mission_id = json.loads(capsys.readouterr().out)["mission_id"]
+    state = json.loads((tmp_path / "state" / (mission_id + ".json")).read_text())
+    assert state["scope"] == "logic.py"
