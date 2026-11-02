@@ -378,6 +378,37 @@ def test_invalid_model_patch_preserves_usage(repo, tmp_path, monkeypatch):
     assert "missing edit anchor" in saved["events"][0]["error"]
 
 
+def test_empty_model_response_records_usage_before_rejection(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{
+        "files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable],
+    }]))
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(state_dir, repo, objective=None, tasks_path=tasks,
+                            tests=[sys.executable], model="ollama/local", max_attempts=1)
+    reply = {"model": "qwen3.5:9b-q4_K_M", "choices": [{"message": {"content": ""}}],
+             "usage": {"prompt_tokens": 7, "completion_tokens": 13}}
+    with patch.object(agf_full.chat, "request", return_value=reply) as request:
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == "BLOCKED"
+    assert result["usage"][0]["completion_tokens"] == 13
+    assert request.call_count == 1
+
+
+def test_empty_planning_response_records_usage(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(state_dir, repo, objective="Fix both files", tasks_path=None,
+                            tests=[sys.executable], model="ollama/local")
+    reply = {"model": "local", "choices": [{"message": {"content": ""}}],
+             "usage": {"prompt_tokens": 9, "completion_tokens": 17}}
+    with patch.object(agf_full.chat, "request", return_value=reply):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == "BLOCKED"
+    assert result["usage"][0]["completion_tokens"] == 17
+
+
 def test_cli_scope_restricts_owner_supplied_tasks(repo, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
     tasks = tmp_path / "tasks.json"

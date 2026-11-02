@@ -76,7 +76,8 @@ def inventory(root: Path, query: str = "", scope: str = "") -> list[str]:
     return [name for _, name in eligible[:220]]
 
 
-def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M"):
+def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M",
+               usage_observer=None):
     messages = [
         {
             "role": "system",
@@ -102,7 +103,7 @@ def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M"):
         actual = reply.get("model")
         if actual not in {model, model.removeprefix("ollama/")}:
             raise ValueError("unexpected gateway model")
-        result = json.loads(reply["choices"][0]["message"]["content"])
+        content = reply["choices"][0]["message"]["content"]
         usage = reply.get("usage", {})
         evidence = {
             "purpose": purpose,
@@ -133,7 +134,7 @@ def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M"):
         actual = reply.get("model")
         if actual != model.removeprefix("ollama/"):
             raise ValueError("unexpected local model")
-        result = json.loads(reply["message"]["content"])
+        content = reply["message"]["content"]
         evidence = {
             "purpose": purpose,
             "provider": "ollama",
@@ -143,6 +144,9 @@ def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M"):
             "completion_tokens": reply.get("eval_count", 0),
             "api_eur": 0,
         }
+    if usage_observer is not None:
+        usage_observer(evidence)
+    result = json.loads(content)
     if not isinstance(result, dict):
         raise ValueError("model response is not a JSON object")
     return result, evidence
@@ -155,6 +159,7 @@ def plan(
     *,
     model="ollama/qwen3.5:9b-q4_K_M",
     scope: str = "",
+    usage_observer=None,
 ) -> tuple[list[dict], dict]:
     allowed = inventory(root, query=objective, scope=scope)
     if not allowed:
@@ -171,7 +176,8 @@ def plan(
         "changes. If goal is complex, focus on an independently verifiable first slice."
         f"\nOBJECTIVE:\n{objective}\nINVENTORY:\n" + json.dumps(allowed)
     )
-    data, evidence = route_json(prompt, purpose="planning", model=model)
+    data, evidence = route_json(prompt, purpose="planning", model=model,
+                                usage_observer=usage_observer)
     raw = data.get("tasks")
     if not isinstance(raw, list) or not 1 <= len(raw) <= 4:
         raise ValueError("planner returned no bounded task list")
@@ -380,8 +386,16 @@ def propose_edits(
         f"\nPREVIOUS FAILURE:\n{previous_error[-2600:]}"
         f"\nALLOWED FILES:\n{context}"
     )
-    result, usage = route_json(prompt, purpose="implementation", model=model)
-    if usage_observer is not None:
+    observed = []
+
+    def observe(usage):
+        if usage_observer is not None:
+            usage_observer(usage)
+        observed.append(usage)
+
+    result, usage = route_json(prompt, purpose="implementation", model=model,
+                               usage_observer=observe)
+    if not observed and usage_observer is not None:
         usage_observer(usage)
     operations = result.get("changes")
     if not isinstance(operations, list) or not 1 <= len(operations) <= 12:
@@ -476,14 +490,25 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
             state["planning_attempts"] = state.get("planning_attempts", 0) + 1
             state["pid"] = os.getpid()
             chat.write_json(path, state)
+            recorded_planning_usage = []
+
+            def record_planning_usage(usage):
+                current = json.loads(path.read_text())
+                current["usage"].append(usage)
+                chat.write_json(path, current)
+                state["usage"] = current["usage"]
+                recorded_planning_usage.append(usage)
+
             try:
                 tasks, usage = plan(root, state.get("objective") or "", state["planning_tests"],
-                                    model=state["planning_model"], scope=state.get("scope", ""))
+                                    model=state["planning_model"], scope=state.get("scope", ""),
+                                    usage_observer=record_planning_usage)
                 for task in tasks:
                     check_task(root, task)
                 latest = json.loads(path.read_text())
                 state["tasks"] = tasks
-                state["usage"].append(usage)
+                if not recorded_planning_usage:
+                    state["usage"].append(usage)
                 if latest["status"] in {"PAUSED", "STOPPED"}:
                     state["status"] = latest["status"]
                     state.pop("pid", None)
