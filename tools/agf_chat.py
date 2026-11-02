@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 DEFAULT_STATE = Path.home() / ".local/state/agf-free-first"
@@ -23,7 +24,15 @@ OMNI_URL = "http://127.0.0.1:20128"
 DEFAULT_MODELS = ("qwen3.5:9b-q4_K_M", "qwen3:14b")
 
 
-def write_json(path: Path, record: dict) -> None:
+@contextmanager
+def control_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_suffix(".control.lock").open("a+") as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        yield
+
+
+def _write_json_unlocked(path: Path, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".agf-", dir=path.parent)
     try:
@@ -36,6 +45,21 @@ def write_json(path: Path, record: dict) -> None:
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+
+
+def write_json(path: Path, record: dict) -> None:
+    with control_lock(path):
+        if path.is_file() and record.get("engine") == "full":
+            current = json.loads(path.read_text())
+            if current.get("status") in {"PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
+                for key in ("usage", "events", "updated_at"):
+                    if key in record:
+                        current[key] = record[key]
+                if "pid" not in record:
+                    current.pop("pid", None)
+                record.clear()
+                record.update(current)
+        _write_json_unlocked(path, record)
 
 
 def request(
@@ -510,10 +534,31 @@ def main():
         raise SystemExit("unknown mission id")
     state = json.loads(path.read_text())
     if args.command in ("run", "resume"):
-        if args.command == "resume" and state["status"] in ("PAUSED", "BLOCKED"):
-            state["status"] = "PENDING"
-            state.pop("reason", None)
-            write_json(path, state)
+        if args.command == "resume":
+            with (state_dir / f"{args.mission_id}.lock").open("a+") as runner_lock:
+                try:
+                    fcntl.flock(runner_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    print(json.dumps({"mission_id": args.mission_id, "status": "ALREADY_RUNNING"}))
+                    return
+                with control_lock(path):
+                    state = json.loads(path.read_text())
+                    if state["status"] in ("PAUSED", "BLOCKED"):
+                        if state.get("engine") == "full":
+                            result = subprocess.run(
+                                ["git", "-C", state["worktree"], "status", "--porcelain"],
+                                capture_output=True, text=True,
+                            )
+                            if result.returncode or result.stdout:
+                                state["status"] = "HUMAN_REQUIRED"
+                                state["reason"] = "worktree requires reconciliation before resume"
+                            else:
+                                state["status"] = "PENDING"
+                                state.pop("reason", None)
+                        else:
+                            state["status"] = "PENDING"
+                            state.pop("reason", None)
+                        _write_json_unlocked(path, state)
         if state.get("engine") == "full":
             if __package__:
                 from . import agf_full
@@ -523,8 +568,16 @@ def main():
         else:
             state = run_mission(state_dir, args.mission_id)
     elif args.command in ("pause", "stop"):
-        state["status"] = "PAUSED" if args.command == "pause" else "STOPPED"
-        write_json(path, state)
+        with control_lock(path):
+            state = json.loads(path.read_text())
+            target = "PAUSED" if args.command == "pause" else "STOPPED"
+            allowed = {"PENDING", "PLANNING", "RUNNING"}
+            if args.command == "stop":
+                allowed.update({"PAUSED", "BLOCKED"})
+            if state["status"] not in allowed | {target}:
+                raise SystemExit("mission status does not permit this control action")
+            state["status"] = target
+            _write_json_unlocked(path, state)
     if args.command == "status":
         print(
             json.dumps(

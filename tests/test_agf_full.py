@@ -1,5 +1,6 @@
 """Full-project runner checks: path isolation, scoped multi-file patches and retry."""
 
+import fcntl
 import json
 import subprocess
 import sys
@@ -357,6 +358,110 @@ def test_stop_during_execution_clears_pid(repo, tmp_path, monkeypatch):
         result = agf_full.run_mission(state_dir, queued["mission_id"])
     assert result["status"] == "STOPPED" and "pid" not in result
     assert result["owner_note"] == "retain"
+
+
+def test_stop_after_validation_prevents_local_commit(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{
+        "files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable],
+    }]))
+    queued = agf_full.start(state_dir, repo, objective=None, tasks_path=tasks,
+                            tests=[sys.executable], model="ollama/local")
+    path = state_dir / (queued["mission_id"] + ".json")
+    original_write = agf_full.chat.write_json
+
+    def stop_after_validation(target, record):
+        original_write(target, record)
+        if any(event.get("passed") is True for event in record.get("events", [])):
+            with agf_full.chat.control_lock(path):
+                current = json.loads(path.read_text())
+                current.update(status="STOPPED", owner_note="retain")
+                agf_full.chat._write_json_unlocked(path, current)
+
+    changes = {"logic.py": "def answer():\n    return 42\n"}
+    with patch.object(agf_full.chat, "write_json", side_effect=stop_after_validation), \
+         patch.object(agf_full, "propose_edits", return_value=(changes, {
+             "provider": "ollama", "model": "local",
+         })), patch.object(agf_full.chat, "execute_tests", return_value=(True, "passed")):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == "STOPPED" and result["index"] == 0
+    assert result["owner_note"] == "retain" and "pid" not in result
+    assert not any(event.get("committed") for event in result["events"])
+
+
+def test_stale_worker_write_cannot_erase_stop(tmp_path):
+    path = tmp_path / "mission.json"
+    stopped = {"engine": "full", "status": "STOPPED", "owner_note": "retain",
+               "usage": [], "events": []}
+    agf_full.chat.write_json(path, stopped)
+    stale = {"engine": "full", "status": "RUNNING", "usage": [], "events": []}
+    agf_full.chat.write_json(path, stale)
+    assert stale["status"] == "STOPPED"
+    assert json.loads(path.read_text())["owner_note"] == "retain"
+
+
+def test_resume_rejects_dirty_worktree_and_pause_cannot_clear_gate(
+    repo, tmp_path, monkeypatch, capsys,
+):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{
+        "files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable],
+    }]))
+    queued = agf_full.start(state_dir, repo, objective=None, tasks_path=tasks,
+                            tests=[sys.executable], model="ollama/local")
+    path = state_dir / (queued["mission_id"] + ".json")
+    state = json.loads(path.read_text())
+    state["status"] = "PAUSED"
+    agf_full.chat.write_json(path, state)
+    (Path(queued["worktree"]) / "logic.py").write_text("unreconciled change")
+    monkeypatch.setattr(sys, "argv", ["agf-chat", "--state-dir", str(state_dir),
+                                     "resume", queued["mission_id"]])
+    agf_full.chat.main()
+    assert json.loads(capsys.readouterr().out)["status"] == "HUMAN_REQUIRED"
+    monkeypatch.setattr(sys, "argv", ["agf-chat", "--state-dir", str(state_dir),
+                                     "pause", queued["mission_id"]])
+    with pytest.raises(SystemExit, match="does not permit"):
+        agf_full.chat.main()
+    assert json.loads(path.read_text())["status"] == "HUMAN_REQUIRED"
+
+
+def test_resume_does_not_cancel_pause_while_worker_active(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "active.json"
+    agf_full.chat.write_json(path, {"mission_id": "active", "status": "PAUSED"})
+    monkeypatch.setattr(sys, "argv", ["agf-chat", "--state-dir", str(tmp_path),
+                                     "resume", "active"])
+    with (tmp_path / "active.lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        agf_full.chat.main()
+    assert json.loads(capsys.readouterr().out)["status"] == "ALREADY_RUNNING"
+    assert json.loads(path.read_text())["status"] == "PAUSED"
+
+
+def test_stop_during_execution_error_preserves_owner_fields(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{
+        "files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable],
+    }]))
+    queued = agf_full.start(state_dir, repo, objective=None, tasks_path=tasks,
+                            tests=[sys.executable], model="ollama/local")
+    path = state_dir / (queued["mission_id"] + ".json")
+
+    def stop_then_fail(*args, **kwargs):
+        current = json.loads(path.read_text())
+        current.update(status="STOPPED", owner_note="retain")
+        agf_full.chat.write_json(path, current)
+        raise ValueError("provider failed")
+
+    with patch.object(agf_full, "propose_edits", side_effect=stop_then_fail):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == "STOPPED" and result["owner_note"] == "retain"
+    assert "pid" not in result and result["events"][-1]["error"] == "provider failed"
 
 
 def test_interrupted_execution_does_not_redispatch(repo, tmp_path, monkeypatch):

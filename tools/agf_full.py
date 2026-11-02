@@ -494,6 +494,10 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
             state["planning_attempts"] = state.get("planning_attempts", 0) + 1
             state["pid"] = os.getpid()
             chat.write_json(path, state)
+            if state["status"] in {"PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
+                state.pop("pid", None)
+                chat.write_json(path, state)
+                return state
             recorded_planning_usage = []
 
             def record_planning_usage(usage):
@@ -531,6 +535,10 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
         state.pop("reason", None)
         state["pid"] = os.getpid()
         chat.write_json(path, state)
+        if state["status"] in {"PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
+            state.pop("pid", None)
+            chat.write_json(path, state)
+            return state
         for index in range(state["index"], len(state["tasks"])):
             task = state["tasks"][index]
             historical_attempts = sum(
@@ -545,6 +553,10 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     return json.loads(path.read_text())
                 state["attempt"] = attempt
                 chat.write_json(path, state)
+                if state["status"] in {"PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
+                    state.pop("pid", None)
+                    chat.write_json(path, state)
+                    return state
                 backups = {}
                 try:
                     check_task(root, task)
@@ -628,10 +640,11 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     )
                     current = json.loads(path.read_text())
                     if current["status"] in {"STOPPED", "PAUSED"}:
-                        state["status"] = current["status"]
-                        state.pop("pid", None)
-                        chat.write_json(path, state)
-                        return state
+                        current["usage"] = state["usage"]
+                        current["events"] = state["events"]
+                        current.pop("pid", None)
+                        chat.write_json(path, current)
+                        return current
                     chat.write_json(path, state)
             if not passed:
                 state["status"] = "BLOCKED"
@@ -639,53 +652,60 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                 state.pop("pid", None)
                 chat.write_json(path, state)
                 return state
-            # Commits stay on the isolated local branch, never pushed automatically.
-            subprocess.run(
-                ["git", "-C", str(root), "add", "--", *task["files"]],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            committed = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(root),
-                    "-c",
-                    "user.name=AGF Free-first",
-                    "-c",
-                    "user.email=agf-free-first@localhost",
-                    "commit",
-                    "-q",
-                    "-m",
-                    f"AGF free-first task {index + 1}: {task['instruction'][:65]}",
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if committed.returncode:
-                state["status"] = "BLOCKED"
-                state["reason"] = "local Git commit failed: " + committed.stderr[-450:]
-                chat.write_json(path, state)
-                return state
-            state["index"] = index + 1
-            state["attempt"] = 0
+            with chat.control_lock(path):
+                current = json.loads(path.read_text())
+                if current.get("status") in {"STOPPED", "PAUSED", "HUMAN_REQUIRED"}:
+                    current.pop("pid", None)
+                    chat._write_json_unlocked(path, current)
+                    return current
+                state = current
+                # Commits stay on the isolated local branch, never pushed automatically.
+                subprocess.run(
+                    ["git", "-C", str(root), "add", "--", *task["files"]],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                committed = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(root),
+                        "-c",
+                        "user.name=AGF Free-first",
+                        "-c",
+                        "user.email=agf-free-first@localhost",
+                        "commit",
+                        "-q",
+                        "-m",
+                        f"AGF free-first task {index + 1}: {task['instruction'][:65]}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                if committed.returncode:
+                    state["status"] = "BLOCKED"
+                    state["reason"] = "local Git commit failed: " + committed.stderr[-450:]
+                    chat._write_json_unlocked(path, state)
+                    return state
+                state["index"] = index + 1
+                state["attempt"] = 0
+                state["updated_at"] = time.time()
+                state["events"].append(
+                    {
+                        "task": index,
+                        "committed": True,
+                        "commit": subprocess.check_output(
+                            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"], text=True
+                        ).strip(),
+                    }
+                )
+                chat._write_json_unlocked(path, state)
+        with chat.control_lock(path):
+            state = json.loads(path.read_text())
+            if state.get("status") not in {"STOPPED", "PAUSED", "HUMAN_REQUIRED"}:
+                state["status"] = "COMPLETED"
+            state.pop("pid", None)
             state["updated_at"] = time.time()
-            state["events"].append(
-                {
-                    "task": index,
-                    "committed": True,
-                    "commit": subprocess.check_output(
-                        ["git", "-C", str(root), "rev-parse", "--short", "HEAD"], text=True
-                    ).strip(),
-                }
-            )
-            chat.write_json(path, state)
-        latest = json.loads(path.read_text())
-        if latest.get("status") in {"STOPPED", "PAUSED"}:
-            return latest
-        state["status"] = "COMPLETED"
-        state.pop("pid", None)
-        state["updated_at"] = time.time()
-        chat.write_json(path, state)
-        return state
+            chat._write_json_unlocked(path, state)
+            return state
