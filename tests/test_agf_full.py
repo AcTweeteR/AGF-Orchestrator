@@ -56,6 +56,16 @@ def test_rejects_unplanned_file_and_path_traversal(repo):
         agf_full.check_task(repo, task)
 
 
+def test_project_mission_rejects_paid_model_before_dispatch(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    with pytest.raises(ValueError, match="local Ollama"):
+        agf_full.start(tmp_path / "state", repo, objective="Fix the bug", tasks_path=None,
+                       tests=[sys.executable], model="openai/paid")
+    assert not (tmp_path / "worktrees").exists()
+    with pytest.raises(ValueError, match="local Ollama"):
+        agf_full.route_json("test", purpose="planning", model="openai/paid")
+
+
 def test_multi_file_patch_provenance(repo):
     task = {
         "files": ["logic.py", "addon.xml"],
@@ -115,6 +125,7 @@ def test_durable_mission_isolated_from_caller_and_committed(repo, tmp_path, monk
     attempts = [0]
 
     def fake_changes(worktree, task, failure, **kwargs):
+        assert kwargs["model"] == "ollama/local"
         attempts[0] += 1
         if attempts[0] == 1:
             return {"logic.py": "def answer():\n    return 0\n"}, {
@@ -387,7 +398,7 @@ def test_empty_model_response_records_usage_before_rejection(repo, tmp_path, mon
     state_dir = tmp_path / "state"
     queued = agf_full.start(state_dir, repo, objective=None, tasks_path=tasks,
                             tests=[sys.executable], model="ollama/local", max_attempts=1)
-    reply = {"model": "qwen3.5:9b-q4_K_M", "choices": [{"message": {"content": ""}}],
+    reply = {"model": "local", "choices": [{"message": {"content": ""}}],
              "usage": {"prompt_tokens": 7, "completion_tokens": 13}}
     with patch.object(agf_full.chat, "request", return_value=reply) as request:
         result = agf_full.run_mission(state_dir, queued["mission_id"])

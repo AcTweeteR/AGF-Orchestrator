@@ -78,6 +78,8 @@ def inventory(root: Path, query: str = "", scope: str = "") -> list[str]:
 
 def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M",
                usage_observer=None):
+    if not isinstance(model, str) or not model.startswith("ollama/") or not model[7:]:
+        raise ValueError("only an explicit local Ollama model is permitted")
     messages = [
         {
             "role": "system",
@@ -254,6 +256,8 @@ def start(
     scope: str = "",
 ) -> dict:
     repository = repository.resolve()
+    if not isinstance(model, str) or not model.startswith("ollama/") or not model[7:]:
+        raise ValueError("only an explicit local Ollama model is permitted")
     if scope and (
         scope.startswith("/") or ".." in Path(scope).parts or ".git" in Path(scope).parts
     ):
@@ -553,7 +557,11 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                         state["usage"] = current["usage"]
                         recorded_usage.append(usage)
 
-                    changes, usage = propose_edits(root, task, failure, usage_observer=record_usage)
+                    changes, usage = propose_edits(
+                        root, task, failure,
+                        model=state.get("planning_model", "ollama/qwen3.5:9b-q4_K_M"),
+                        usage_observer=record_usage,
+                    )
                     backups = {
                         name: chat.safe_target(root, name).read_text(encoding="utf-8")
                         for name in changes
