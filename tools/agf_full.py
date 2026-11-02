@@ -44,7 +44,9 @@ def inventory(root: Path, query: str = "", scope: str = "") -> list[str]:
     eligible = []
     terms = [w.strip(".,:;!?()").lower() for w in query.split() if len(w) >= 4]
     test_goal = any(term in query.lower() for term in ("test", "prueba", "coverage", "cobertura"))
-    fixture_goal = any(term in query.lower() for term in ("fixture", "test data", "datos de prueba"))
+    fixture_goal = any(
+        term in query.lower() for term in ("fixture", "test data", "datos de prueba")
+    )
     documentation_goal = any(
         term in query.lower() for term in ("documentation", "documentación", "readme", "docs")
     )
@@ -64,7 +66,14 @@ def inventory(root: Path, query: str = "", scope: str = "") -> list[str]:
             len(rel.parts) > 7
             or any(part in SKIP_DIRS for part in rel.parts)
             or rel.suffix.lower() not in SOURCE_SUFFIXES
-            or (not test_goal and (rel.name.startswith("test_") or rel.name.endswith("_test.py") or "tests" in rel.parts))
+            or (
+                not test_goal
+                and (
+                    rel.name.startswith("test_")
+                    or rel.name.endswith("_test.py")
+                    or "tests" in rel.parts
+                )
+            )
             or (not fixture_goal and "fixtures" in rel.parts)
         ):
             continue
@@ -268,12 +277,24 @@ def start(
     state_dir.mkdir(parents=True, exist_ok=True)
     path = state_dir / (mission_id + ".json")
     record = {
-        "engine": "full", "mission_id": mission_id, "status": "PLANNING",
-        "repository": str(repository), "worktree": None, "branch": None,
-        "objective": objective, "scope": scope, "tasks": [], "index": 0,
-        "attempt": 0, "max_attempts": max(1, min(5, max_attempts)),
-        "usage": [], "events": [], "api_budget_eur": 0,
-        "codex_calls": 0, "created_at": time.time(), "planning_pid": os.getpid(),
+        "engine": "full",
+        "mission_id": mission_id,
+        "status": "PLANNING",
+        "repository": str(repository),
+        "worktree": None,
+        "branch": None,
+        "objective": objective,
+        "scope": scope,
+        "tasks": [],
+        "index": 0,
+        "attempt": 0,
+        "max_attempts": max(1, min(5, max_attempts)),
+        "usage": [],
+        "events": [],
+        "api_budget_eur": 0,
+        "codex_calls": 0,
+        "created_at": time.time(),
+        "planning_pid": os.getpid(),
     }
     # Persist before creating a worktree or invoking a potentially slow model.
     chat.write_json(path, record)
@@ -301,7 +322,10 @@ def start(
         record.pop("planning_pid", None)
         chat.write_json(path, record)
     except Exception as exc:
-        record.update(status="BLOCKED", reason=f"Mission preparation failed: {type(exc).__name__}: {str(exc)[:600]}")
+        record.update(
+            status="BLOCKED",
+            reason=f"Mission preparation failed: {type(exc).__name__}: {str(exc)[:600]}",
+        )
         record.pop("planning_pid", None)
         chat.write_json(path, record)
         if worktree is not None:
@@ -310,7 +334,9 @@ def start(
                 capture_output=True,
             )
         if branch is not None:
-            subprocess.run(["git", "-C", str(repository), "branch", "-D", branch], capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(repository), "branch", "-D", branch], capture_output=True
+            )
         return {"mission_id": mission_id, "status": "BLOCKED", "reason": record["reason"]}
     if background:
         with (state_dir / (mission_id + ".log")).open("ab") as logfile:
