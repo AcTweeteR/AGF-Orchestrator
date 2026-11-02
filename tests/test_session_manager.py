@@ -249,6 +249,26 @@ def test_dirty_initial_planning_recovers_only_unchanged_content(
         assert json.loads(Path(recovered.plan_path).read_text())["repository"]["clean"] is False
 
 
+def test_dirty_plan_is_not_published_when_fingerprint_changes_during_verification(
+    tmp_path, monkeypatch,
+):
+    root, state = registered(tmp_path)
+    registry = ProjectRegistry(state)
+    with registry._lock("dirty-test-policy"):
+        entries = registry._load()
+        registry._save([replace(item, policy=replace(item.policy, allow_dirty_planning=True))
+                        for item in entries])
+    (root / "x").write_text("dirty")
+    fingerprints = iter(["a" * 64, "a" * 64, "a" * 64, "b" * 64])
+    monkeypatch.setattr(session_manager_module, "_dirty_planning_fingerprint",
+                        lambda _root: next(fingerprints))
+    manager = SessionManager(state)
+    with pytest.raises(SessionManagerError, match="worktree changed"):
+        manager.start("alpha", "Add contributor link validation")
+    assert manager.list()[0].status is SessionStatus.PLANNING
+    assert manager.list()[0].plan_path is None
+
+
 def test_canonical_target_reconcile_retires_historical_checkpoint(tmp_path):
     root, state = registered(tmp_path)
     manager = SessionManager(state)

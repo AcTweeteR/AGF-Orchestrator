@@ -103,6 +103,11 @@ def _dirty_planning_fingerprint(root: Path) -> str:
                 if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
                     raise SessionManagerError("untracked file changed during planning snapshot")
                 digest.update(hashlib.file_digest(stream, "sha256").digest())
+                after = os.fstat(stream.fileno())
+                if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (
+                    after.st_size, after.st_mtime_ns, after.st_ctime_ns
+                ):
+                    raise SessionManagerError("untracked file changed during planning snapshot")
         else:
             raise SessionManagerError("dirty planning includes an unsupported special file")
     return digest.hexdigest()
@@ -388,7 +393,9 @@ class SessionManager:
             ):
                 raise SessionManagerError("planning worktree evidence changed")
             snapshot = json.loads(snapshot_path.read_text())
-            if snapshot.get("sha256") != _dirty_planning_fingerprint(root):
+            fingerprint = _dirty_planning_fingerprint(root)
+            if (snapshot.get("sha256") != fingerprint
+                    or fingerprint != _dirty_planning_fingerprint(root)):
                 raise SessionManagerError("worktree changed during initial planning")
         session_id = session.session_id
         plan_path, plan_hash = self.store.write_artifact(
@@ -1819,10 +1826,12 @@ class SessionManager:
                 try:
                     actual_hash = self.store.artifact_hash(str(path))
                     snapshot = json.loads(path.read_text())
+                    fingerprint = _dirty_planning_fingerprint(root)
                     matches = (project.policy.allow_dirty_planning and dirty
                                and actual_hash == snapshot_hash
                                and set(snapshot) == {"sha256"}
-                               and snapshot["sha256"] == _dirty_planning_fingerprint(root))
+                               and snapshot["sha256"] == fingerprint
+                               and fingerprint == _dirty_planning_fingerprint(root))
                 except (OSError, ValueError, TypeError, SessionStoreError, SessionManagerError,
                         subprocess.SubprocessError):
                     matches = False
