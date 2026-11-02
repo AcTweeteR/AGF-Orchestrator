@@ -263,8 +263,24 @@ def start(
     if Path(top).resolve() != repository:
         raise ValueError("repository must be its Git toplevel")
     mission_id = uuid.uuid4().hex[:16]
-    worktree, branch = create_worktree(repository, mission_id)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = state_dir / (mission_id + ".json")
+    record = {
+        "engine": "full", "mission_id": mission_id, "status": "PLANNING",
+        "repository": str(repository), "worktree": None, "branch": None,
+        "objective": objective, "scope": scope, "tasks": [], "index": 0,
+        "attempt": 0, "max_attempts": max(1, min(5, max_attempts)),
+        "usage": [], "events": [], "api_budget_eur": 0,
+        "codex_calls": 0, "created_at": time.time(),
+    }
+    # Persist before creating a worktree or invoking a potentially slow model.
+    chat.write_json(path, record)
+    worktree = None
+    branch = None
     try:
+        worktree, branch = create_worktree(repository, mission_id)
+        record.update(worktree=str(worktree), branch=branch)
+        chat.write_json(path, record)
         if tasks_path:
             tasks = json.loads(tasks_path.read_text())
             planning = None
@@ -279,34 +295,19 @@ def start(
                 for name in task["files"]
             ):
                 raise ValueError("task file outside owner-selected scope")
-        record = {
-            "engine": "full",
-            "mission_id": mission_id,
-            "status": "PENDING",
-            "repository": str(repository),
-            "worktree": str(worktree),
-            "branch": branch,
-            "objective": objective,
-            "scope": scope,
-            "tasks": tasks,
-            "index": 0,
-            "attempt": 0,
-            "max_attempts": max(1, min(5, max_attempts)),
-            "usage": [planning] if planning else [],
-            "events": [],
-            "api_budget_eur": 0,
-            "codex_calls": 0,
-            "created_at": time.time(),
-        }
-        state_dir.mkdir(parents=True, exist_ok=True)
-        chat.write_json(state_dir / (mission_id + ".json"), record)
-    except Exception:
-        subprocess.run(
-            ["git", "-C", str(repository), "worktree", "remove", "--force", str(worktree)],
-            capture_output=True,
-        )
-        subprocess.run(["git", "-C", str(repository), "branch", "-D", branch], capture_output=True)
-        raise
+        record.update(status="PENDING", tasks=tasks, usage=[planning] if planning else [])
+        chat.write_json(path, record)
+    except Exception as exc:
+        record.update(status="BLOCKED", reason=f"Mission preparation failed: {type(exc).__name__}: {str(exc)[:600]}")
+        chat.write_json(path, record)
+        if worktree is not None:
+            subprocess.run(
+                ["git", "-C", str(repository), "worktree", "remove", "--force", str(worktree)],
+                capture_output=True,
+            )
+        if branch is not None:
+            subprocess.run(["git", "-C", str(repository), "branch", "-D", branch], capture_output=True)
+        return {"mission_id": mission_id, "status": "BLOCKED", "reason": record["reason"]}
     if background:
         with (state_dir / (mission_id + ".log")).open("ab") as logfile:
             subprocess.Popen(

@@ -188,3 +188,21 @@ def test_approved_unittest_command_cannot_pass_with_zero_tests(tmp_path):
     )
     assert not ok
     assert "Ran 0 tests" in evidence
+
+
+def test_planning_failure_keeps_queryable_mission(repo, tmp_path, monkeypatch):
+    """A failed planner must not silently erase the accepted mission."""
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    with patch.object(agf_full, "plan", side_effect=TimeoutError("planner timed out")):
+        result = agf_full.start(
+            state_dir, repo, objective="Improve answer calculation",
+            tasks_path=None, tests=[sys.executable, "-m", "unittest", "test_logic"],
+            model="ollama/qwen3.5:9b-q4_K_M", background=False,
+        )
+    assert result["status"] == "BLOCKED"
+    persisted = json.loads((state_dir / (result["mission_id"] + ".json")).read_text())
+    assert persisted["status"] == "BLOCKED"
+    assert "planner timed out" in persisted["reason"]
+    assert persisted["mission_id"] == result["mission_id"]
+    assert not (tmp_path / "worktrees" / result["mission_id"]).exists()
