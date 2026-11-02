@@ -206,3 +206,27 @@ def test_planning_failure_keeps_queryable_mission(repo, tmp_path, monkeypatch):
     assert "planner timed out" in persisted["reason"]
     assert persisted["mission_id"] == result["mission_id"]
     assert not (tmp_path / "worktrees" / result["mission_id"]).exists()
+
+
+def test_planning_record_is_saved_before_model_call(repo, tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+
+    def check_record(worktree, objective, tests, **kwargs):
+        records = list(state_dir.glob("*.json"))
+        assert len(records) == 1
+        record = json.loads(records[0].read_text())
+        assert record["status"] == "PLANNING"
+        assert record["planning_pid"] > 0
+        assert record["worktree"] == str(worktree)
+        raise ValueError("controlled planning failure")
+
+    with patch.object(agf_full, "plan", side_effect=check_record):
+        result = agf_full.start(
+            state_dir, repo, objective="Improve answer calculation", tasks_path=None,
+            tests=[sys.executable, "-m", "unittest", "test_logic"],
+            model="ollama/qwen3.5:9b-q4_K_M",
+        )
+    assert result["status"] == "BLOCKED"
+    recorded = json.loads((state_dir / (result["mission_id"] + ".json")).read_text())
+    assert "planning_pid" not in recorded

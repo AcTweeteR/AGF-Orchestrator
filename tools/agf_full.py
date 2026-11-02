@@ -271,7 +271,7 @@ def start(
         "objective": objective, "scope": scope, "tasks": [], "index": 0,
         "attempt": 0, "max_attempts": max(1, min(5, max_attempts)),
         "usage": [], "events": [], "api_budget_eur": 0,
-        "codex_calls": 0, "created_at": time.time(),
+        "codex_calls": 0, "created_at": time.time(), "planning_pid": os.getpid(),
     }
     # Persist before creating a worktree or invoking a potentially slow model.
     chat.write_json(path, record)
@@ -296,9 +296,11 @@ def start(
             ):
                 raise ValueError("task file outside owner-selected scope")
         record.update(status="PENDING", tasks=tasks, usage=[planning] if planning else [])
+        record.pop("planning_pid", None)
         chat.write_json(path, record)
     except Exception as exc:
         record.update(status="BLOCKED", reason=f"Mission preparation failed: {type(exc).__name__}: {str(exc)[:600]}")
+        record.pop("planning_pid", None)
         chat.write_json(path, record)
         if worktree is not None:
             subprocess.run(
@@ -446,6 +448,16 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
             return {"mission_id": mission_id, "status": "ALREADY_RUNNING"}
         state = json.loads(path.read_text())
         if state["status"] in {"COMPLETED", "BLOCKED", "PAUSED", "STOPPED"}:
+            return state
+        # PLANNING is never runnable: it has no validated tasks. If its owner
+        # disappeared, retain the record and require an explicit new plan.
+        if state["status"] == "PLANNING":
+            return state
+        if not state.get("worktree") or not state.get("tasks"):
+            state["status"] = "BLOCKED"
+            state["reason"] = "mission has no validated worktree or tasks"
+            state.pop("pid", None)
+            chat.write_json(path, state)
             return state
         root = Path(state["worktree"]).resolve()
         if not root.is_dir():

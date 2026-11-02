@@ -483,6 +483,39 @@ def main():
         )
         return
     if args.command == "worker":
+        # Workers must not run a partly constructed mission. A planning owner
+        # interrupted before persistence of tasks leaves an auditable BLOCKED
+        # record rather than a permanently invisible or unexecutable mission.
+        for record in state_dir.glob("*.json"):
+            try:
+                state = json.loads(record.read_text())
+                if state.get("engine") != "full" or state.get("status") != "PLANNING":
+                    continue
+                lock = state_dir / (state["mission_id"] + ".planning.lock")
+                with lock.open("a+") as stream:
+                    try:
+                        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    current = json.loads(record.read_text())
+                    if current.get("status") != "PLANNING":
+                        continue
+                    # Never interrupt active planning based on elapsed time alone.
+                    # Only an owner PID known to have exited may be reclaimed.
+                    pid = current.get("planning_pid")
+                    if not isinstance(pid, int) or pid <= 0:
+                        continue
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        current["status"] = "BLOCKED"
+                        current["reason"] = "planning process exited before persisting tasks"
+                        current.pop("planning_pid", None)
+                        write_json(record, current)
+                    except PermissionError:
+                        continue
+            except (KeyError, OSError, ValueError, json.JSONDecodeError):
+                continue
         for record in state_dir.glob("*.json"):
             try:
                 state = json.loads(record.read_text())
