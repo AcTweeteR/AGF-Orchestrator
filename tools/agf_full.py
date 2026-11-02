@@ -510,23 +510,23 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                 for task in tasks:
                     check_task(root, task)
                 latest = json.loads(path.read_text())
-                state["tasks"] = tasks
                 if not recorded_planning_usage:
-                    state["usage"].append(usage)
+                    latest["usage"].append(usage)
                 if latest["status"] in {"PAUSED", "STOPPED"}:
-                    state["status"] = latest["status"]
-                    state.pop("pid", None)
-                    chat.write_json(path, state)
-                    return state
+                    latest.pop("pid", None)
+                    chat.write_json(path, latest)
+                    return latest
+                state = latest
+                state["tasks"] = tasks
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
                 latest = json.loads(path.read_text())
-                state["status"] = (
+                latest["status"] = (
                     latest["status"] if latest["status"] in {"PAUSED", "STOPPED"} else "BLOCKED"
                 )
-                state["reason"] = "planning failed: " + str(exc)[:500]
-                state.pop("pid", None)
-                chat.write_json(path, state)
-                return state
+                latest["reason"] = "planning failed: " + str(exc)[:500]
+                latest.pop("pid", None)
+                chat.write_json(path, latest)
+                return latest
         state["status"] = "RUNNING"
         state.pop("reason", None)
         state["pid"] = os.getpid()
@@ -602,9 +602,12 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     )
                     state["updated_at"] = time.time()
                     if current["status"] in {"STOPPED", "PAUSED"}:
-                        state["status"] = current["status"]
-                        chat.write_json(path, state)
-                        return state
+                        current["usage"] = state["usage"]
+                        current["events"] = state["events"]
+                        current["updated_at"] = state["updated_at"]
+                        current.pop("pid", None)
+                        chat.write_json(path, current)
+                        return current
                     chat.write_json(path, state)
                     if safe:
                         passed = True

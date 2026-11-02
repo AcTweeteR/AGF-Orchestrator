@@ -312,6 +312,53 @@ def test_stop_during_planning_failure_is_preserved(repo, tmp_path, monkeypatch):
     assert json.loads(path.read_text())["status"] == "STOPPED"
 
 
+def test_stop_during_successful_planning_does_not_install_plan(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(state_dir, repo, objective="Fix both files", tasks_path=None,
+                            tests=[sys.executable], model="ollama/local")
+    path = state_dir / (queued["mission_id"] + ".json")
+    task = {"files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable]}
+
+    def stop_then_return(*args, **kwargs):
+        current = json.loads(path.read_text())
+        current.update(status="STOPPED", owner_note="retain")
+        agf_full.chat.write_json(path, current)
+        return [task], {"provider": "ollama"}
+
+    with patch.object(agf_full, "plan", side_effect=stop_then_return):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == "STOPPED" and result["tasks"] is None
+    assert result["owner_note"] == "retain" and "pid" not in result
+    assert result["usage"] == [{"provider": "ollama"}]
+
+
+def test_stop_during_execution_clears_pid(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{
+        "files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable],
+    }]))
+    queued = agf_full.start(state_dir, repo, objective=None, tasks_path=tasks,
+                            tests=[sys.executable], model="ollama/local")
+    path = state_dir / (queued["mission_id"] + ".json")
+
+    def stop_then_edit(*args, **kwargs):
+        current = json.loads(path.read_text())
+        current.update(status="STOPPED", owner_note="retain")
+        agf_full.chat.write_json(path, current)
+        return {"logic.py": "def answer():\n    return 42\n"}, {
+            "provider": "ollama", "model": "local",
+        }
+
+    with patch.object(agf_full, "propose_edits", side_effect=stop_then_edit), \
+         patch.object(agf_full.chat, "execute_tests", return_value=(True, "passed")):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == "STOPPED" and "pid" not in result
+    assert result["owner_note"] == "retain"
+
+
 def test_interrupted_execution_does_not_redispatch(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
     tasks = tmp_path / "tasks.json"
