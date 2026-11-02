@@ -43,6 +43,7 @@ def inventory(root: Path, query: str = "", scope: str = "") -> list[str]:
     raw = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z"], text=True)
     eligible = []
     terms = [w.strip(".,:;!?()").lower() for w in query.split() if len(w) >= 4]
+    test_goal = any(term in query.lower() for term in ("test", "prueba", "coverage", "cobertura"))
     documentation_goal = any(
         term in query.lower() for term in ("documentation", "documentación", "readme", "docs")
     )
@@ -64,6 +65,7 @@ def inventory(root: Path, query: str = "", scope: str = "") -> list[str]:
             or rel.suffix.lower() not in SOURCE_SUFFIXES
             or rel.name.startswith("test_")
             or rel.name.endswith("_test.py")
+            or (not test_goal and ("tests" in rel.parts or "fixtures" in rel.parts))
         ):
             continue
         path = root / rel
