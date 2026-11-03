@@ -207,10 +207,16 @@ class GovernedSessionDriver:
         else:
             pipeline = self.pipeline_factory(project)
         if self.architect_factory is None:
-            from .cli import _architect_from_config
+            if self.spec.adapter == "free-first":
+                # Provider Intelligence currently resolves Codex/OpenHands only.
+                # Do not silently spend Codex tokens in a zero-cost local campaign.
+                def architect():
+                    return None
+            else:
+                from .cli import _architect_from_config
 
-            def architect():
-                return _architect_from_config(args)
+                def architect():
+                    return _architect_from_config(args)
         else:
             architect = self.architect_factory
         manager = self.manager_factory()

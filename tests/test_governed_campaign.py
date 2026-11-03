@@ -326,6 +326,7 @@ def test_governed_free_first_uses_deterministic_reviewer_and_canonical_pipeline(
     class FakeContinuation:
         def __init__(self, manager, pipeline, architect_factory):
             captured["pipeline"] = pipeline
+            captured["architect"] = architect_factory()
         def tick(self, session_id, **kwargs):
             return {"status": "HUMAN_REQUIRED", "reason": "safe boundary"}
     def pipeline(args, project):
@@ -345,3 +346,4 @@ def test_governed_free_first_uses_deterministic_reviewer_and_canonical_pipeline(
     assert result.outcome == "HUMAN_REQUIRED"
     assert captured["adapter"] == "free-first"
     assert captured["reviewer"] == "deterministic"
+    assert captured["architect"] is None
