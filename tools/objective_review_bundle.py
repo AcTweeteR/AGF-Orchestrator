@@ -85,6 +85,12 @@ def _source(session_id: str, *, state_root: str | Path | None = None):
 def _review_draft(session, project, plan, generation) -> dict[str, Any]:
     if not plan.tasks or len(plan.tasks) > 200:
         raise ValueError("Owner review plan has no bounded tasks")
+    if any(not task.allowed_paths for task in plan.tasks):
+        raise ValueError(
+            "Owner review cannot authorize an empty file scope; "
+            "start a new session with one evidenced path:filename or obtain "
+            "an independently reviewed scoped plan first"
+        )
     all_ids = [task.task_id for task in plan.tasks]
     all_validators = sorted({
         command for task in plan.tasks for command in task.validation_commands
