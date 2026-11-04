@@ -463,7 +463,7 @@ def check_edits(
     # Interrupted commits no longer appear in git diff, but must still pass
     # the same syntax and scope checks as an in-flight uncommitted patch.
     command = (
-        ["git", "-C", str(worktree), "diff", "--check"]
+        ["git", "-C", str(worktree), "diff", "HEAD", "--check"]
         if committed_files is None
         else ["git", "-C", str(worktree), "show", "--check", "--format=", "HEAD"]
     )
@@ -472,10 +472,19 @@ def check_edits(
         return False, result.stderr[-1800:] + result.stdout[-1800:]
     if committed_files is None:
         changed = subprocess.run(
-            ["git", "-C", str(worktree), "diff", "--name-only", "-z"],
+            ["git", "-C", str(worktree), "diff", "HEAD", "--name-only", "-z"],
             capture_output=True, text=True, check=True,
         ).stdout
         actual = [name for name in changed.split("\0") if name]
+        # Git diff ignores untracked files and, without HEAD, staged changes.
+        # Acceptance tests are untrusted code: neither may expand the task.
+        untracked = subprocess.run(
+            ["git", "-C", str(worktree), "ls-files", "--others",
+             "--exclude-standard", "-z"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        if untracked:
+            return False, "untracked files created outside the approved task scope"
     else:
         actual = committed_files
     if not actual or any(name not in names for name in actual):
@@ -576,11 +585,18 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
             return state
         interrupted = state["status"] in {"RUNNING", "PAUSING"}
         if state["status"] == "PAUSING":
-            state["status"] = "HUMAN_REQUIRED"
-            state["reason"] = "interrupted pause requires owner reconciliation"
-            state.pop("pid", None)
-            chat.write_json(path, state)
-            return state
+            # Generic write_json deliberately preserves owner PAUSING against
+            # stale executor writes. Interrupted-pause recovery is a distinct,
+            # lock-guarded transition and must use the canonical latest state.
+            with chat.control_lock(path):
+                current = json.loads(path.read_text())
+                if current["status"] != "PAUSING":
+                    return current
+                current["status"] = "HUMAN_REQUIRED"
+                current["reason"] = "interrupted pause requires owner reconciliation"
+                current.pop("pid", None)
+                chat._write_json_unlocked(path, current)
+                return current
         if not state.get("worktree"):
             state["status"] = "BLOCKED"
             state["reason"] = "mission has no validated worktree or tasks"
@@ -750,6 +766,22 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                                 chat._write_json_unlocked(path, current)
                                 return current
                             safe, validation = chat.execute_tests(root, task["tests"], timeout=100)
+                            # A passing test can still modify tracked, staged or
+                            # untracked files. Reinspect the actual post-test tree.
+                            post_safe, post_info = check_edits(root, task["files"])
+                            if not post_safe:
+                                current["status"] = "HUMAN_REQUIRED"
+                                current["reason"] = (
+                                    "acceptance changed the approved worktree: "
+                                    + post_info[-400:]
+                                )
+                                current["events"].append({
+                                    "task": index, "attempt": attempt,
+                                    "error": current["reason"][:500],
+                                })
+                                current.pop("pid", None)
+                                chat._write_json_unlocked(path, current)
+                                return current
                         info += "\n" + validation[-3500:]
                     elif safe:
                         info += (
@@ -847,6 +879,15 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     chat._write_json_unlocked(path, current)
                     return current
                 state = current
+                # Recheck immediately before staging: a concurrent test or
+                # external writer must not smuggle extra files into the commit.
+                safe_to_commit, commit_scope = check_edits(root, task["files"])
+                if not safe_to_commit:
+                    state["status"] = "HUMAN_REQUIRED"
+                    state["reason"] = "worktree changed before commit: " + commit_scope[-400:]
+                    state.pop("pid", None)
+                    chat._write_json_unlocked(path, state)
+                    return state
                 # Commits stay on the isolated local branch, never pushed automatically.
                 subprocess.run(
                     ["git", "-C", str(root), "add", "--", *task["files"]],

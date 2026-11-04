@@ -546,11 +546,15 @@ def dispatch_queued_missions(state_dir: Path, *, max_workers: int = 1) -> dict:
                     continue
                 status = state.get("status")
                 pid = state.get("pid") or state.get("planning_pid")
-                if status in {"RUNNING", "PAUSING", "PLANNING"} and _running_pid(pid):
+                if status in {"RUNNING", "PAUSING", "PLANNING"} and (
+                    _running_pid(pid) or _running_pid(state.get("dispatch_pid"))
+                ):
                     busy += 1
                 elif status == "PENDING" and _running_pid(state.get("dispatch_pid")):
                     busy += 1
-                elif status in {"PENDING", "RUNNING", "PLANNING"}:
+                elif status in {"PENDING", "RUNNING", "PAUSING", "PLANNING"}:
+                    # A dead PAUSING executor must reach the existing
+                    # fail-closed interrupted-pause reconciliation, not hang.
                     queued.append((mission_id, record))
             except (OSError, ValueError, TypeError):
                 continue

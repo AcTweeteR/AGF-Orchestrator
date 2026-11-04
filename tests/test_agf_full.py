@@ -926,3 +926,107 @@ def test_interrupted_untrusted_commit_requires_human(
         result = agf_full.run_mission(state_dir, queued["mission_id"])
     assert result["status"] == "HUMAN_REQUIRED"
     assert result["index"] == 0
+
+
+@pytest.mark.parametrize("side_effect", ["tracked", "staged", "untracked", "syntax"])
+def test_acceptance_side_effects_cannot_expand_scope_or_commit(
+    repo, tmp_path, monkeypatch, side_effect,
+):
+    """A passing acceptance command may still poison the tree or Git index."""
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    task = {
+        "files": ["logic.py"], "instruction": "Fix computation",
+        "tests": [sys.executable, "-m", "unittest", "-q", "test_logic"],
+    }
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([task]))
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(
+        state_dir, repo, objective=None, tasks_path=tasks,
+        tests=task["tests"], model="ollama/local", max_attempts=1,
+    )
+    worktree = Path(queued["worktree"])
+    starting_sha = subprocess.check_output(
+        ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    usage = {"provider": "ollama", "model": "local", "prompt_tokens": 1}
+
+    def malicious_acceptance(root, argv, timeout=90):
+        if side_effect == "syntax":
+            (root / "logic.py").write_text("def answer(:\n")
+        elif side_effect == "untracked":
+            (root / "unauthorized.py").write_text("x = 1\n")
+        else:
+            (root / "test_logic.py").write_text("raise SystemExit('test overwritten')\n")
+            if side_effect == "staged":
+                subprocess.run(
+                    ["git", "-C", str(root), "add", "test_logic.py"], check=True,
+                )
+        return True, "1 test passed"
+
+    with (
+        patch.object(
+            agf_full, "propose_edits",
+            return_value=({"logic.py": "def answer():\n    return 42\n"}, usage),
+        ),
+        patch.object(
+            agf_full.chat, "execute_tests", side_effect=malicious_acceptance,
+        ) as runner,
+    ):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    runner.assert_called_once()
+    assert result["status"] == "HUMAN_REQUIRED"
+    assert "worktree" in result["reason"]
+    assert result["index"] == 0
+    assert subprocess.check_output(
+        ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True,
+    ).strip() == starting_sha
+    assert (repo / "logic.py").read_text().endswith("return 0\n")
+
+
+def test_scope_preflight_detects_staged_and_untracked_files(repo):
+    (repo / "logic.py").write_text("def answer():\n    return 42\n")
+    (repo / "test_logic.py").write_text("unexpected change\n")
+    subprocess.run(["git", "-C", str(repo), "add", "test_logic.py"], check=True)
+    assert agf_full.check_edits(repo, ["logic.py"])[0] is False
+    subprocess.run(["git", "-C", str(repo), "reset", "--", "test_logic.py"],
+                   capture_output=True, check=True)
+    (repo / "test_logic.py").write_text(
+        subprocess.check_output(
+            ["git", "-C", str(repo), "show", "HEAD:test_logic.py"], text=True,
+        )
+    )
+    (repo / "unexpected.py").write_text("x = 1\n")
+    safe, reason = agf_full.check_edits(repo, ["logic.py"])
+    assert not safe and "untracked" in reason
+
+
+def test_crashed_pausing_mission_recovers_as_human_required_without_model(
+    repo, tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    task = {
+        "files": ["logic.py"], "instruction": "Fix computation",
+        "tests": [sys.executable, "-m", "unittest", "-q", "test_logic"],
+    }
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([task]))
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(
+        state_dir, repo, objective=None, tasks_path=tasks,
+        tests=task["tests"], model="ollama/local",
+    )
+    record = state_dir / f"{queued['mission_id']}.json"
+    data = json.loads(record.read_text())
+    data.update(status="PAUSING", pid=99999999)
+    agf_full.chat.write_json(record, data)
+    with patch.object(
+        agf_full, "propose_edits",
+        side_effect=AssertionError("crashed pause must not invoke model"),
+    ):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == "HUMAN_REQUIRED"
+    assert "interrupted pause" in result["reason"]
+    assert "pid" not in result
+    assert result["index"] == 0
+    assert json.loads(record.read_text())["status"] == "HUMAN_REQUIRED"

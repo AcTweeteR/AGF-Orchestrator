@@ -89,3 +89,28 @@ def test_rejects_unapproved_provider_or_mode(tmp_path):
     adapter = FreeFirstGatewayAdapter()
     result = adapter.execute("unverified", str(tmp_path), sandbox="danger-full-access")
     assert result.human_required
+
+
+def test_authenticated_omniroute_token_is_forwarded_to_governed_provider(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("AGF_OMNIROUTE_KEY", "test-local-credential")
+    (tmp_path / "compute.py").write_text("def compute():\n    return 0\n")
+    adapter = FreeFirstGatewayAdapter()
+    answer = GatewayResult(
+        model="ollama/qwen3.5:9b-q4_K_M", provider="ollama",
+        content='{"changes":[{"file":"compute.py","find":"return 0",'
+                '"replace":"return 42"}]}',
+        prompt_tokens=4, completion_tokens=8,
+    )
+    with patch(
+        "agf_orchestrator.adapters.free_first.ModelGatewayProvider",
+    ) as gateway:
+        gateway.return_value.complete.return_value = answer
+        result = adapter.execute(
+            instruction(adapter, tmp_path, ["compute.py"]), str(tmp_path),
+        )
+    assert result.exit_code == 0
+    assert gateway.call_args.kwargs == {"token": "test-local-credential"}
+    assert "test-local-credential" not in str(result.execution_observation)
+    assert "return 42" in (tmp_path / "compute.py").read_text()

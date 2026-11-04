@@ -79,3 +79,23 @@ Legacy non-Free-First bootstrap behavior remains unchanged.
 
 This work neither activates a production owner key nor expands agent
 permissions, model billing, target paths or automatic merge authority.
+
+
+## Pull request review findings addressed
+
+- The owner-side multi-file executor now checks both staged and unstaged
+  tracked changes (relative to HEAD) and rejects untracked files.
+  These checks run again after acceptance commands and immediately before
+  a local task commit. A validation that creates an unauthorized file,
+  stages an unrelated change, or invalidates source syntax is HUMAN_REQUIRED;
+  it cannot be misreported as COMPLETED.
+- The canonical Free-First adapter forwards only the explicitly configured
+  AGF_OMNIROUTE_KEY value to the loopback gateway provider. The token is
+  never included in task evidence or model output.
+- The periodic dispatcher reconciles a dead PAUSING executor while respecting
+  a live PID or in-flight dispatch. The owner-protected PAUSING state is
+  changed to HUMAN_REQUIRED under the control lock if the executor died,
+  without a new model invocation or a silent resume.
+- New tests cover authorized, staged, untracked and syntactically invalid
+  post-test changes; auth token propagation and exclusion from evidence;
+  recovery of dead PAUSING executors; and duplicate-dispatch prevention.

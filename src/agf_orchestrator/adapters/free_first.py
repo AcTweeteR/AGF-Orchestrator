@@ -7,6 +7,7 @@ isolated worktrees, validation, review, commits and external delivery.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from ..model_gateway import ModelGatewayError, ModelGatewayProvider
@@ -133,7 +134,7 @@ class FreeFirstGatewayAdapter(CodexAdapter):
                         + '","find":"old exact text",'
                         + '"replace":"new text"}]}'
                     )
-                result = ModelGatewayProvider().complete(
+                result = ModelGatewayProvider(token=os.environ.get("AGF_OMNIROUTE_KEY")).complete(
                     model=self.model,
                     eligible_models=frozenset({self.model}),
                     verified_zero_cost=True,
