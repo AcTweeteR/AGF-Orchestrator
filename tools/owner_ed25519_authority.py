@@ -15,6 +15,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1549,8 +1550,13 @@ def main() -> int:
     elif args.cutover_generation:
         result = cutover_ed25519_generation(args.project, args.cutover_generation)
     elif args.rollover_prospective_baseline:
-        from tools.owner_historical_epoch import rollover_prospective_baseline
-        result = rollover_prospective_baseline(args.project, args.operation_id)
+        if __package__:
+            from .owner_historical_epoch import rollover_prospective_baseline
+        else:
+            from owner_historical_epoch import rollover_prospective_baseline
+        result = rollover_prospective_baseline(
+            args.project, args.operation_id, owner_module=sys.modules[__name__]
+        )
     elif args.acknowledge_observed_pr is not None:
         result = acknowledge_observed_merge(args.project, args.acknowledge_observed_pr)
     elif args.renew_provider_candidate:
