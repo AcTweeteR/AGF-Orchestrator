@@ -28,10 +28,13 @@ from agf_orchestrator.project_registry import ProjectRegistry
 
 
 def rollover_prospective_baseline(
-    project_id: str, operation_id: str,
+    project_id: str, operation_id: str, *, owner_module=None,
 ) -> dict[str, object]:
     """Owner-sign a NEW prospective epoch without changing an old signed fact."""
-    from tools import owner_ed25519_authority as owner
+    if owner_module is None:
+        from tools import owner_ed25519_authority as owner
+    else:
+        owner = owner_module
 
     if (
         not re.fullmatch(r"project-[0-9a-f]{16}", project_id)

@@ -260,3 +260,23 @@ def test_project_target_staleness_blocks_epoch_before_write(setup):
     assert original == (
         state / "historical-evidence" / PROJECT / "baseline.json"
     ).read_bytes()
+
+
+
+def test_documented_owner_cli_imports_epoch_controller_when_executed_as_script():
+    """The actual owner CLI is invoked as a FILE, not a package module."""
+    import sys
+
+    repo = Path(__file__).resolve().parents[1]
+    process = subprocess.run(
+        [
+            sys.executable, str(repo / "tools" / "owner_ed25519_authority.py"),
+            "--project", "invalid-id",
+            "--operation-id", "historical-baseline-epoch-import-qa",
+            "--rollover-prospective-baseline",
+        ],
+        cwd=repo, capture_output=True, text=True, timeout=20,
+    )
+    assert process.returncode != 0
+    assert "historical epoch operation identity is invalid" in process.stderr
+    assert "ModuleNotFoundError" not in process.stderr
