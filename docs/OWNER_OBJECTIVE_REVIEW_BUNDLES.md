@@ -1,0 +1,89 @@
+# Owner Objective review bundles (AGF Desktop handoff)
+
+AGF Desktop can request a **fully bounded, unsigned** Owner review document
+for an AGF Orchestrator session. A READY session is a planning placeholder, not
+Owner authorization to run it.
+
+The separate AGF Orchestrator tool is:
+
+```sh
+cd ~/Documents/AGF
+.venv/bin/python -m tools.objective_review_bundle draft \
+  --session session-xxxxxxxxxxxxxxxxxxxx
+```
+
+The JSON contains the actual session, target SHA, allowed_paths, test commands,
+planned tasks, a complete Objective draft, and all acceptance/constraint mappings.
+The Objective is initially `DRAFT`. Neither the AI nor Desktop signs anything.
+
+The owner reviews and edits the component. To mark the content ready for
+independent Owner approval, the owner explicitly changes
+`component.objective.status` to `APPROVED`. This is only a proposed
+content status; it is NOT an Owner signature or activation. Any edits that
+change bound text must also update the criterion mapping hashes; the canonical
+preparer refuses stale or inconsistent mappings.
+
+The Desktop bridge passes the edited component via standard input to:
+
+```sh
+.venv/bin/python -m tools.objective_review_bundle prepare \
+  --session session-xxxxxxxxxxxxxxxxxxxx < reviewed-component.json
+```
+
+Preparation validates the **exact** canonical session, original plan lineage,
+current signed Owner generation, complete criterion coverage, reviewed
+validators, and immutable plan hash using the existing
+`tools.prepare_objective_acceptance` implementation. It saves a proposal
+privately as
+
+```text
+~/.agf-orchestrator/owner-objective-reviews/SESSION/PROPOSAL_HASH.json
+```
+
+using exclusive mode `0600`. The content is immutable for any given hash;
+conflicting writes are rejected. Preparation returns `authority_effect=NONE`.
+No private key is imported, read, or used.
+
+## Independent Owner activation
+
+Review the **entire** saved proposal (including
+`component.approved_plan_sha256`, target SHA, scope and validators). Separately
+run the installed Owner-only publication commands in Terminal, not via the
+Desktop bridge:
+
+```sh
+cd ~/Documents/AGF
+.venv/bin/python -m tools.owner_objective_publication prepare \
+  --project PROJECT --operation-id OPERATION \
+  --proposal '/absolute/owner-review/path.json'
+
+.venv/bin/python -m tools.owner_objective_publication verify \
+  --project PROJECT --operation-id OPERATION \
+  --proposal '/absolute/owner-review/path.json'
+
+# Only after reviewing the exact manifest returned above:
+.venv/bin/python -m tools.owner_objective_publication activate \
+  --project PROJECT --operation-id OPERATION \
+  --proposal '/absolute/owner-review/path.json' \
+  --expected-manifest EXACT_REVIEWED_MANIFEST
+```
+
+The Owner tool confirms the current predecessor generation and the exact
+reviewed content; it cannot silently switch scopes, change a session or
+substitute a new Plan. Owner approval is a separate deliberate action, even
+when the chat user has broadly authorized software development.
+
+After successful Owner publication, `agf-governed session assess --session
+SESSION --json` can use the installed eligible Architect. The signed local
+OmniRoute profile still has its own currency, policy, privacy and budget gates.
+Execution and delivery retain separate explicit confirmations and review,
+Compliance and human merge boundaries.
+
+The initial publication workflow supports one first Objective per active Owner
+authority generation; successors require the same exact approved Objective and
+an authenticated advancement. This version does **not** claim multi-session
+production autonomy across unrelated objectives.
+
+The test suite uses only disposable Git repositories and ephemeral Owner
+Ed25519 keys. Live review generation remains unsigned and does not authorize a
+protected or paid action.
