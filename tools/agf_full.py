@@ -314,73 +314,66 @@ def start(
         "planning_pid": os.getpid(),
     }
     # Persist before creating a worktree or invoking a potentially slow model.
-    chat.write_json(path, record)
     worktree = None
     branch = None
-    try:
-        worktree, branch = create_worktree(repository, mission_id)
-        head = subprocess.check_output(
-            ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True
-        ).strip()
-        record.update(worktree=str(worktree), branch=branch, expected_head=head)
-        chat.write_json(path, record)
-        if tasks_path:
-            tasks = json.loads(tasks_path.read_text())
-            planning = None
-        else:
-            tasks, planning = None, None
-        if tasks is not None and (not isinstance(tasks, list) or not 1 <= len(tasks) <= 30):
-            raise ValueError("must have between 1 and 30 tasks")
-        approved = inventory(worktree, query=objective or "", scope=scope)
-        for task in tasks or []:
-            check_task(worktree, task, approved_files=approved)
-            if scope and any(
-                not (name == scope or name.startswith(scope.rstrip("/") + "/"))
-                for name in task["files"]
-            ):
-                raise ValueError("task file outside owner-selected scope")
-        record.update(status="PENDING", tasks=tasks, usage=[planning] if planning else [])
-        record.pop("planning_pid", None)
-        chat.write_json(path, record)
-    except Exception as exc:
-        record.update(
-            status="BLOCKED",
-            reason=f"Mission preparation failed: {type(exc).__name__}: {str(exc)[:600]}",
-        )
-        record.pop("planning_pid", None)
-        chat.write_json(path, record)
-        if worktree is not None:
-            subprocess.run(
-                ["git", "-C", str(repository), "worktree", "remove", "--force", str(worktree)],
-                capture_output=True,
+    with chat.control_lock(path):
+        chat._write_json_unlocked(path, record)
+        try:
+            worktree, branch = create_worktree(repository, mission_id)
+            head = subprocess.check_output(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True
+            ).strip()
+            record.update(worktree=str(worktree), branch=branch, expected_head=head)
+            chat._write_json_unlocked(path, record)
+            tasks = json.loads(tasks_path.read_text()) if tasks_path else None
+            if tasks is not None and (not isinstance(tasks, list) or not 1 <= len(tasks) <= 30):
+                raise ValueError("must have between 1 and 30 tasks")
+            approved = inventory(worktree, query=objective or "", scope=scope)
+            for task in tasks or []:
+                check_task(worktree, task, approved_files=approved)
+                if scope and any(
+                    not (name == scope or name.startswith(scope.rstrip("/") + "/"))
+                    for name in task["files"]
+                ):
+                    raise ValueError("task file outside owner-selected scope")
+            record.update(status="PENDING", tasks=tasks)
+            record.pop("planning_pid", None)
+            chat._write_json_unlocked(path, record)
+        except Exception as exc:
+            record.update(
+                status="BLOCKED",
+                reason=f"Mission preparation failed: {type(exc).__name__}: {str(exc)[:600]}",
             )
-        if branch is not None:
-            subprocess.run(
-                ["git", "-C", str(repository), "branch", "-D", branch], capture_output=True
-            )
-        return {"mission_id": mission_id, "status": "BLOCKED", "reason": record["reason"]}
-    if background:
-        with (state_dir / (mission_id + ".log")).open("ab") as logfile:
-            subprocess.Popen(
-                [
-                    sys.executable,
-                    str(Path(__file__).with_name("agf_chat.py")),
-                    "--state-dir",
-                    str(state_dir),
-                    "run",
-                    mission_id,
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=logfile,
-                stderr=logfile,
-                start_new_session=True,
-            )
-    return {
-        "mission_id": mission_id,
-        "status": "STARTED" if background else "PENDING",
-        "worktree": str(worktree),
-        "branch": branch,
-    }
+            record.pop("planning_pid", None)
+            chat._write_json_unlocked(path, record)
+            if worktree is not None:
+                subprocess.run(
+                    ["git", "-C", str(repository), "worktree", "remove", "--force", str(worktree)],
+                    capture_output=True,
+                )
+            if branch is not None:
+                subprocess.run(
+                    ["git", "-C", str(repository), "branch", "-D", branch], capture_output=True
+                )
+            return {"mission_id": mission_id, "status": "BLOCKED", "reason": record["reason"]}
+    with chat.control_lock(path):
+        record = json.loads(path.read_text())
+        if record["status"] == "PENDING" and background:
+            with (state_dir / (mission_id + ".log")).open("ab") as logfile:
+                subprocess.Popen(
+                    [sys.executable, str(Path(__file__).with_name("agf_chat.py")),
+                     "--state-dir", str(state_dir), "run", mission_id],
+                    stdin=subprocess.DEVNULL, stdout=logfile, stderr=logfile,
+                    start_new_session=True,
+                )
+        return {
+            "mission_id": mission_id,
+            "status": (
+                "STARTED" if background and record["status"] == "PENDING" else record["status"]
+            ),
+            "worktree": str(worktree),
+            "branch": branch,
+        }
 
 
 def relevant_excerpt(content: str, objective: str, limit: int = 2800) -> str:

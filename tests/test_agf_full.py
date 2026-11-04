@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -772,6 +773,47 @@ def test_worker_does_not_run_mission_during_registration(repo, tmp_path, monkeyp
         result = agf_full.run_mission(state_dir, queued["mission_id"])
     planner.assert_not_called()
     assert result["status"] == "PLANNING"
+
+
+@pytest.mark.parametrize("control", ["PAUSED", "STOPPED"])
+def test_control_during_registration_keeps_worktree_identity(repo, tmp_path, monkeypatch, control):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    created = threading.Event()
+    release = threading.Event()
+    original = agf_full.create_worktree
+
+    def delayed_create(*args):
+        result = original(*args)
+        created.set()
+        assert release.wait(5)
+        return result
+
+    result = {}
+    with patch.object(agf_full, "create_worktree", side_effect=delayed_create):
+        starter = threading.Thread(target=lambda: result.update(agf_full.start(
+            state_dir, repo, objective="fix answer", tasks_path=None,
+            tests=[sys.executable], model="ollama/local")))
+        starter.start()
+        assert created.wait(5)
+        path = next(state_dir.glob("*.json"))
+
+        def control_mission():
+            with agf_full.chat.control_lock(path):
+                record = json.loads(path.read_text())
+                record["status"] = control
+                agf_full.chat._write_json_unlocked(path, record)
+
+        controller = threading.Thread(target=control_mission)
+        controller.start()
+        release.set()
+        starter.join(5)
+        controller.join(5)
+    assert not starter.is_alive() and not controller.is_alive()
+    record = json.loads(path.read_text())
+    assert record["status"] == control
+    assert Path(record["worktree"]).is_dir()
+    assert record["branch"] and record["expected_head"]
 
 
 def test_malformed_gateway_response_records_usage_before_fallback():
