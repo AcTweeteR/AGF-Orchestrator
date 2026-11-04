@@ -92,3 +92,19 @@ still require all normal current risk, provider, Review and Compliance gates.
 The test suite uses only disposable Git repositories and ephemeral Owner
 Ed25519 keys. Live review generation remains unsigned and does not authorize a
 protected or paid action.
+
+## Evidenced initial file scope
+
+The deterministic initial Director is only a placeholder, not an authorized
+implementation. A reviewable bounded plan is created when the goal explicitly
+names **one existing tracked non-sensitive file**, e.g.
+`Review path:README.md and use git diff --check`.
+
+The path is checked against the Git index and real file, without shell
+execution. Ambiguous/multiple, untracked, symlinked, absolute, hidden,
+sensitive or path-traversal candidates remain **unscoped**. Unscoped tasks
+are rejected before the Owner can even prepare an unsigned proposal; they
+never become authorized work. The exact scoped paths, validators and review
+criteria still require independent explicit Owner signature and activation.
+This conservative path-only fallback is not a substitute for actual target
+assessment by an eligible Architect for multi-file or newly created changes.

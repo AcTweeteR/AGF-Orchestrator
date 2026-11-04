@@ -57,7 +57,7 @@ def test_two_independently_approved_sessions_preserve_first_owner_objective(
     assert store.active(project.project_id).generation_id == "generation-3"
 
     second_session = manager.start(
-        "alpha", "Correct calculator sum and document the arithmetic in README.md",
+        "alpha", "Correct arithmetic in path:calculator.py and document the result",
     )
     assert second_session.status.value == "READY"
     unsigned = _review_and_prepare(second_session)
@@ -84,7 +84,7 @@ def test_two_independently_approved_sessions_preserve_first_owner_objective(
     assert new_read.generation_hash == context.manifest_hash
 
     third_session = manager.start(
-        "alpha", "Add a bounded calculator documentation regression check to README.md",
+        "alpha", "Add a bounded regression check in path:calculator.py",
     )
     assert third_session.status.value == "READY"
     third_proposal = _review_and_prepare(third_session)
@@ -108,7 +108,7 @@ def test_unsigned_additional_session_cannot_see_any_existing_approval(
     manager, project, first_session, store, proposal, _ = setup(tmp_path, monkeypatch)
     _activate(project, proposal, "owner-first-only")
     second_session = manager.start(
-        "alpha", "Improve calculator arithmetic documentation in README.md",
+        "alpha", "Improve arithmetic documentation in path:calculator.py",
     )
     assert second_session.status.value == "READY"
     with pytest.raises(ObjectiveAcceptanceError):
@@ -158,7 +158,7 @@ def test_another_session_cannot_reuse_or_change_a_previously_signed_objective(
     manager, project, old_session, store, proposal, _ = setup(tmp_path, monkeypatch)
     _activate(project, proposal, "owner-old-preserved")
     second = manager.start(
-        "alpha", "Improve calculator arithmetic documentation with bounded checks",
+        "alpha", "Improve path:calculator.py arithmetic documentation with bounded checks",
     )
     _activate(project, _review_and_prepare(second), "owner-second-preserved")
     before = store.active(project.project_id)
@@ -180,7 +180,7 @@ def test_tampering_signed_objective_roster_fails_closed(
     manager, project, old_session, store, proposal, _ = setup(tmp_path, monkeypatch)
     _activate(project, proposal, "owner-original-untouched")
     second = manager.start(
-        "alpha", "Document calculator sum behavior in README.md",
+        "alpha", "Document behavior of path:calculator.py with bounded checks",
     )
     _activate(project, _review_and_prepare(second), "owner-second-untouched")
     directory = store._directory(project.project_id)
