@@ -47,6 +47,7 @@ from agf_orchestrator.locking import project_lock, session_lock
 from agf_orchestrator.observed_merge import (
     ObservedMerge,
     ObservedMergeStore,
+    github_repository_coordinates,
     verify_observed_merge_chain,
 )
 from agf_orchestrator.observed_merge import (
@@ -335,13 +336,7 @@ def acknowledge_observed_merge(project_id: str, pr_number: int) -> dict[str, str
             capture_output=True, text=True, check=True,
         ).stdout.strip() != "main":
             raise RuntimeError("observed merge requires canonical checkout")
-        identity = parse_remote_url(project.origin_url).identity
-        if not identity.startswith("github.com/"):
-            raise RuntimeError("observed merge requires github.com project origin")
-        parts = identity.removeprefix("github.com/").split("/")
-        if len(parts) != 2 or not all(parts):
-            raise RuntimeError("observed merge requires a known GitHub repository")
-        owner, name = parts
+        owner, name = github_repository_coordinates(project.origin_url)
         raw = subprocess.run(
             ["gh", "pr", "view", str(pr_number), "-R", f"{owner}/{name}",
              "--json", "number,state,mergedAt,mergedBy,mergeCommit,baseRefName"],

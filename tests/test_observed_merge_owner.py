@@ -188,3 +188,24 @@ def test_owner_controller_reuses_chain_for_provider_rebind(witnessed, monkeypatc
         controller._verify_legitimate_target_advancement(
             PROJECT, project, old, new, new.target_sha,
         )
+
+
+@pytest.mark.parametrize("url", [
+    "https://github.com.evil.org/AcTweeteR/AGF-Orchestrator.git",
+    "https://github.com@evil.org/AcTweeteR/AGF-Orchestrator.git",
+    "https://evil.org/github.com/AcTweeteR/AGF-Orchestrator.git",
+    "http://github.com/AcTweeteR/AGF-Orchestrator.git",
+    "https://github.com:444/AcTweeteR/AGF-Orchestrator.git",
+    "https://github.com/AcTweeteR/%2fsecret.git",
+    "https://github.com/AcTweeteR/AGF-Orchestrator.git?token=bad",
+    "https://github.com/AcTweeteR/../other.git",
+])
+def test_observed_url_rejects_host_and_path_confusion(url):
+    with pytest.raises(ObservedMergeError):
+        observed_merge.github_repository_coordinates(url)
+
+
+def test_observed_url_accepts_only_explicit_exact_https_host():
+    assert observed_merge.github_repository_coordinates(
+        "https://github.com/AcTweeteR/AGF-Orchestrator.git"
+    ) == ("AcTweeteR", "AGF-Orchestrator")

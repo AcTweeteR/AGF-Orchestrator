@@ -15,6 +15,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .locking import FileLock
 from .owner_authority import OwnerAuthorityError, verify_envelope
@@ -30,6 +31,41 @@ _ID = re.compile(r"^project-[0-9a-f]{16}$")
 _GITHUB_FIELDS = frozenset({
     "state", "merge_commit", "base_branch", "pr_number", "merged_at", "merged_by",
 })
+
+
+def github_repository_coordinates(url: str) -> tuple[str, str]:
+    """Parse exact HTTPS GitHub origin, never trust a URL substring.
+
+    No embedded credentials, ports, encoded separators or query strings may
+    change the actual destination of a later authenticated GitHub CLI call.
+    """
+    if not isinstance(url, str):
+        raise ObservedMergeError("GitHub remote URL must be a string")
+    try:
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "github.com"
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.port is not None
+            or parsed.query or parsed.fragment
+            or "%" in parsed.path
+            or "\\" in parsed.path
+        ):
+            raise ObservedMergeError("Observed remote is not exact HTTPS GitHub")
+        clean = parsed.path.removesuffix(".git")
+        segments = clean.strip("/").split("/")
+        if (
+            len(segments) != 2
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", segments[0])
+            or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", segments[1])
+            or segments[1] in {".", ".."}
+        ):
+            raise ObservedMergeError("GitHub repository coordinates are invalid")
+        return segments[0], segments[1]
+    except (ValueError, AttributeError) as exc:
+        raise ObservedMergeError("GitHub repository URL is invalid") from exc
 
 
 def _now() -> str:
@@ -81,13 +117,7 @@ class ObservedMerge:
             raise ObservedMergeError("observed merge has no target advance")
         if self.branch != "main" or not isinstance(self.repository_identity, str):
             raise ObservedMergeError("observed merge branch or repository is invalid")
-        identity = parse_remote_url(self.repository_identity).identity
-        if not identity.startswith("github.com/"):
-            raise ObservedMergeError("observed merge must originate from GitHub")
-        try:
-            repository_owner, _name = identity.removeprefix("github.com/").split("/")
-        except ValueError as exc:
-            raise ObservedMergeError("observed merge GitHub origin is invalid") from exc
+        repository_owner, _name = github_repository_coordinates(self.repository_identity)
         if (
             not isinstance(self.github, dict) or set(self.github) != _GITHUB_FIELDS
             or self.github.get("state") != "MERGED"
