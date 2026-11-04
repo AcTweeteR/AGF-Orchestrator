@@ -79,10 +79,15 @@ OmniRoute profile still has its own currency, policy, privacy and budget gates.
 Execution and delivery retain separate explicit confirmations and review,
 Compliance and human merge boundaries.
 
-The initial publication workflow supports one first Objective per active Owner
-authority generation; successors require the same exact approved Objective and
-an authenticated advancement. This version does **not** claim multi-session
-production autonomy across unrelated objectives.
+An active Owner generation may preserve one historical legacy Objective and
+also hold an **additive, signed session roster**. Each unrelated session receives
+an independently reviewed and signed Objective in a subsequent generation.
+The legacy Objective and every previously accepted roster entry remain signed
+and immutable; an existing entry can only change under authenticated
+same-Objective succession after external advancement. The roster is bounded
+to 64 independent sessions plus the legacy entry. No session inherits
+another session's approval. Executing, merging and closing a new Objective
+still require all normal current risk, provider, Review and Compliance gates.
 
 The test suite uses only disposable Git repositories and ephemeral Owner
 Ed25519 keys. Live review generation remains unsigned and does not authorize a

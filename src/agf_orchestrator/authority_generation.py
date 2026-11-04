@@ -43,6 +43,7 @@ COMPONENTS = (
     "provider_intelligence",
 )
 OBJECTIVE_COMPONENT = "objective_acceptance"
+ADDITIONAL_OBJECTIVES_COMPONENT = "objective_acceptances"
 
 
 def _hash(value: Any) -> str:
@@ -102,7 +103,9 @@ class AuthorityComponent:
         return self.__dict__.copy()
 
     def validate(self, project_id: str, generation_id: str, scheme: str) -> None:
-        if self.name not in (*COMPONENTS, OBJECTIVE_COMPONENT):
+        if self.name not in (
+            *COMPONENTS, OBJECTIVE_COMPONENT, ADDITIONAL_OBJECTIVES_COMPONENT,
+        ):
             raise AuthorityGenerationError("unknown authority component")
         if self.generation_id != generation_id or self.project_id != project_id:
             raise AuthorityGenerationError("authority component binding is invalid")
@@ -210,6 +213,8 @@ class AuthorityGeneration:
         expected = set(COMPONENTS)
         if self.schema_version == "2.0":
             expected.add(OBJECTIVE_COMPONENT)
+            if ADDITIONAL_OBJECTIVES_COMPONENT in items:
+                expected.add(ADDITIONAL_OBJECTIVES_COMPONENT)
         if set(items) != expected or len(self.components) != len(expected):
             raise AuthorityGenerationError("authority generation is incomplete")
         for item in self.components:
