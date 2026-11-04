@@ -1,10 +1,13 @@
 """Focused tests for the owner-controlled, free-first mission pilot."""
 
+import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -57,7 +60,7 @@ class FreeMissionTests(unittest.TestCase):
     def test_automatic_retry_after_failed_tests_and_gateway_fallback(self):
         calls = []
 
-        def mock_model(prompt, *, provider, model, **kwargs):
+        def mock_model(prompt, *, provider, model, usage_observer=None):
             calls.append((provider, model))
             if provider == "omniroute":
                 raise ValueError("offline gateway")
@@ -138,6 +141,16 @@ class FreeMissionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             agf_chat.safe_target(self.repo, "../../outside.py")
 
+    def test_normalizes_root_and_rejects_target_symlink(self):
+        alias = self.base / "repo-alias"
+        alias.symlink_to(self.repo, target_is_directory=True)
+        self.assertEqual(
+            agf_chat.safe_target(alias, "value.py"), (self.repo / "value.py").resolve()
+        )
+        (self.repo / "link.py").symlink_to(self.repo / "value.py")
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            agf_chat.safe_target(alias, "link.py")
+
     def test_refuses_remote_gateway(self):
         with self.assertRaises(ValueError):
             agf_chat.request("https://example.org/llm")
@@ -160,6 +173,164 @@ class FreeMissionTests(unittest.TestCase):
             agf_chat.run_mission(self.state_dir, self.id)
         saved = json.loads((self.state_dir / f"{self.id}.json").read_text())
         self.assertEqual(saved["status"], "COMPLETED")
+
+    def test_objective_is_persisted_before_planning_and_resumes_after_interruption(self):
+        argv = [
+            "agf_chat",
+            "--state-dir",
+            str(self.state_dir),
+            "start",
+            "--repository",
+            str(self.repo),
+            "--objective",
+            "Implement answer",
+        ]
+        output = io.StringIO()
+        with (
+            patch.object(sys, "argv", argv),
+            redirect_stdout(output),
+            patch.object(agf_chat, "plan_objective") as planner,
+        ):
+            agf_chat.main()
+        planner.assert_not_called()
+        mission_id = json.loads(output.getvalue())["mission_id"]
+        path = self.state_dir / f"{mission_id}.json"
+        self.assertEqual(json.loads(path.read_text())["status"], "PLANNING")
+        with patch.object(agf_chat, "plan_objective", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                agf_chat.run_mission(self.state_dir, mission_id)
+        self.assertEqual(json.loads(path.read_text())["planning_attempts"], 1)
+        task = {
+            "file": "value.py",
+            "instruction": "return 42",
+            "tests": [sys.executable, "-m", "unittest", "-q", "test_value"],
+        }
+        with (
+            patch.object(agf_chat, "plan_objective", return_value=([task], None)),
+            patch.object(
+                agf_chat,
+                "ask_model",
+                return_value=({"content": "def answer():\n    return 42\n"}, {"model": "local"}),
+            ),
+        ):
+            result = agf_chat.run_mission(self.state_dir, mission_id)
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertEqual(result["planning_attempts"], 2)
+
+    def test_interrupted_planning_cannot_exceed_budget(self):
+        path = self.state_dir / f"{self.id}.json"
+        record = json.loads(path.read_text())
+        record.update(
+            status="PLANNING", tasks=[], objective="test", planning_tests=[], planning_attempts=2
+        )
+        agf_chat.write_json(path, record)
+        with patch.object(agf_chat, "plan_objective") as planner:
+            result = agf_chat.run_mission(self.state_dir, self.id)
+        planner.assert_not_called()
+        self.assertEqual(result["status"], "BLOCKED")
+
+    def test_invalid_planning_response_keeps_token_usage(self):
+        path = self.state_dir / f"{self.id}.json"
+        record = json.loads(path.read_text())
+        record.update(status="PLANNING", tasks=[], objective="fix answer",
+                      planning_tests=[sys.executable], planning_attempts=0)
+        agf_chat.write_json(path, record)
+        reply = {"message": {"content": "invalid"}, "model": "local",
+                 "prompt_eval_count": 11, "eval_count": 7}
+        with patch.object(agf_chat, "request", return_value=reply):
+            result = agf_chat.run_mission(self.state_dir, self.id)
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertEqual(result["usage"][0]["completion_tokens"], 7)
+
+    def test_invalid_execution_response_keeps_token_usage(self):
+        path = self.state_dir / f"{self.id}.json"
+        record = json.loads(path.read_text())
+        record.update(max_attempts=1, routes=[{"provider": "ollama", "model": "local"}])
+        agf_chat.write_json(path, record)
+        reply = {"message": {"content": "invalid"}, "model": "local",
+                 "prompt_eval_count": 4, "eval_count": 8}
+        with patch.object(agf_chat, "request", return_value=reply):
+            result = agf_chat.run_mission(self.state_dir, self.id)
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertEqual(result["usage"][0]["completion_tokens"], 8)
+
+    def test_interrupted_legacy_execution_is_not_dispatched_again(self):
+        path = self.state_dir / f"{self.id}.json"
+        record = json.loads(path.read_text())
+        record["status"] = "RUNNING"
+        agf_chat.write_json(path, record)
+        with patch.object(agf_chat, "ask_model") as model:
+            result = agf_chat.run_mission(self.state_dir, self.id)
+        model.assert_not_called()
+        self.assertEqual(result["status"], "HUMAN_REQUIRED")
+
+    def test_exhausted_legacy_attempt_budget_survives_resume(self):
+        path = self.state_dir / f"{self.id}.json"
+        record = json.loads(path.read_text())
+        record.update(status="PENDING", attempt=3)
+        agf_chat.write_json(path, record)
+        with patch.object(agf_chat, "ask_model") as model:
+            result = agf_chat.run_mission(self.state_dir, self.id)
+        model.assert_not_called()
+        self.assertEqual(result["status"], "BLOCKED")
+
+    def test_pause_during_legacy_dispatch_preserves_source_and_status(self):
+        path = self.state_dir / f"{self.id}.json"
+
+        def pause_during_request(*args, **kwargs):
+            record = json.loads(path.read_text())
+            record["status"] = "PAUSED"
+            agf_chat.write_json(path, record)
+            return {"content": "def answer():\n    return 42\n"}, {"model": "local"}
+
+        with patch.object(agf_chat, "ask_model", side_effect=pause_during_request):
+            result = agf_chat.run_mission(self.state_dir, self.id)
+        self.assertEqual(result["status"], "PAUSED")
+        self.assertIn("return 0", (self.repo / "value.py").read_text())
+        stale = dict(result, status="RUNNING")
+        agf_chat.write_json(path, stale)
+        self.assertEqual(json.loads(path.read_text())["status"], "PAUSED")
+
+    def test_failed_atomic_source_replace_preserves_existing_file(self):
+        target = self.repo / "value.py"
+        original_replace = os.replace
+
+        def fail_target_replace(source, destination):
+            if Path(destination).resolve() == target.resolve():
+                raise OSError("controlled disk failure")
+            return original_replace(source, destination)
+
+        with patch.object(agf_chat, "ask_model", return_value=(
+            {"content": "def answer():\n    return 42\n"}, {"model": "local"}
+        )), patch.object(agf_chat.os, "replace", side_effect=fail_target_replace):
+            result = agf_chat.run_mission(self.state_dir, self.id)
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertIn("return 0", target.read_text())
+
+    def test_stop_after_source_write_prevents_test_dispatch(self):
+        path = self.state_dir / f"{self.id}.json"
+        original_lock = agf_chat.control_lock
+        stopped = False
+
+        @contextmanager
+        def stop_after_write(record_path):
+            nonlocal stopped
+            with original_lock(record_path):
+                yield
+            if not stopped and "return 42" in (self.repo / "value.py").read_text():
+                stopped = True
+                with original_lock(path):
+                    record = json.loads(path.read_text())
+                    record["status"] = "STOPPED"
+                    agf_chat._write_json_unlocked(path, record)
+
+        with patch.object(agf_chat, "control_lock", side_effect=stop_after_write), \
+                patch.object(agf_chat, "ask_model", return_value=(
+                    {"content": "def answer():\n    return 42\n"}, {"model": "local"}
+                )), patch.object(agf_chat, "execute_tests") as tests:
+            result = agf_chat.run_mission(self.state_dir, self.id)
+        self.assertEqual(result["status"], "STOPPED")
+        tests.assert_not_called()
 
 
 if __name__ == "__main__":

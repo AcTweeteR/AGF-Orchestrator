@@ -613,15 +613,13 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
             if actual_head != state.get("expected_head"):
                 state = _reconcile_committed_task(root, state, path, actual_head)
             elif interrupted:
-                # Clean interrupted work may be retried under its persisted attempt
-                # budget; unlike a completed commit it cannot be counted as delivered.
-                state["status"] = "PENDING"
+                # No authenticated commit means the interrupted model attempt is
+                # ambiguous; retain the original HUMAN_REQUIRED safety boundary.
+                state["status"] = "HUMAN_REQUIRED"
+                state["reason"] = "execution interrupted without verified commit"
                 state.pop("pid", None)
-                state["events"].append({
-                    "task": state.get("index"),
-                    "recovered": "clean_interrupted_attempt",
-                })
                 chat.write_json(path, state)
+                return state
         except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
             state["status"] = "HUMAN_REQUIRED"
             state["reason"] = f"worktree identity cannot be verified: {exc}"

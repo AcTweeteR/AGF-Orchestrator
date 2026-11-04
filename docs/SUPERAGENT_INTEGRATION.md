@@ -23,8 +23,8 @@ architecture principles to AGF's Python owner-side Free-First pilot.
    but before persisting the mission checkpoint, recovery verifies branch
    identity, the expected parent, the full commit markers, the approved changed
    files, static checks, and final acceptance tests before advancing the task
-   exactly once. A clean interrupted attempt may retry within its existing
-   attempt budget. Dirty, unrelated, or unauthenticated changes remain
+   exactly once. An interrupted attempt without an authenticated commit,
+   or dirty, unrelated, or unauthenticated changes, remains
    `HUMAN_REQUIRED` rather than being treated as authorized.
 
 ## Source-of-truth reconciliation
@@ -52,8 +52,8 @@ behavior. Do not deploy an older tracked file over the installed version.
 
 The focused tests in `tests/test_agf_full.py` and
 `tests/test_agf_superagent_dispatch.py` exercise interrupted commit
-recovery, rejection of forged/out-of-scope commits, bounded interruption
-retry, nonblocking dispatch, slot enforcement and inactive-state skipping.
+recovery, rejection of forged/out-of-scope commits, human escalation for
+ambiguous interruptions, nonblocking dispatch, slot enforcement and inactive-state skipping.
 The repository test suite plus Ruff and diff checks must pass before publishing
 this branch. A disposable real-model integration pilot and constitutional
 handoff validation are separate required steps before declaring AGF finished.
