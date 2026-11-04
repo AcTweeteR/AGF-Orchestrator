@@ -25,7 +25,7 @@ from agf_orchestrator.provider_intelligence import (
 )
 
 
-def _local_state(interface="omniroute-local", privacy=True):
+def _local_state(interface="omniroute-local", privacy=True, profile_version=1):
     project_id = "project-efc8e8ef7be7050b"
     profile = make_profile(
         project_id=project_id,
@@ -36,6 +36,7 @@ def _local_state(interface="omniroute-local", privacy=True):
         capability_results={
             item: CapabilityStatus.SUPPORTED for item in ARCHITECT_REQUIREMENTS
         },
+        profile_version=profile_version,
     )
     gates = SelectionGates(True, privacy, True, True, True, True)
     evidence = (

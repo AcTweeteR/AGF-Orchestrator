@@ -57,6 +57,43 @@ class ProviderIntelligenceError(ValueError):
     """Raised when provider evidence is missing, stale, tampered, or unsafe."""
 
 
+def is_codex_to_local_owner_rotation(
+    previous: "ProviderIntelligenceState", proposed: "ProviderIntelligenceState"
+) -> bool:
+    """Recognize exactly one Owner-controlled interface migration, not fallback.
+
+    This check does NOT establish target advancement or authorize signing.
+    The external Owner controller must validate any target advancement
+    independently before calling the explicitly renewable store boundary.
+    """
+    if (
+        getattr(previous, "decision_domain", None) != "architect"
+        or getattr(proposed, "decision_domain", None) != "architect"
+        or previous.provider_interfaces != (("provider-codex", "codex"),)
+        or proposed.provider_interfaces
+        != (("provider-omniroute-local", "omniroute-local"),)
+        or len(previous.candidates) != 1
+        or len(proposed.candidates) != 1
+    ):
+        return False
+    old = previous.candidates[0].profile
+    new = proposed.candidates[0].profile
+    return (
+        old.provider_id == "provider-codex"
+        and new.provider_id == "provider-omniroute-local"
+        and new.profile_version > old.profile_version
+        and new.observed_at > old.observed_at
+        and proposed.observed_at > previous.observed_at
+        and previous.project_id == proposed.project_id
+        and proposed.policy_generation in {
+            previous.policy_generation, previous.policy_generation + 1,
+        }
+        and previous.constitution_id == proposed.constitution_id
+        and previous.constitution_record_hash == proposed.constitution_record_hash
+        and previous.requirements_hash == proposed.requirements_hash
+    )
+
+
 def _validate_gate_pairs(pairs: object, allowed_names: set[str], label: str) -> None:
     if not isinstance(pairs, (tuple, list)):
         raise ProviderIntelligenceError(f"{label} is invalid")
@@ -899,6 +936,12 @@ class ProviderIntelligenceStore:
                     and state.observed_at > existing.observed_at
                     and profiles_advanced
                 )
+                # An exact Codex -> local replacement is a distinct Owner
+                # rotation, not an ordinary provider profile refresh. It can
+                # only be saved through the explicitly authorized controller.
+                if allow_renewal and is_codex_to_local_owner_rotation(existing, state):
+                    _atomic_write(self.path, state.to_dict())
+                    return
                 if (
                     existing.project_id == state.project_id
                     and existing.policy_generation <= state.policy_generation

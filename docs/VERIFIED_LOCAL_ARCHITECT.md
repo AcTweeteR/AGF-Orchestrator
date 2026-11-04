@@ -67,3 +67,18 @@ The new tests deny unapproved models, credential exposure, paid fallback,
 tampered request hashes, unauthorized paths, identity substitution, mixed
 interface evidence, missing Owner validation coverage and unsigned activation.
 All existing Provider Intelligence and Architect tests remain in the suite.
+
+## Migrating an existing signed Codex profile
+
+An existing `architect.json` may be bound to `provider-codex`. The external
+Owner controller supports exactly one explicitly authorized identity rotation:
+`provider-codex` → `provider-omniroute-local`, with strictly higher version,
+fresh observed capability evidence, identical Constitution and project, stable
+requirements, current implementation-source hash, and all eligibility gates
+true. The runtime alone cannot activate this transition.
+
+**Important:** If the target SHA differs from the old signed candidate, the
+Owner controller still requires a verified chain of external advancements or
+a canonical delivery receipt. Git ancestry or a merged GitHub PR alone is
+insufficient. An incomplete chain remains `HUMAN_REQUIRED`; never rewrite the
+old `architect.json` or manufacture the missing historical evidence.
