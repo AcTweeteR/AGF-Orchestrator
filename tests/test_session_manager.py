@@ -242,6 +242,33 @@ def test_tampered_initial_plan_candidate_fails_closed(tmp_path, monkeypatch):
         SessionManager(state).resume(session.session_id)
 
 
+def test_recovered_initial_plan_rechecks_worktree_before_publication(tmp_path, monkeypatch):
+    root, state = registered(tmp_path)
+    manager = SessionManager(state)
+    save = manager.store.save
+
+    def interrupt_final(session):
+        if session.status is SessionStatus.READY:
+            raise KeyboardInterrupt()
+        save(session)
+
+    monkeypatch.setattr(manager.store, "save", interrupt_final)
+    with pytest.raises(KeyboardInterrupt):
+        manager.start("alpha", "Add contributor link validation")
+    session_id = manager.list()[0].session_id
+    original = session_manager_module.plan_from_dict
+
+    def mutate_after_load(payload):
+        plan = original(payload)
+        (root / "x").write_text("changed during candidate recovery")
+        return plan
+
+    monkeypatch.setattr(session_manager_module, "plan_from_dict", mutate_after_load)
+    with pytest.raises(SessionManagerError, match="worktree changed"):
+        SessionManager(state).resume(session_id)
+    assert SessionManager(state).get(session_id).status is SessionStatus.PLANNING
+
+
 def test_initial_plan_is_not_published_after_worktree_changes(tmp_path, monkeypatch):
     root, state = registered(tmp_path)
     manager = SessionManager(state)

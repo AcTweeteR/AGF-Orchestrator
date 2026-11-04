@@ -378,9 +378,26 @@ class SessionManager:
         plan = self.director.create_plan(
             session.goal, self._repository_context(project, clean=clean)
         )
+        self._verify_initial_worktree(session, project, clean=clean)
+        session_id = session.session_id
+        plan_content = json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n"
+        candidate = hashlib.sha256(plan_content.encode()).hexdigest()
+        previous = session.artifact_hashes.get("initial_plan_candidate")
+        if previous is not None and previous != candidate:
+            raise SessionManagerError("initial planning candidate changed during recovery")
+        session.artifact_hashes["initial_plan_candidate"] = candidate
+        self._save(session)
+        plan_path, plan_hash = self.store.write_artifact(
+            session_id, "plan.json", plan_content,
+        )
+        return self._commit_initial_plan(session, project, plan, plan_path, plan_hash)
+
+    def _verify_initial_worktree(self, session, project, *, clean):
         root = Path(project.repository_root)
         if (_git(root, "rev-parse", "HEAD") != session.base_sha
-                or _git(root, "branch", "--show-current") != project.default_branch):
+                or _git(root, "branch", "--show-current") != project.default_branch
+                or parse_remote_url(_git(root, "config", "--get", "remote.origin.url")).identity
+                != parse_remote_url(project.origin_url).identity):
             raise SessionManagerError("repository identity changed during initial planning")
         if clean:
             if _git(root, "status", "--porcelain"):
@@ -397,19 +414,6 @@ class SessionManager:
             if (snapshot.get("sha256") != fingerprint
                     or fingerprint != _dirty_planning_fingerprint(root)):
                 raise SessionManagerError("worktree changed during initial planning")
-        session_id = session.session_id
-        plan_content = json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n"
-        candidate = hashlib.sha256(plan_content.encode()).hexdigest()
-        previous = session.artifact_hashes.get("initial_plan_candidate")
-        if previous is not None and previous != candidate:
-            raise SessionManagerError("initial planning candidate changed during recovery")
-        session.artifact_hashes["initial_plan_candidate"] = candidate
-        self._save(session)
-        plan_path, plan_hash = self.store.write_artifact(
-            session_id, "plan.json", plan_content,
-        )
-        return self._commit_initial_plan(session, project, plan, plan_path, plan_hash)
-
     def _commit_initial_plan(self, session, project, plan, plan_path, plan_hash):
         session_id = session.session_id
         status = (
@@ -464,6 +468,7 @@ class SessionManager:
                 raise SessionManagerError("initial plan candidate binding differs")
         except (OSError, ValueError, TypeError, KeyError, SessionStoreError) as exc:
             raise SessionManagerError("initial plan candidate is invalid") from exc
+        self._verify_initial_worktree(session, project, clean=clean)
         return self._commit_initial_plan(session, project, plan, str(path), expected)
 
     @staticmethod
