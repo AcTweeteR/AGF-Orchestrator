@@ -741,6 +741,10 @@ class DeliveryPipeline:
         attempt = None
         correction_rounds = 0
         try:
+            if self.adapter.name == "free-first" and project_id is None:
+                raise ExecutionValidationError(
+                    "free-first live delivery requires approved project identity"
+                )
             context = collect_repository(repository)
             if (
                 Path(context.root).resolve() != Path(plan.repository.root).resolve()
