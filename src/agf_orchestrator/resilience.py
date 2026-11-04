@@ -358,17 +358,30 @@ def _verify_objective_binding_hash(session, store, project, digest: str) -> bool
             generation = generations.load(project.project_id, generation_id)
             if generation.status not in {GenerationStatus.ACTIVE, GenerationStatus.SUPERSEDED}:
                 continue
-            component = next((item for item in generation.components
-                              if item.name == "objective_acceptance"), None)
-            if component is None or component.artifact_hash != digest:
+            available = {
+                item.name: item for item in generation.components
+                if item.name in {"objective_acceptance", "objective_acceptances"}
+            }
+            if not available:
                 continue
+            from .objective_acceptance import content_hash
             artifacts = AuthorityContext._verify_artifacts(
                 generation, artifact_root=generations.root, artifacts=None,
             )
-            objective = artifacts.get("objective_acceptance")
-            if (isinstance(objective, dict)
-                    and objective.get("session_id") == session.session_id):
+            legacy = artifacts.get("objective_acceptance")
+            if (isinstance(legacy, dict)
+                    and legacy.get("session_id") == session.session_id
+                    and available.get("objective_acceptance") is not None
+                    and available["objective_acceptance"].artifact_hash == digest):
                 matches += 1
+            roster = artifacts.get("objective_acceptances")
+            if roster is not None:
+                from .objective_roster import validate_roster
+
+                entries = validate_roster(roster, project.project_id, legacy)
+                approved = entries.get(session.session_id)
+                if approved is not None and content_hash(approved) == digest:
+                    matches += 1
     except (AuthorityContextError, AuthorityGenerationError, OSError, TypeError, ValueError):
         return False
     return matches > 0

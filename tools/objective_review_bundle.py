@@ -76,11 +76,9 @@ def _source(session_id: str, *, state_root: str | Path | None = None):
             ).active(project.project_id)
             if generation.scheme != "Ed25519" or generation.status.value != "ACTIVE":
                 raise ValueError("Owner review requires active Ed25519 authority")
-            if any(c.name == "objective_acceptance" for c in generation.components):
-                raise ValueError(
-                    "Existing Objective authority requires same-Objective succession; "
-                    "new unrelated sessions must not replace it"
-                )
+            # Owner-reviewed additional sessions use an additive, independently
+            # signed roster in the *next* authority generation. An existing
+            # Objective cannot be silently overwritten by a new draft.
             return session, project, plan, generation, sessions
 
 

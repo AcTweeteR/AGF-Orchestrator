@@ -21,6 +21,7 @@ from agf_orchestrator.authority_generation import (
 )
 from agf_orchestrator.locking import project_lock, session_lock
 from agf_orchestrator.objective_acceptance import content_hash
+from agf_orchestrator.objective_roster import add_reviewed_objective, validate_roster
 from agf_orchestrator.owner_authority import verify_envelope
 from agf_orchestrator.project_registry import ProjectRegistry
 from agf_orchestrator.session_store import SessionStore
@@ -179,11 +180,38 @@ def publish(project_id, operation_id, proposal, *, action="prepare", expected_ma
         if frozenset(values) not in {
             frozenset(base_components),
             frozenset({*base_components, "objective_acceptance"}),
+            frozenset({*base_components, "objective_acceptance", "objective_acceptances"}),
         }:
             raise RuntimeError("current generation has unsupported components")
         previous_objective = values.get("objective_acceptance")
+        prior_roster = values.get("objective_acceptances")
         if previous_objective is not None:
-            _validate_objective_succession(previous_objective, component, session)
+            prior_entries = (
+                validate_roster(prior_roster, project_id, previous_objective)
+                if prior_roster is not None else {}
+            )
+            if previous_objective.get("session_id") == session.session_id:
+                _validate_objective_succession(previous_objective, component, session)
+                values["objective_acceptance"] = component
+            elif session.session_id in prior_entries:
+                _validate_objective_succession(
+                    prior_entries[session.session_id], component, session
+                )
+                # Exact same-Objective successor, after authenticated target
+                # advancement. Other signed entries are preserved byte-for-byte.
+                values["objective_acceptances"] = {
+                    **prior_roster,
+                    "entries": {**prior_entries, session.session_id: component},
+                }
+            else:
+                # An independent new Objective adds a signed entry; it must
+                # never replace the historical approved Objective for an
+                # unrelated session. The Owner signs the entire new generation.
+                values["objective_acceptances"] = add_reviewed_objective(
+                    prior_roster, previous_objective, component, project_id, session,
+                )
+        else:
+            values["objective_acceptance"] = component
         if record is not None and (
             record["payload"]["predecessor_id"] != active.generation_id
             or record["payload"]["predecessor_hash"] != active.manifest_hash
@@ -191,7 +219,6 @@ def publish(project_id, operation_id, proposal, *, action="prepare", expected_ma
             raise RuntimeError("publication predecessor changed")
         if int(generation_id.removeprefix("generation-")) != active.generation_number + 1:
             raise RuntimeError("proposal does not name the next generation")
-        values["objective_acceptance"] = component
         components = []
         for name, value in values.items():
             relative = (directory / f"{name}.json").relative_to(root)

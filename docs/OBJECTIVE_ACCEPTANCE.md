@@ -87,7 +87,20 @@ activating twice. ALREADY_ACTIVE reports the historical owner operation, not
 current Objective completion or fresh provider eligibility.
 
 The generic legacy migration controller cannot activate an Objective candidate or
-replace installed Objective authority with a legacy bundle. Superseding an already
+replace installed Objective authority with a legacy bundle.
+
+New independently reviewed sessions can be added in an **additive signed
+Objective roster** (`objective_acceptances`) in schema 2.0 Owner generations.
+The original legacy `objective_acceptance` remains unchanged; every new
+session is independently bound to its exact Objective, criteria and projected
+plan hash. Existing roster entries are carried forward without mutation.
+There is no cross-session authorization or implicit approval; every new
+Owner generation still requires explicit prepare/verify/activate publication
+and separately fresh generation-bound risk and provider intelligence evidence.
+The roster is bounded to 64 entries plus the legacy Objective. Tampering,
+missing entries or mismatched session identities fail closed.
+
+Superseding an already
 accepted Objective remains outside this publication operation. After an exact
 owner-authenticated external target advancement, the owner may instead publish a
 successor generation for the same Objective, criteria, session, repository identity,

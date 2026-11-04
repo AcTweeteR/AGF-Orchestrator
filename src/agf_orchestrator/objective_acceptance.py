@@ -139,9 +139,35 @@ def parse_objective_proposal(payload, project, session, generation_id):
 
 
 def _from_context(context, project, session) -> ObjectiveAcceptance:
-    payload = context.artifacts.get("objective_acceptance")
+    from .objective_roster import validate_roster
+
+    legacy = context.artifacts.get("objective_acceptance")
+    roster = context.artifacts.get("objective_acceptances")
+    if roster is not None:
+        # The roster is itself a signed component in the active generation.
+        # Every older entry retains its original Owner-approved generation
+        # binding and cannot be silently rewritten by a later session.
+        entries = validate_roster(roster, project.project_id, legacy)
+        payload = (
+            legacy if legacy["session_id"] == session.session_id
+            else entries.get(session.session_id)
+        )
+        if payload is None:
+            raise ObjectiveAcceptanceError("session has no Owner-approved Objective")
+        signed_generation = payload.get("generation_id")
+        if (not isinstance(signed_generation, str)
+                or not signed_generation.startswith("generation-")):
+            raise ObjectiveAcceptanceError("signed Objective generation is invalid")
+        try:
+            if int(signed_generation.removeprefix("generation-")) > context.generation_number:
+                raise ObjectiveAcceptanceError("signed Objective generation is from the future")
+        except (ValueError, TypeError) as exc:
+            raise ObjectiveAcceptanceError("signed Objective generation is invalid") from exc
+    else:
+        payload = legacy
+        signed_generation = context.generation_id
     objective, criteria = parse_objective_proposal(
-        payload, project, session, context.generation_id,
+        payload, project, session, signed_generation,
     )
     return ObjectiveAcceptance(
         objective, objective_hash(objective), content_hash(payload),
