@@ -72,6 +72,7 @@ class ModelGatewayProvider:
         messages: list[dict],
         eligible_models: frozenset[str],
         verified_zero_cost: bool = False,
+        max_output_tokens: int = 2400,
     ) -> GatewayResult:
         if not model or model == "auto" or model not in eligible_models:
             raise ModelGatewayError("requested model is not AGF-approved")
@@ -79,18 +80,23 @@ class ModelGatewayProvider:
             raise ModelGatewayError("zero-cost model eligibility evidence missing")
         if not messages:
             raise ModelGatewayError("empty messages")
-        response = self._read(
-            "/v1/chat/completions",
-            {
-                "model": model,
-                "messages": messages,
-                "temperature": 0,
-                "max_tokens": 2400,
-                "think": False,
-                "response_format": {"type": "json_object"},
-                "stream": False,
-            },
-        )
+        if type(max_output_tokens) is not int or not 64 <= max_output_tokens <= 2400:
+            raise ModelGatewayError("model response token budget is invalid")
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0,
+            "max_tokens": max_output_tokens,
+            "think": False,
+            "response_format": {"type": "json_object"},
+            "stream": False,
+        }
+        if model.startswith("ollama/"):
+            # OmniRoute uses OpenAI's canonical no-thinking field when
+            # translating to Ollama. Merely passing `think: false` is not
+            # sufficient: Qwen spends the entire output limit on reasoning.
+            payload["reasoning_effort"] = "none"
+        response = self._read("/v1/chat/completions", payload)
         effective = response.get("model")
         # Local Ollama passthrough reports the bare upstream model name.
         allowed_effective = {model}

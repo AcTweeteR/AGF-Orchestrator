@@ -42,7 +42,7 @@ ARCHITECT_REQUIREMENTS = (
 SUPPORTED_DECISION_DOMAINS = frozenset(
     {"architect", "code-intelligence", "knowledge", "documentation"}
 )
-APPROVED_PROVIDER_INTERFACES = frozenset({"codex", "openhands"})
+APPROVED_PROVIDER_INTERFACES = frozenset({"codex", "openhands", "omniroute-local"})
 ARCHITECT_GATE_NAMES = (
     "policy_eligible",
     "privacy_eligible",
@@ -115,12 +115,22 @@ def _parse_scoped_gate_evidence(value: object) -> tuple[tuple[Any, ...], ...]:
 
 
 def _validate_architect_gate_evidence(
-    gate_evidence: dict[str, str], gates: SelectionGates
+    gate_evidence: dict[str, str], gates: SelectionGates,
+    interfaces: tuple[tuple[str, str], ...],
 ) -> None:
+    # Local evidence cannot be mixed with another interface to borrow its
+    # privacy gate. Only an exact owner-bound provider identity is accepted.
+    local = any(interface == "omniroute-local" for _, interface in interfaces)
+    if local and interfaces != (("provider-omniroute-local", "omniroute-local"),):
+        raise ProviderIntelligenceError("local Architect interface identity is invalid")
+    privacy_prefix = (
+        "omniroute-loopback-only-v1;read-only-canary;"
+        if local else "codex-safe-environment-v1;read-only-canary;"
+    )
     if not gate_evidence["policy_eligible"].startswith("active-policy:"):
         raise ProviderIntelligenceError("policy gate evidence is not authority-bound")
     for name, prefix in (
-        ("privacy_eligible", "codex-safe-environment-v1;read-only-canary;"),
+        ("privacy_eligible", privacy_prefix),
         ("independence_eligible", "architect-advisory;reviewer-separate-stage;"),
     ):
         value = gate_evidence[name]
@@ -477,7 +487,7 @@ class ProviderIntelligenceState:
             raise ProviderIntelligenceError("provider interface bindings are incomplete")
         gate_evidence = _validated_gate_evidence(self.gate_evidence)
         if self.decision_domain == "architect":
-            _validate_architect_gate_evidence(gate_evidence, self.gates)
+            _validate_architect_gate_evidence(gate_evidence, self.gates, self.provider_interfaces)
 
 
 def make_profile(
