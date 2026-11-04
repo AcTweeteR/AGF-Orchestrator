@@ -1538,6 +1538,7 @@ def main() -> int:
     parser.add_argument("--boundary", action="append", default=[])
     parser.add_argument("--create-prospective-baseline", action="store_true")
     parser.add_argument("--renew-prospective-evidence", action="store_true")
+    parser.add_argument("--rollover-prospective-baseline", action="store_true")
     parser.add_argument("--target-sha")
     parser.add_argument("--acknowledge-observed-pr", type=int)
     args = parser.parse_args()
@@ -1547,6 +1548,9 @@ def main() -> int:
         result = verify_ed25519_generation(args.project, args.verify_generation)
     elif args.cutover_generation:
         result = cutover_ed25519_generation(args.project, args.cutover_generation)
+    elif args.rollover_prospective_baseline:
+        from tools.owner_historical_epoch import rollover_prospective_baseline
+        result = rollover_prospective_baseline(args.project, args.operation_id)
     elif args.acknowledge_observed_pr is not None:
         result = acknowledge_observed_merge(args.project, args.acknowledge_observed_pr)
     elif args.renew_provider_candidate:
