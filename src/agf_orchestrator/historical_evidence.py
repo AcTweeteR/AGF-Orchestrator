@@ -17,6 +17,7 @@ from typing import Any
 
 from . import owner_authority
 from .authority_context import resolve_authority
+from .historical_epochs import HistoricalEpochError, verify_archived_epoch_chain
 from .owner_authority import OwnerAuthorityError, verify_envelope
 from .project_registry import ProjectRegistry
 
@@ -344,8 +345,13 @@ def load_historical_baseline(
                 not isinstance(item, str) or not _HEX.fullmatch(item)
                 for item in payload["source_hashes"]
             )
-            or payload["baseline_generation"] != 1
-            or payload["predecessor_baseline_hash"] is not None
+            or type(payload["baseline_generation"]) is not int
+            or not 1 <= payload["baseline_generation"] <= 64
+            or (payload["baseline_generation"] == 1
+                and payload["predecessor_baseline_hash"] is not None)
+            or (payload["baseline_generation"] > 1
+                and (not isinstance(payload["predecessor_baseline_hash"], str)
+                     or not _HEX.fullmatch(payload["predecessor_baseline_hash"])))
             or not isinstance(payload["operation_id"], str)
             or not payload["operation_id"].startswith("historical-baseline-")
         ):
@@ -436,6 +442,13 @@ def load_historical_baseline(
             OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError
         ) as exc:
             raise HistoricalEvidenceError("historical baseline journal is unavailable") from exc
+    if payload_keys == extended_required:
+        try:
+            verify_archived_epoch_chain(root, project_id, payload)
+        except HistoricalEpochError as exc:
+            raise HistoricalEvidenceError(
+                "historical baseline predecessor chain is invalid"
+            ) from exc
     verify_current_baseline_bindings(baseline)
     return baseline
 
