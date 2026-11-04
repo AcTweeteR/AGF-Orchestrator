@@ -1,10 +1,12 @@
 """Focused tests for the owner-controlled, free-first mission pilot."""
 
+import io
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -170,6 +172,88 @@ class FreeMissionTests(unittest.TestCase):
             agf_chat.run_mission(self.state_dir, self.id)
         saved = json.loads((self.state_dir / f"{self.id}.json").read_text())
         self.assertEqual(saved["status"], "COMPLETED")
+
+    def test_objective_is_persisted_before_planning_and_resumes_after_interruption(self):
+        argv = [
+            "agf_chat",
+            "--state-dir",
+            str(self.state_dir),
+            "start",
+            "--repository",
+            str(self.repo),
+            "--objective",
+            "Implement answer",
+        ]
+        output = io.StringIO()
+        with (
+            patch.object(sys, "argv", argv),
+            redirect_stdout(output),
+            patch.object(agf_chat, "plan_objective") as planner,
+        ):
+            agf_chat.main()
+        planner.assert_not_called()
+        mission_id = json.loads(output.getvalue())["mission_id"]
+        path = self.state_dir / f"{mission_id}.json"
+        self.assertEqual(json.loads(path.read_text())["status"], "PLANNING")
+        with patch.object(agf_chat, "plan_objective", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                agf_chat.run_mission(self.state_dir, mission_id)
+        self.assertEqual(json.loads(path.read_text())["planning_attempts"], 1)
+        task = {
+            "file": "value.py",
+            "instruction": "return 42",
+            "tests": [sys.executable, "-m", "unittest", "-q", "test_value"],
+        }
+        with (
+            patch.object(agf_chat, "plan_objective", return_value=([task], None)),
+            patch.object(
+                agf_chat,
+                "ask_model",
+                return_value=({"content": "def answer():\n    return 42\n"}, {"model": "local"}),
+            ),
+        ):
+            result = agf_chat.run_mission(self.state_dir, mission_id)
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertEqual(result["planning_attempts"], 2)
+
+    def test_interrupted_planning_cannot_exceed_budget(self):
+        path = self.state_dir / f"{self.id}.json"
+        record = json.loads(path.read_text())
+        record.update(
+            status="PLANNING", tasks=[], objective="test", planning_tests=[], planning_attempts=2
+        )
+        agf_chat.write_json(path, record)
+        with patch.object(agf_chat, "plan_objective") as planner:
+            result = agf_chat.run_mission(self.state_dir, self.id)
+        planner.assert_not_called()
+        self.assertEqual(result["status"], "BLOCKED")
+
+    def test_interrupted_legacy_execution_is_not_dispatched_again(self):
+        path = self.state_dir / f"{self.id}.json"
+        record = json.loads(path.read_text())
+        record["status"] = "RUNNING"
+        agf_chat.write_json(path, record)
+        with patch.object(agf_chat, "ask_model") as model:
+            result = agf_chat.run_mission(self.state_dir, self.id)
+        model.assert_not_called()
+        self.assertEqual(result["status"], "HUMAN_REQUIRED")
+
+    def test_pause_during_legacy_dispatch_preserves_source_and_status(self):
+        path = self.state_dir / f"{self.id}.json"
+
+        def pause_during_request(*args, **kwargs):
+            record = json.loads(path.read_text())
+            record["status"] = "PAUSED"
+            agf_chat.write_json(path, record)
+            return {"content": "def answer():\n    return 42\n"}, {"model": "local"}
+
+        with patch.object(agf_chat, "ask_model", side_effect=pause_during_request):
+            result = agf_chat.run_mission(self.state_dir, self.id)
+        self.assertEqual(result["status"], "PAUSED")
+        self.assertIn("return 0", (self.repo / "value.py").read_text())
+        stale = dict(result, status="RUNNING")
+        agf_chat.write_json(path, stale)
+        self.assertEqual(json.loads(path.read_text())["status"], "PAUSED")
 
 
 if __name__ == "__main__":

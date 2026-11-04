@@ -49,7 +49,7 @@ def _write_json_unlocked(path: Path, record: dict) -> None:
 
 def write_json(path: Path, record: dict) -> None:
     with control_lock(path):
-        if path.is_file() and record.get("engine") == "full":
+        if path.is_file():
             current = json.loads(path.read_text())
             if current.get("status") in {"PAUSING", "PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
                 for key in ("usage", "events", "updated_at", "attempt"):
@@ -283,10 +283,61 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
         state = json.loads(path.read_text())
         if state["status"] in ("COMPLETED", "BLOCKED", "STOPPED", "PAUSED"):
             return state
+        if state["status"] == "RUNNING":
+            with control_lock(path):
+                state = json.loads(path.read_text())
+                if state["status"] == "RUNNING":
+                    state["status"] = "HUMAN_REQUIRED"
+                    state["reason"] = "interrupted legacy task requires reconciliation"
+                    _write_json_unlocked(path, state)
+            return state
         root = Path(state["repository"]).resolve()
-        state["status"] = "RUNNING"
-        state["pid"] = os.getpid()
-        write_json(path, state)
+        if state["status"] == "PLANNING":
+            with control_lock(path):
+                state = json.loads(path.read_text())
+                if state["status"] != "PLANNING":
+                    return state
+                attempts = state.get("planning_attempts", 0)
+                if (
+                    not isinstance(attempts, int)
+                    or isinstance(attempts, bool)
+                    or attempts < 0
+                    or attempts >= 2
+                ):
+                    state["status"] = "BLOCKED"
+                    state["reason"] = "planning attempt budget exhausted or invalid"
+                    _write_json_unlocked(path, state)
+                    return state
+                state["planning_attempts"] = attempts + 1
+                _write_json_unlocked(path, state)
+            try:
+                tasks, usage = plan_objective(root, state["objective"], state["planning_tests"])
+                validate_tasks(root, tasks)
+            except (ValueError, OSError, KeyError, subprocess.SubprocessError) as exc:
+                with control_lock(path):
+                    state = json.loads(path.read_text())
+                    if state["status"] == "PLANNING":
+                        state["status"] = "BLOCKED"
+                        state["reason"] = f"planning failed: {str(exc)[:500]}"
+                        _write_json_unlocked(path, state)
+                return state
+            with control_lock(path):
+                state = json.loads(path.read_text())
+                if usage:
+                    state["usage"].append(usage)
+                if state["status"] != "PLANNING":
+                    _write_json_unlocked(path, state)
+                    return state
+                state["tasks"] = tasks
+                state["status"] = "PENDING"
+                _write_json_unlocked(path, state)
+        with control_lock(path):
+            state = json.loads(path.read_text())
+            if state["status"] not in ("PENDING", "RUNNING"):
+                return state
+            state["status"] = "RUNNING"
+            state["pid"] = os.getpid()
+            _write_json_unlocked(path, state)
         while state["index"] < len(state["tasks"]):
             task = state["tasks"][state["index"]]
             target = safe_target(root, task["file"])
@@ -325,13 +376,19 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                             errors.append(f"{route['provider']}/{route['model']}: {str(err)[:160]}")
                     else:
                         raise ValueError("; ".join(errors))
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(new_content)
+                    with control_lock(path):
+                        latest = json.loads(path.read_text())
+                        latest["usage"].append(usage)
+                        _write_json_unlocked(path, latest)
+                        if latest["status"] in ("PAUSED", "STOPPED", "HUMAN_REQUIRED"):
+                            return latest
+                        state["usage"] = latest["usage"]
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_text(new_content)
                     ok, report = execute_tests(root, tests)
                     latest = json.loads(path.read_text())
                     if latest["status"] in ("PAUSED", "STOPPED"):
                         return latest
-                    state["usage"].append(usage)
                     state["events"].append(
                         {
                             "task": state["index"],
@@ -372,6 +429,17 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
         state.pop("pid", None)
         write_json(path, state)
         return state
+
+
+def validate_tasks(root: Path, tasks) -> None:
+    if not isinstance(tasks, list) or not tasks:
+        raise ValueError("tasks must be a nonempty JSON array")
+    for item in tasks:
+        if not isinstance(item, dict) or not isinstance(item.get("instruction"), str):
+            raise ValueError("invalid task")
+        safe_target(root, item["file"])
+        if not isinstance(item.get("tests"), list):
+            raise ValueError("tests must be an argument array")
 
 
 def parse_args():
@@ -461,19 +529,9 @@ def main():
         )
         if args.tasks:
             tasks = json.loads(args.tasks.read_text())
-            planning_usage = None
+            validate_tasks(root, tasks)
         else:
-            tasks, planning_usage = plan_objective(
-                root, args.objective, shlex.split(args.test_command)
-            )
-        if not isinstance(tasks, list) or not tasks:
-            raise SystemExit("tasks must be a nonempty JSON array")
-        for item in tasks:
-            if not isinstance(item, dict) or not isinstance(item.get("instruction"), str):
-                raise SystemExit("invalid task")
-            safe_target(root, item["file"])
-            if not isinstance(item.get("tests"), list):
-                raise SystemExit("tests must be an argument array")
+            tasks = []
         routes = []
         if args.omniroute_model:
             if not args.omniroute_model.startswith("ollama/"):
@@ -485,15 +543,17 @@ def main():
         mid = uuid.uuid4().hex[:16]
         record = {
             "mission_id": mid,
-            "status": "PENDING",
+            "status": "PENDING" if args.tasks else "PLANNING",
             "repository": str(root),
             "tasks": tasks,
             "index": 0,
             "max_attempts": max(1, min(5, args.max_attempts)),
             "routes": routes,
-            "usage": [planning_usage] if planning_usage else [],
+            "usage": [],
             "events": [],
             "objective": args.objective if not args.tasks else None,
+            "planning_tests": shlex.split(args.test_command),
+            "planning_attempts": 0,
             "api_budget_eur": 0,
             "codex_calls": 0,
             "created_at": time.time(),
@@ -509,7 +569,9 @@ def main():
                     start_new_session=True,
                 )
         print(
-            json.dumps({"mission_id": mid, "status": "STARTED" if args.background else "PENDING"})
+            json.dumps(
+                {"mission_id": mid, "status": "STARTED" if args.background else record["status"]}
+            )
         )
         return
     if args.command == "worker":
@@ -547,7 +609,8 @@ def main():
                         if state.get("engine") == "full":
                             result = subprocess.run(
                                 ["git", "-C", state["worktree"], "status", "--porcelain"],
-                                capture_output=True, text=True,
+                                capture_output=True,
+                                text=True,
                             )
                             if result.returncode or result.stdout:
                                 state["status"] = "HUMAN_REQUIRED"
@@ -556,7 +619,11 @@ def main():
                                 state["status"] = "PENDING"
                                 state.pop("reason", None)
                         else:
-                            state["status"] = "PENDING"
+                            state["status"] = (
+                                "PLANNING"
+                                if not state["tasks"] and state.get("objective")
+                                else "PENDING"
+                            )
                             state.pop("reason", None)
                         _write_json_unlocked(path, state)
         if state.get("engine") == "full":
@@ -570,9 +637,15 @@ def main():
     elif args.command in ("pause", "stop"):
         with control_lock(path):
             state = json.loads(path.read_text())
-            target = ("PAUSING" if state.get("engine") == "full"
-                      and state["status"] in {"RUNNING", "PAUSING"}
-                      else "PAUSED") if args.command == "pause" else "STOPPED"
+            target = (
+                (
+                    "PAUSING"
+                    if state.get("engine") == "full" and state["status"] in {"RUNNING", "PAUSING"}
+                    else "PAUSED"
+                )
+                if args.command == "pause"
+                else "STOPPED"
+            )
             allowed = {"PENDING", "PLANNING", "RUNNING"}
             if args.command == "stop":
                 allowed.update({"PAUSING", "PAUSED", "BLOCKED"})
