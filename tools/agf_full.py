@@ -114,9 +114,6 @@ def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M",
             timeout=150,
         )
         actual = reply.get("model")
-        if actual not in {model, model.removeprefix("ollama/")}:
-            raise ValueError("unexpected gateway model")
-        content = reply["choices"][0]["message"]["content"]
         usage = reply.get("usage", {})
         evidence = {
             "purpose": purpose,
@@ -127,6 +124,11 @@ def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M",
             "completion_tokens": usage.get("completion_tokens", 0),
             "api_eur": 0,
         }
+        if usage_observer is not None:
+            usage_observer(evidence)
+        if actual not in {model, model.removeprefix("ollama/")}:
+            raise ValueError("unexpected gateway model")
+        content = reply["choices"][0]["message"]["content"]
     except (OSError, ValueError, KeyError, IndexError, TypeError):
         # Local, no-cost fallback; never upgrade to API-based providers.
         reply = chat.request(
@@ -145,9 +147,6 @@ def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M",
             timeout=150,
         )
         actual = reply.get("model")
-        if actual != model.removeprefix("ollama/"):
-            raise ValueError("unexpected local model")
-        content = reply["message"]["content"]
         evidence = {
             "purpose": purpose,
             "provider": "ollama",
@@ -157,8 +156,11 @@ def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M",
             "completion_tokens": reply.get("eval_count", 0),
             "api_eur": 0,
         }
-    if usage_observer is not None:
-        usage_observer(evidence)
+        if usage_observer is not None:
+            usage_observer(evidence)
+        if actual != model.removeprefix("ollama/"):
+            raise ValueError("unexpected local model")
+        content = reply["message"]["content"]
     result = json.loads(content)
     if not isinstance(result, dict):
         raise ValueError("model response is not a JSON object")
@@ -297,7 +299,7 @@ def start(
         "branch": None,
         "objective": objective,
         "scope": scope,
-        "tasks": [],
+        "tasks": None,
         "planning_tests": shlex.split(tests) if isinstance(tests, str) else tests,
         "planning_model": model,
         "planning_attempts": 0,
@@ -507,6 +509,8 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
         state = json.loads(path.read_text())
         if state["status"] in {"COMPLETED", "BLOCKED", "PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
             return state
+        if state["status"] == "PLANNING" and state.get("planning_pid"):
+            return state
         if state["status"] in {"RUNNING", "PAUSING"}:
             state["status"] = "HUMAN_REQUIRED"
             state["reason"] = "execution interrupted; reconcile the worktree before resuming"
@@ -539,6 +543,10 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     or actual_branch != state.get("branch")
                     or Path(actual_root).resolve() != root):
                 raise ValueError("worktree identity or HEAD changed")
+            if subprocess.check_output(
+                ["git", "-C", str(root), "status", "--porcelain"], text=True
+            ).strip():
+                raise ValueError("worktree has uncommitted changes")
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             state["status"] = "HUMAN_REQUIRED"
             state["reason"] = f"worktree identity cannot be verified: {exc}"

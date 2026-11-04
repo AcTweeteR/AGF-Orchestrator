@@ -2,6 +2,7 @@
 
 import fcntl
 import json
+import os
 import subprocess
 import sys
 import time
@@ -738,6 +739,50 @@ def test_clean_branch_drift_requires_reconciliation(repo, tmp_path, monkeypatch)
         result = agf_full.run_mission(state_dir, queued["mission_id"])
     dispatch.assert_not_called()
     assert result["status"] == "HUMAN_REQUIRED"
+
+
+def test_dirty_worktree_requires_reconciliation_before_dispatch(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{
+        "files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable],
+    }]))
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(state_dir, repo, objective=None, tasks_path=tasks,
+                            tests=[sys.executable], model="ollama/local")
+    path = state_dir / (queued["mission_id"] + ".json")
+    worktree = Path(json.loads(path.read_text())["worktree"])
+    (worktree / "logic.py").write_text("external change\n")
+    with patch.object(agf_full, "propose_edits") as dispatch:
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    dispatch.assert_not_called()
+    assert result["status"] == "HUMAN_REQUIRED"
+
+
+def test_worker_does_not_run_mission_during_registration(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(state_dir, repo, objective="fix answer", tasks_path=None,
+                            tests=[sys.executable], model="ollama/local")
+    path = state_dir / (queued["mission_id"] + ".json")
+    record = json.loads(path.read_text())
+    record.update(status="PLANNING", planning_pid=os.getpid(), tasks=None)
+    agf_full.chat.write_json(path, record)
+    with patch.object(agf_full, "plan") as planner:
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    planner.assert_not_called()
+    assert result["status"] == "PLANNING"
+
+
+def test_malformed_gateway_response_records_usage_before_fallback():
+    gateway = {"model": "local", "usage": {"prompt_tokens": 7, "completion_tokens": 9}}
+    local = {"model": "local", "prompt_eval_count": 3, "eval_count": 4,
+             "message": {"content": "{}"}}
+    observed = []
+    with patch.object(agf_full.chat, "request", side_effect=[gateway, local]):
+        agf_full.route_json("test", purpose="planning", model="ollama/local",
+                            usage_observer=observed.append)
+    assert [item["completion_tokens"] for item in observed] == [9, 4]
 
 
 def test_validated_plan_survives_interruption_before_execution(repo, tmp_path, monkeypatch):
