@@ -83,3 +83,38 @@ def test_local_ollama_bare_model_id_is_accepted_as_exact_alias():
         )
     assert result.provider == "ollama"
     assert result.model == "ollama/qwen3.5:9b-q4_K_M"
+
+
+@pytest.mark.parametrize("bad_budget", [0, 63, 2401, True, "200"])
+def test_bounded_gateway_output_budget_rejects_invalid_values(bad_budget):
+    with pytest.raises(ModelGatewayError, match="token budget"):
+        ModelGatewayProvider().complete(
+            model="ollama/qwen",
+            messages=[{"role": "user", "content": "test"}],
+            eligible_models=frozenset({"ollama/qwen"}),
+            verified_zero_cost=True,
+            max_output_tokens=bad_budget,
+        )
+
+
+def test_gateway_respects_small_requested_response_budget():
+    observed = []
+    expected = {
+        "model":"ollama/qwen",
+        "choices":[{"message":{"content":"{}"}}],
+    }
+
+    def intercept(request, timeout):
+        observed.append(json.loads(request.data))
+        return Response(json.dumps(expected).encode())
+
+    with patch("agf_orchestrator.model_gateway.urlopen", side_effect=intercept):
+        ModelGatewayProvider().complete(
+            model="ollama/qwen", messages=[{"role":"user","content":"test"}],
+            eligible_models=frozenset({"ollama/qwen"}),
+            verified_zero_cost=True, max_output_tokens=192,
+        )
+    assert observed[0]["max_tokens"] == 192
+    assert observed[0]["think"] is False
+    assert observed[0]["model"] == "ollama/qwen"
+    assert observed[0]["reasoning_effort"] == "none"

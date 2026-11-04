@@ -53,7 +53,11 @@ from agf_orchestrator.owner_authority import (
 from agf_orchestrator.policy_authority import PolicyAuthority
 from agf_orchestrator.policy_state_store import PolicyStateStore
 from agf_orchestrator.project_registry import ProjectRegistry, parse_remote_url
-from agf_orchestrator.provider_intelligence import ProviderIntelligenceStore, state_from_dict
+from agf_orchestrator.provider_intelligence import (
+    ProviderIntelligenceStore,
+    is_codex_to_local_owner_rotation,
+    state_from_dict,
+)
 from agf_orchestrator.scope_authorization import (
     ScopeAuthorization,
     ScopeAuthorizationStore,
@@ -321,11 +325,30 @@ def renew_provider_candidate(project_id: str, candidate: Path) -> dict[str, str]
             item.profile.profile_id: item.profile.profile_version
             for item in proposed.candidates
         }
-        if not old_versions or any(
+        rotate_local = is_codex_to_local_owner_rotation(previous, proposed)
+        if rotate_local:
+            from agf_orchestrator.adapters.local_architect import local_architect_provenance
+            from agf_orchestrator.capability_profiles import CapabilityStatus
+            from agf_orchestrator.provider_intelligence import ARCHITECT_REQUIREMENTS
+
+            profile = proposed.candidates[0].profile
+            actual = {item.name: item.status for item in profile.capabilities}
+            if (
+                profile.provenance_source != local_architect_provenance()
+                or any(actual.get(name) != CapabilityStatus.SUPPORTED
+                       for name in ARCHITECT_REQUIREMENTS)
+                or not all(getattr(proposed.gates, name) is True for name in (
+                    "policy_eligible", "privacy_eligible", "independence_eligible",
+                    "budget_eligible", "health_eligible", "empirical_evidence_eligible"
+                ))
+            ):
+                raise RuntimeError("local provider renewal lacks verified source or capability")
+        elif not old_versions or any(
             new_versions.get(key, 0) <= value for key, value in old_versions.items()
         ):
             raise RuntimeError("provider renewal requires higher profile versions")
-        _require_fresh_profile_observations(previous, proposed)
+        if not rotate_local:
+            _require_fresh_profile_observations(previous, proposed)
         if proposed.observed_at <= previous.observed_at:
             raise RuntimeError("provider renewal requires a fresh observation")
         result = _activate_provider_candidate(project_id, candidate_path, allow_renewal=True)

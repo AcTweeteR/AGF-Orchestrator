@@ -42,7 +42,7 @@ ARCHITECT_REQUIREMENTS = (
 SUPPORTED_DECISION_DOMAINS = frozenset(
     {"architect", "code-intelligence", "knowledge", "documentation"}
 )
-APPROVED_PROVIDER_INTERFACES = frozenset({"codex", "openhands"})
+APPROVED_PROVIDER_INTERFACES = frozenset({"codex", "openhands", "omniroute-local"})
 ARCHITECT_GATE_NAMES = (
     "policy_eligible",
     "privacy_eligible",
@@ -55,6 +55,43 @@ ARCHITECT_GATE_NAMES = (
 
 class ProviderIntelligenceError(ValueError):
     """Raised when provider evidence is missing, stale, tampered, or unsafe."""
+
+
+def is_codex_to_local_owner_rotation(
+    previous: "ProviderIntelligenceState", proposed: "ProviderIntelligenceState"
+) -> bool:
+    """Recognize exactly one Owner-controlled interface migration, not fallback.
+
+    This check does NOT establish target advancement or authorize signing.
+    The external Owner controller must validate any target advancement
+    independently before calling the explicitly renewable store boundary.
+    """
+    if (
+        getattr(previous, "decision_domain", None) != "architect"
+        or getattr(proposed, "decision_domain", None) != "architect"
+        or previous.provider_interfaces != (("provider-codex", "codex"),)
+        or proposed.provider_interfaces
+        != (("provider-omniroute-local", "omniroute-local"),)
+        or len(previous.candidates) != 1
+        or len(proposed.candidates) != 1
+    ):
+        return False
+    old = previous.candidates[0].profile
+    new = proposed.candidates[0].profile
+    return (
+        old.provider_id == "provider-codex"
+        and new.provider_id == "provider-omniroute-local"
+        and new.profile_version > old.profile_version
+        and new.observed_at > old.observed_at
+        and proposed.observed_at > previous.observed_at
+        and previous.project_id == proposed.project_id
+        and proposed.policy_generation in {
+            previous.policy_generation, previous.policy_generation + 1,
+        }
+        and previous.constitution_id == proposed.constitution_id
+        and previous.constitution_record_hash == proposed.constitution_record_hash
+        and previous.requirements_hash == proposed.requirements_hash
+    )
 
 
 def _validate_gate_pairs(pairs: object, allowed_names: set[str], label: str) -> None:
@@ -115,12 +152,22 @@ def _parse_scoped_gate_evidence(value: object) -> tuple[tuple[Any, ...], ...]:
 
 
 def _validate_architect_gate_evidence(
-    gate_evidence: dict[str, str], gates: SelectionGates
+    gate_evidence: dict[str, str], gates: SelectionGates,
+    interfaces: tuple[tuple[str, str], ...],
 ) -> None:
+    # Local evidence cannot be mixed with another interface to borrow its
+    # privacy gate. Only an exact owner-bound provider identity is accepted.
+    local = any(interface == "omniroute-local" for _, interface in interfaces)
+    if local and interfaces != (("provider-omniroute-local", "omniroute-local"),):
+        raise ProviderIntelligenceError("local Architect interface identity is invalid")
+    privacy_prefix = (
+        "omniroute-loopback-only-v1;read-only-canary;"
+        if local else "codex-safe-environment-v1;read-only-canary;"
+    )
     if not gate_evidence["policy_eligible"].startswith("active-policy:"):
         raise ProviderIntelligenceError("policy gate evidence is not authority-bound")
     for name, prefix in (
-        ("privacy_eligible", "codex-safe-environment-v1;read-only-canary;"),
+        ("privacy_eligible", privacy_prefix),
         ("independence_eligible", "architect-advisory;reviewer-separate-stage;"),
     ):
         value = gate_evidence[name]
@@ -477,7 +524,7 @@ class ProviderIntelligenceState:
             raise ProviderIntelligenceError("provider interface bindings are incomplete")
         gate_evidence = _validated_gate_evidence(self.gate_evidence)
         if self.decision_domain == "architect":
-            _validate_architect_gate_evidence(gate_evidence, self.gates)
+            _validate_architect_gate_evidence(gate_evidence, self.gates, self.provider_interfaces)
 
 
 def make_profile(
@@ -889,6 +936,12 @@ class ProviderIntelligenceStore:
                     and state.observed_at > existing.observed_at
                     and profiles_advanced
                 )
+                # An exact Codex -> local replacement is a distinct Owner
+                # rotation, not an ordinary provider profile refresh. It can
+                # only be saved through the explicitly authorized controller.
+                if allow_renewal and is_codex_to_local_owner_rotation(existing, state):
+                    _atomic_write(self.path, state.to_dict())
+                    return
                 if (
                     existing.project_id == state.project_id
                     and existing.policy_generation <= state.policy_generation

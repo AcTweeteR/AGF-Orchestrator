@@ -17,6 +17,11 @@ from dotenv import load_dotenv
 
 from .adapters.codex import CodexAdapter, resolve_codex_executable
 from .adapters.free_first import FreeFirstGatewayAdapter
+from .adapters.local_architect import (
+    LOCAL_ARCHITECT_PROVIDER_ID,
+    LocalArchitectAdapter,
+    local_architect_provenance,
+)
 from .adapters.ollama import OllamaOpenHandsAdapter
 from .adapters.openhands import OpenHandsSDKAdapter
 from .architect_planning import (
@@ -241,6 +246,10 @@ def build_parser() -> argparse.ArgumentParser:
     intelligence_bootstrap.add_argument("--project", required=True)
     intelligence_bootstrap.add_argument(
         "--renew", action="store_true", help="force a fresh provider capability evaluation"
+    )
+    intelligence_bootstrap.add_argument(
+        "--interface", choices=("codex", "omniroute-local"), default="codex",
+        help="explicit owner-selected Architect interface; local route is zero-paid-only",
     )
     intelligence_bootstrap.add_argument(
         "--candidate-output",
@@ -612,6 +621,12 @@ def _architect_from_config(args: argparse.Namespace):
                 providers[provider_id] = _AdapterArchitectProvider(
                     provider_id, OpenHandsSDKAdapter(allow_llm_env=False, timeout=timeout)
                 )
+            elif interface == "omniroute-local":
+                if provider_id != LOCAL_ARCHITECT_PROVIDER_ID:
+                    raise ProviderIntelligenceError("local provider identity differs")
+                providers[provider_id] = _AdapterArchitectProvider(
+                    provider_id, LocalArchitectAdapter(timeout=timeout),
+                )
             else:
                 raise ProviderIntelligenceError("provider interface is not approved")
     except (KeyError, TypeError, ValueError, OSError, ProviderIntelligenceError) as exc:
@@ -692,7 +707,9 @@ def run_provider_intelligence(args: argparse.Namespace) -> int:
                 _validate_provider_intelligence_runtime(
                     existing, project, target_sha, snapshot, now
                 )
-                if not args.renew:
+                if not args.renew and all(
+                    interface == args.interface for _, interface in existing.provider_interfaces
+                ):
                     _output(
                         {
                             "project_id": existing.project_id,
@@ -724,17 +741,37 @@ def run_provider_intelligence(args: argparse.Namespace) -> int:
             .isoformat()
             .replace("+00:00", "Z")
         )
-        executable = resolve_codex_executable()
-        if executable.path is None:
-            raise ProviderIntelligenceError("no approved Architect provider interface is available")
-        adapter = CodexAdapter(executable=executable.path, timeout=90.0)
+        local_route = args.interface == "omniroute-local"
+        if local_route:
+            adapter = LocalArchitectAdapter(timeout=90.0)
+            executable = None
+            provider_id = LOCAL_ARCHITECT_PROVIDER_ID
+            provenance = local_architect_provenance()
+        else:
+            executable = resolve_codex_executable()
+            if executable.path is None:
+                raise ProviderIntelligenceError(
+                    "no approved Architect provider interface is available"
+                )
+            adapter = CodexAdapter(executable=executable.path, timeout=90.0)
+            provider_id = "provider-codex"
+            provenance = (
+                f"runtime-canary:codex:{executable.path}:"
+                f"{hashlib.sha256(Path(executable.path).read_bytes()).hexdigest()}"
+            )
         probe = adapter.execute(
             "Read-only AGF Architect capability canary. Do not edit files. Return only JSON "
             "with exactly these keys: head_sha, repository_name, reasoning_answer, "
             "context_marker, summary. Inspect the repository and report its current HEAD SHA "
             f"and name ({root.name}). Solve 2+4 and return reasoning_answer as the string '6'. "
             "Return context_marker exactly as AGF-CONTEXT-CANARY-7f3d. Do not report capability "
-            f"claims. Inspect only {root} and do not modify it.",
+            f"claims. Inspect only {root} and do not modify it. "
+            + (
+                "Use these independently verified host Git facts without guessing: "
+                f"HEAD={target_sha}, repository_name={root.name}. "
+                "This provider reads the signed AGF context, not the filesystem."
+                if local_route else ""
+            ),
             str(root),
             sandbox="read-only",
         )
@@ -787,13 +824,9 @@ def run_provider_intelligence(args: argparse.Namespace) -> int:
             except (TypeError, ValueError, json.JSONDecodeError):
                 pass
         probe_ok = _capability_probe_passed(capabilities)
-        provenance = (
-            f"runtime-canary:codex:{executable.path}:"
-            f"{hashlib.sha256(Path(executable.path).read_bytes()).hexdigest()}"
-        )
         profile = make_profile(
             project_id=project.project_id,
-            provider_id="provider-codex",
+            provider_id=provider_id,
             provenance_source=provenance,
             observed_at=now,
             expires_at=expires,
@@ -805,8 +838,10 @@ def run_provider_intelligence(args: argparse.Namespace) -> int:
         gates = SelectionGates(
             policy_eligible=policy.policy_id == "merge-policy-adr-0003"
             and policy.policy_hash == snapshot.get("active_policy_hash"),
-            privacy_eligible=executable.path.startswith("/Applications/"),
-            independence_eligible=isinstance(adapter, CodexAdapter),
+            privacy_eligible=(
+                local_route or executable.path.startswith("/Applications/")
+            ),
+            independence_eligible=local_route or isinstance(adapter, CodexAdapter),
             budget_eligible=adapter.timeout <= 90.0,
             health_eligible=probe.invocation_verified,
             empirical_evidence_eligible=probe_ok,
@@ -815,7 +850,8 @@ def run_provider_intelligence(args: argparse.Namespace) -> int:
             ("policy_eligible", f"active-policy:{policy.policy_id}:{policy.policy_hash}"),
             (
                 "privacy_eligible",
-                f"codex-safe-environment-v1;read-only-canary;{gates.privacy_eligible}",
+                f"{'omniroute-loopback-only-v1' if local_route else 'codex-safe-environment-v1'};"
+                f"read-only-canary;{gates.privacy_eligible}",
             ),
             (
                 "independence_eligible",
@@ -836,7 +872,7 @@ def run_provider_intelligence(args: argparse.Namespace) -> int:
             observed_at=now,
             expires_at=expires,
             candidates=(candidate,),
-            provider_interfaces=(("provider-codex", "codex"),),
+            provider_interfaces=((provider_id, args.interface),),
             gates=gates,
             gate_evidence=gate_evidence,
             policy_generation=authority_generation,
@@ -936,7 +972,13 @@ def _validate_provider_intelligence_runtime(state, project, target_sha, snapshot
         f"active-policy:{active_policy.policy_id}:{active_policy.policy_hash}"
     ):
         raise ProviderIntelligenceError("provider intelligence policy evidence is stale")
-    if evidence.get("privacy_eligible") != "codex-safe-environment-v1;read-only-canary;True":
+    local_route = state.provider_interfaces == (
+        (LOCAL_ARCHITECT_PROVIDER_ID, "omniroute-local"),
+    )
+    privacy_tag = (
+        "omniroute-loopback-only-v1" if local_route else "codex-safe-environment-v1"
+    )
+    if evidence.get("privacy_eligible") != f"{privacy_tag};read-only-canary;True":
         raise ProviderIntelligenceError("provider intelligence privacy evidence is invalid")
     if evidence.get("independence_eligible") != "architect-advisory;reviewer-separate-stage;True":
         raise ProviderIntelligenceError("provider intelligence independence evidence is invalid")
@@ -962,18 +1004,23 @@ def _validate_provider_intelligence_runtime(state, project, target_sha, snapshot
     if state.gates.empirical_evidence_eligible != expected_empirical:
         raise ProviderIntelligenceError("provider intelligence empirical gate is inconsistent")
     for provider_id, interface in state.provider_interfaces:
-        if interface != "codex":
-            continue
         profile = next(
             item.profile for item in state.candidates if item.profile.provider_id == provider_id
         )
-        current = resolve_codex_executable()
-        if current.path is None:
-            raise ProviderIntelligenceError("Architect provider interface is unavailable")
-        current_provenance = (
-            f"runtime-canary:codex:{current.path}:"
-            f"{hashlib.sha256(Path(current.path).read_bytes()).hexdigest()}"
-        )
+        if interface == "omniroute-local":
+            if provider_id != LOCAL_ARCHITECT_PROVIDER_ID:
+                raise ProviderIntelligenceError("local provider identity differs")
+            current_provenance = local_architect_provenance()
+        elif interface == "codex":
+            current = resolve_codex_executable()
+            if current.path is None:
+                raise ProviderIntelligenceError("Architect provider interface is unavailable")
+            current_provenance = (
+                f"runtime-canary:codex:{current.path}:"
+                f"{hashlib.sha256(Path(current.path).read_bytes()).hexdigest()}"
+            )
+        else:
+            continue
         if profile.provenance_source != current_provenance:
             raise ProviderIntelligenceError("provider profile is stale after provider change")
 
