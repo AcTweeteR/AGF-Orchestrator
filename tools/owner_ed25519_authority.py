@@ -44,6 +44,18 @@ from agf_orchestrator.historical_evidence import (
 )
 from agf_orchestrator.historical_evidence import _parse as _parse_historical_evidence
 from agf_orchestrator.locking import project_lock, session_lock
+from agf_orchestrator.observed_merge import (
+    ObservedMerge,
+    ObservedMergeStore,
+    github_repository_coordinates,
+    verify_observed_merge_chain,
+)
+from agf_orchestrator.observed_merge import (
+    _digest as observed_merge_digest,
+)
+from agf_orchestrator.observed_merge import (
+    _now as observed_merge_now,
+)
 from agf_orchestrator.owner_authority import (
     PINNED_OWNER_FINGERPRINT,
     canonical_bytes,
@@ -265,6 +277,15 @@ def _verify_legitimate_target_advancement(
         current = item.target_sha
     if current == proposed.target_sha:
         return
+    # Owner may attest observed historical GitHub merges AFTER they occurred.
+    # This deliberately cannot serve as prior delivery authorization, but it
+    # can establish a complete first-parent target lineage for a new,
+    # independently signed provider capability decision.
+    observed_store = ObservedMergeStore(Path.home() / ".agf-orchestrator")
+    if (observed_store.root / project_id).is_dir() and verify_observed_merge_chain(
+        observed_store, project, previous.target_sha, proposed.target_sha
+    ):
+        return
     store = DeliveryIntentStore(Path.home() / ".agf-orchestrator")
     directory = store.root / project_id
     if store.root.is_symlink() or directory.is_symlink() or not directory.is_dir():
@@ -290,6 +311,105 @@ def _verify_legitimate_target_advancement(
             matches.append((intent, receipt))
     if len(matches) != 1:
         raise RuntimeError("provider renewal requires one authoritative delivery receipt")
+
+
+def acknowledge_observed_merge(project_id: str, pr_number: int) -> dict[str, str]:
+    """Owner-sign a witnessed past GitHub merge, NOT pre-authorize its action.
+
+    Restricted to the project's canonical main and repository owner account.
+    Verification of first-parent lineage and GitHub merge is mandatory.
+    """
+    if (
+        not _PROJECT_ID.fullmatch(project_id)
+        or type(pr_number) is not int
+        or not 1 <= pr_number <= 10000000
+    ):
+        raise RuntimeError("observed PR identity is invalid")
+    state_root = Path.home() / ".agf-orchestrator"
+    with project_lock(state_root, project_id, "owner-observed-merge"):
+        project = ProjectRegistry(state_root).verify_read_only(project_id)
+        if project.status.value != "ACTIVE" or project.default_branch != "main":
+            raise RuntimeError("observed merge project must be active on main")
+        repo = Path(project.repository_root)
+        if subprocess.run(
+            ["git", "-C", str(repo), "branch", "--show-current"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip() != "main":
+            raise RuntimeError("observed merge requires canonical checkout")
+        owner, name = github_repository_coordinates(project.origin_url)
+        raw = subprocess.run(
+            ["gh", "pr", "view", str(pr_number), "-R", f"{owner}/{name}",
+             "--json", "number,state,mergedAt,mergedBy,mergeCommit,baseRefName"],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+        try:
+            record = json.loads(raw.stdout)
+            target = record["mergeCommit"]["oid"]
+            merged_by = record["mergedBy"]["login"]
+            merged_at = record["mergedAt"]
+            if (
+                record["state"] != "MERGED"
+                or record["number"] != pr_number
+                or record["baseRefName"] != "main"
+                or merged_by.casefold() != owner.casefold()
+                or not re.fullmatch(r"[0-9a-f]{40}", target)
+                or not isinstance(merged_at, str) or not merged_at
+            ):
+                raise RuntimeError("GitHub PR does not match an Owner-merged main result")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("GitHub observed merge metadata is invalid") from exc
+        first_parent = subprocess.run(
+            ["git", "-C", str(repo), "show", "-s", "--format=%P", target],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip().split()
+        if not first_parent:
+            raise RuntimeError("observed merge has no Git parent")
+        old = first_parent[0]
+        github = {
+            "state": "MERGED", "merge_commit": target, "base_branch": "main",
+            "pr_number": pr_number, "merged_at": merged_at, "merged_by": merged_by,
+        }
+        evidence_id = f"observed-pr-{pr_number}-{target[:12]}"
+        store = ObservedMergeStore(state_root)
+        previous_record = store.get(project_id, evidence_id)
+        if previous_record is not None:
+            previous_record.verify_project(project)
+            if previous_record.github != github or previous_record.previous_sha != old:
+                raise RuntimeError("existing observed merge conflicts with GitHub")
+            return {
+                "status": "ALREADY_RECORDED", "project_id": project_id,
+                "evidence_id": evidence_id, "target_sha": target,
+                "evidence_hash": previous_record.evidence_hash,
+            }
+        signed_at = observed_merge_now()
+        payload = {
+            "schema_version": "1.0",
+            "decision": "ACKNOWLEDGE_ALREADY_MERGED",
+            "evidence_id": evidence_id, "project_id": project_id,
+            "repository_identity": project.origin_url, "branch": "main",
+            "previous_sha": old, "target_sha": target,
+            "github": github, "observed_at": signed_at,
+        }
+        document = {
+            "schema_version": "1.0", "evidence_id": evidence_id,
+            "project_id": project_id, "repository_identity": project.origin_url,
+            "branch": "main", "previous_sha": old, "target_sha": target,
+            "github": github, "owner_payload": payload,
+            "owner_envelope": sign_envelope(payload, _generation_root()),
+            "observed_at": signed_at,
+            "provenance": "OWNER_POSTHOC_GITHUB_MERGE",
+        }
+        item = ObservedMerge(**{
+            **document, "evidence_hash": observed_merge_digest(document),
+        })
+        item.verify_project(project)
+        store.put(item)
+        return {
+            "status": "RECORDED_PAST_MERGE_NOT_AUTHORIZED",
+            "project_id": project_id, "evidence_id": evidence_id,
+            "target_sha": target, "previous_sha": old,
+            "evidence_hash": item.evidence_hash,
+        }
 
 
 def activate_provider_candidate(project_id: str, candidate: Path) -> dict[str, str]:
@@ -1419,6 +1539,7 @@ def main() -> int:
     parser.add_argument("--create-prospective-baseline", action="store_true")
     parser.add_argument("--renew-prospective-evidence", action="store_true")
     parser.add_argument("--target-sha")
+    parser.add_argument("--acknowledge-observed-pr", type=int)
     args = parser.parse_args()
     if args.prepare_generation:
         result = prepare_ed25519_generation(args.project, args.operation_id)
@@ -1426,6 +1547,8 @@ def main() -> int:
         result = verify_ed25519_generation(args.project, args.verify_generation)
     elif args.cutover_generation:
         result = cutover_ed25519_generation(args.project, args.cutover_generation)
+    elif args.acknowledge_observed_pr is not None:
+        result = acknowledge_observed_merge(args.project, args.acknowledge_observed_pr)
     elif args.renew_provider_candidate:
         result = renew_provider_candidate(args.project, Path(args.renew_provider_candidate))
     elif args.authorize_scope:
