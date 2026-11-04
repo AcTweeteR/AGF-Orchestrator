@@ -17,9 +17,28 @@ from agf_orchestrator.delivery_reconciliation import DeliveryIntentStore
 from agf_orchestrator.execution_journal import require_reconciled_execution
 from agf_orchestrator.objective_plan import require_unexecuted_planning
 from agf_orchestrator.session_continuation import SessionContinuation
+from agf_orchestrator.session_manager import SessionManager
 from agf_orchestrator.session_models import SessionStatus
 
 FLAGS = dict(execute=True, confirm_execution=True, confirm_delivery=True)
+
+
+def install_test_owner_signing(monkeypatch, owner, runtime_owner):
+    from provider_test_support import (
+        _FINGERPRINT,
+        _KEY_ID,
+        _PUBLIC_KEY,
+        _sign_binding_subject_payload,
+    )
+
+    anchor = {"schema_version": "1.0", "signature_scheme": "Ed25519",
+              "key_id": _KEY_ID, "fingerprint": _FINGERPRINT}
+    monkeypatch.setattr(runtime_owner, "PINNED_OWNER_FINGERPRINT", _FINGERPRINT)
+    monkeypatch.setattr(runtime_owner, "load_pinned_anchor", lambda: (anchor, _PUBLIC_KEY))
+    monkeypatch.setattr(
+        owner, "sign_envelope",
+        lambda payload, _root: _sign_binding_subject_payload(payload),
+    )
 
 
 class ForbiddenPipeline:
@@ -489,6 +508,253 @@ def test_paired_failed_delivery_outcomes_preserve_bounded_retries(tmp_path, monk
     directory = manager.store.artifacts_dir / session.session_id
     assert len(list(directory.glob("execution-started-*.json"))) == 3
     assert len(list(directory.glob("execution-finished-*.json"))) == 3
+
+
+def test_exhausted_delivery_budget_stays_closed_after_resume_and_restart(tmp_path, monkeypatch):
+    import agf_orchestrator.session_continuation as continuation
+    from agf_orchestrator.delivery import DeliveryPipeline
+    from agf_orchestrator.project_models import ProjectPolicy
+
+    _, _, manager, session, _, _ = prepared(tmp_path, monkeypatch)
+    project = manager.registry.get(session.project_id)
+    policy = ProjectPolicy(**{
+        **project.policy.__dict__, "maximum_correction_rounds": 3,
+    })
+    with manager.registry._lock("test-policy-limit"):
+        entries = manager.registry._load()
+        manager.registry._save([
+            replace(item, policy=policy) if item.project_id == project.project_id else item
+            for item in entries
+        ])
+    monkeypatch.setattr(continuation, "admit_live_delivery", lambda *args: None)
+    monkeypatch.setattr(SessionContinuation, "_objective_gate", lambda *args: None)
+    dispatches = []
+
+    def failed(self, plan, task_id, *args, **kwargs):
+        dispatches.append(self.max_correction_rounds)
+        return SimpleNamespace(to_dict=lambda: {
+            "plan_id": plan.plan_id, "task_id": task_id,
+            "status": "BLOCKED", "execution_status": "FAILED", "review_status": "NOT_RUN",
+            "push_status": "NOT_REQUESTED", "commit_sha": None, "correction_rounds": 0,
+        })
+
+    monkeypatch.setattr(DeliveryPipeline, "_deliver", failed)
+    for _ in range(4):
+        result = SessionContinuation(manager, DeliveryPipeline()).tick(
+            session.session_id, **FLAGS,
+        )
+        assert result["status"] == "CONTINUE", result
+    assert dispatches == [3, 2, 1, 0]
+
+    restarted = SessionManager(manager.store.state_dir)
+    resumed = restarted.resume(session.session_id)
+    assert resumed.status is SessionStatus.READY
+    directory = restarted.store.artifacts_dir / session.session_id
+    assert len(list(directory.glob("execution-started-*.json"))) == 4
+    assert len(list(directory.glob("execution-finished-*.json"))) == 4
+
+    result = SessionContinuation(restarted, ForbiddenPipeline()).tick(
+        session.session_id, **FLAGS,
+    )
+    assert result["status"] == "BLOCKED", result
+    assert result["action"] == "retry-budget"
+    assert dispatches == [3, 2, 1, 0]
+    assert len(list(directory.glob("execution-started-*.json"))) == 4
+
+
+def test_session_authorized_extra_delivery_attempt_is_one_shot_across_resume(
+    tmp_path, monkeypatch,
+):
+    import agf_orchestrator.session_continuation as continuation
+    from agf_orchestrator.delivery import DeliveryPipeline
+    from agf_orchestrator.project_models import ProjectPolicy
+
+    _, _, manager, session, _, _ = prepared(tmp_path, monkeypatch)
+    project = manager.registry.get(session.project_id)
+    policy = ProjectPolicy(**{
+        **project.policy.__dict__, "maximum_correction_rounds": 3,
+    })
+    with manager.registry._lock("test-policy-limit"):
+        entries = manager.registry._load()
+        manager.registry._save([
+            replace(item, policy=policy) if item.project_id == project.project_id else item
+            for item in entries
+        ])
+    monkeypatch.setattr(continuation, "admit_live_delivery", lambda *args: None)
+    monkeypatch.setattr(SessionContinuation, "_objective_gate", lambda *args: None)
+    dispatches = []
+
+    def failed(self, plan, task_id, *args, **kwargs):
+        dispatches.append(self.max_correction_rounds)
+        return SimpleNamespace(to_dict=lambda: {
+            "plan_id": plan.plan_id, "task_id": task_id,
+            "status": "BLOCKED", "execution_status": "FAILED", "review_status": "NOT_RUN",
+            "push_status": "NOT_REQUESTED", "commit_sha": None, "correction_rounds": 0,
+        })
+
+    monkeypatch.setattr(DeliveryPipeline, "_deliver", failed)
+    for _ in range(4):
+        assert SessionContinuation(manager, DeliveryPipeline()).tick(
+            session.session_id, **FLAGS,
+        )["status"] == "CONTINUE"
+
+    import agf_orchestrator.owner_authority as runtime_owner
+    from tools import owner_ed25519_authority as owner
+
+    signatures = []
+    install_test_owner_signing(monkeypatch, owner, runtime_owner)
+    original_sign = owner.sign_envelope
+
+    def counted_sign(payload, root):
+        signatures.append("signed")
+        return original_sign(payload, root)
+
+    monkeypatch.setattr(owner, "sign_envelope", counted_sign)
+    monkeypatch.setattr(owner, "_generation_root", lambda: tmp_path)
+    from agf_orchestrator.session_store import SessionStore
+    save = SessionStore.save
+    fail_save = [True]
+
+    def interrupt_before_session_reference(store, candidate):
+        if candidate.session_id == session.session_id and fail_save[0]:
+            fail_save[0] = False
+            raise OSError("simulated crash after immutable grant publication")
+        return save(store, candidate)
+
+    monkeypatch.setattr(SessionStore, "save", interrupt_before_session_reference)
+    with pytest.raises(OSError, match="simulated crash"):
+        owner.authorize_session_delivery_attempt(
+            session.project_id, session.session_id, session.base_sha, 4, 5,
+            state_dir=manager.store.state_dir,
+        )
+    assert "delivery_budget_authorization" not in manager.get(
+        session.session_id,
+    ).artifact_hashes
+    assert len(signatures) == 1
+    authorization = owner.authorize_session_delivery_attempt(
+        session.project_id, session.session_id, session.base_sha, 4, 5,
+        state_dir=manager.store.state_dir,
+    )
+    assert len(signatures) == 1
+    assert authorization["status"] == "AUTHORIZED"
+    extended = manager.get(session.session_id)
+    assert "delivery_attempt_limit" not in extended.attempts
+    assert "delivery_budget_authorization" in extended.artifact_hashes
+    assert sum("execution-started-" in ref for event in extended.events
+               for ref in event.evidence_refs) >= 4
+    assert sum("execution-finished-" in ref for event in extended.events
+               for ref in event.evidence_refs) >= 4
+    assert extended.events[-1].actor == "HUMAN"
+
+    restarted = SessionManager(manager.store.state_dir)
+    resumed = restarted.resume(session.session_id)
+    from agf_orchestrator.execution_journal import delivery_attempt_limit
+    assert delivery_attempt_limit(resumed, restarted.registry.get(session.project_id),
+                                  restarted.store) == 5
+    fifth = SessionContinuation(restarted, DeliveryPipeline()).tick(
+        session.session_id, **FLAGS,
+    )
+    assert fifth["action"] == "delivery", fifth
+    assert dispatches == [3, 2, 1, 0, 0]
+
+    after_fifth_restart = SessionManager(manager.store.state_dir)
+    after_fifth_restart.resume(session.session_id)
+    exhausted = SessionContinuation(after_fifth_restart, ForbiddenPipeline()).tick(
+        session.session_id, **FLAGS,
+    )
+    assert exhausted["status"] == "BLOCKED", exhausted
+    assert exhausted["action"] == "retry-budget"
+    assert dispatches == [3, 2, 1, 0, 0]
+    directory = after_fifth_restart.store.artifacts_dir / session.session_id
+    assert len(list(directory.glob("execution-started-*.json"))) == 5
+    assert len(list(directory.glob("execution-finished-*.json"))) == 5
+
+
+def test_owner_extra_attempt_consumed_by_successful_integrated_dispatch(tmp_path, monkeypatch):
+    import agf_orchestrator.execution_journal as journal
+    import agf_orchestrator.owner_authority as runtime_owner
+    from tools import owner_ed25519_authority as owner
+
+    _, state, manager, session, plan, _ = prepared(tmp_path, monkeypatch)
+    from agf_orchestrator.project_models import ProjectPolicy
+    project = manager.registry.get(session.project_id)
+    policy = ProjectPolicy(**{**project.policy.__dict__, "maximum_correction_rounds": 3})
+    with manager.registry._lock("test-policy-limit"):
+        entries = manager.registry._load()
+        manager.registry._save([
+            replace(item, policy=policy) if item.project_id == project.project_id else item
+            for item in entries
+        ])
+    monkeypatch.setattr(journal, "_integrated_binding", lambda *_, **__: False)
+    monkeypatch.setattr(journal, "_journal_plan", lambda *_: (plan, True))
+    monkeypatch.setattr(journal, "_worktrees", lambda *_: "worktrees")
+    for index in range(4):
+        started = {"session_id": session.session_id, "project_id": session.project_id,
+                   "base_sha": session.base_sha, "task_id": f"task-{index}",
+                   "plan_sha256": session.artifact_hashes["plan"],
+                   "worktrees_sha256": "worktrees", "invocation_id": str(index)}
+        digest = journal.content_hash(started)
+        manager.store.write_artifact(
+            session.session_id, f"execution-started-{digest}.json",
+            json.dumps(started, sort_keys=True),
+        )
+        report = {"execution_status": "FAILED", "review_status": "NOT_RUN",
+                  "push_status": "NOT_REQUESTED", "commit_sha": None, "status": "FAILED",
+                  "task_id": started["task_id"], "plan_id": plan.plan_id,
+                  "base_sha": session.base_sha, "correction_rounds": 0,
+                  "evidence": ["cleanup succeeded: yes", "caller repository clean: yes"]}
+        manager.store.write_artifact(
+            session.session_id, f"execution-finished-{digest}.json",
+            json.dumps({"started_sha256": digest, "report": report}, sort_keys=True),
+        )
+    install_test_owner_signing(monkeypatch, owner, runtime_owner)
+    monkeypatch.setattr(owner, "_generation_root", lambda: tmp_path)
+    owner.authorize_session_delivery_attempt(
+        session.project_id, session.session_id, session.base_sha, 4, 5, state_dir=state,
+    )
+    authorized = manager.get(session.session_id)
+    started = {"session_id": session.session_id, "project_id": session.project_id,
+               "base_sha": session.base_sha, "task_id": "fifth-task",
+               "plan_sha256": session.artifact_hashes["plan"],
+               "worktrees_sha256": "worktrees", "invocation_id": "fifth"}
+    digest = journal.content_hash(started)
+    manager.store.write_artifact(
+        session.session_id, f"execution-started-{digest}.json",
+        json.dumps(started, sort_keys=True),
+    )
+    success = {"execution_status": "SUCCEEDED", "review_status": "PASSED",
+               "push_status": "INTEGRATED", "commit_sha": "a" * 40,
+               "status": "SUCCESS", "task_id": "fifth-task", "plan_id": plan.plan_id,
+               "base_sha": session.base_sha, "correction_rounds": 0, "evidence": []}
+    manager.store.write_artifact(
+        session.session_id, f"execution-finished-{digest}.json",
+        json.dumps({"started_sha256": digest, "report": success}, sort_keys=True),
+    )
+    restarted = SessionManager(state)
+    monkeypatch.setattr(journal, "_integrated_binding", lambda *_, **__: True)
+    failed = require_reconciled_execution(state_store := restarted.store, authorized, plan)
+    assert failed == 0
+    remaining = journal.remaining_delivery_attempts(
+        state_store, authorized, restarted.registry.get(session.project_id), failed,
+    )
+    assert remaining == 0
+    rebased = replace(
+        authorized,
+        base_sha="b" * 40,
+        artifact_hashes={
+            key: value for key, value in authorized.artifact_hashes.items()
+            if key != "delivery_budget_authorization"
+        } | {
+            "historical:delivery-budget:delivery_budget_authorization":
+            authorized.artifact_hashes["delivery_budget_authorization"]
+        },
+    )
+    with pytest.raises(journal.SessionStoreError, match="lost its active target binding"):
+        journal.delivery_attempt_limit(
+            rebased, restarted.registry.get(session.project_id), state_store,
+        )
+    with pytest.raises(journal.ExecutionRecoveryRequired, match="budget exhausted"):
+        journal.record_execution_start(session.session_id, plan, "sixth-task")
 
 
 def test_direct_known_failure_consumes_continuation_retry_budget(tmp_path, monkeypatch):

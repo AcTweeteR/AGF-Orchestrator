@@ -43,7 +43,7 @@ from agf_orchestrator.historical_evidence import (
     verify_current_bindings,
 )
 from agf_orchestrator.historical_evidence import _parse as _parse_historical_evidence
-from agf_orchestrator.locking import project_lock
+from agf_orchestrator.locking import project_lock, session_lock
 from agf_orchestrator.owner_authority import (
     PINNED_OWNER_FINGERPRINT,
     canonical_bytes,
@@ -59,6 +59,9 @@ from agf_orchestrator.scope_authorization import (
     ScopeAuthorizationStore,
     authorization_id,
 )
+from agf_orchestrator.session_manager import SessionManager
+from agf_orchestrator.session_models import SessionStatus
+from agf_orchestrator.session_store import SessionStore
 
 _PROJECT_ID = re.compile(r"^project-[0-9a-f]{16}$")
 
@@ -1277,6 +1280,104 @@ def authorize_scope(
     }
 
 
+def authorize_session_delivery_attempt(
+    project_id: str, session_id: str, target_sha: str,
+    original_limit: int, new_limit: int, *, state_dir: Path | None = None,
+) -> dict[str, object]:
+    """Owner-sign one session-bound, one-dispatch budget extension."""
+    if not re.fullmatch(r"[0-9a-f]{40}", target_sha):
+        raise RuntimeError("delivery authorization target is invalid")
+    state = state_dir or Path.home() / ".agf-orchestrator"
+    store = SessionStore(state)
+    registry = ProjectRegistry(state)
+    with session_lock(state, session_id, "owner-delivery-budget"):
+        session = store.load(session_id)
+        with project_lock(state, project_id, "owner-delivery-budget"):
+            session = store.load(session_id)
+            project = registry.verify_read_only(project_id)
+            base_limit = project.policy.maximum_correction_rounds + 1
+            if (session.project_id != project_id or session.base_sha != target_sha
+                    or session.status not in {SessionStatus.READY, SessionStatus.RETRY_REQUIRED}
+                    or original_limit != base_limit or new_limit != base_limit + 1):
+                raise RuntimeError("delivery budget authorization binding is not eligible")
+            from agf_orchestrator.execution_journal import (
+                _dispatch_count,
+                require_reconciled_execution,
+            )
+            from agf_orchestrator.models import plan_from_dict
+
+            plan = plan_from_dict(json.loads(
+                store.ensure_safe_path(session.plan_path).read_text(encoding="utf-8")
+            ))
+            failures = require_reconciled_execution(store, session, plan)
+            dispatches = _dispatch_count(store, session)
+            if failures != original_limit or len(dispatches) != original_limit:
+                raise RuntimeError("delivery budget is not exactly exhausted")
+            operation_id = f"owner-session-delivery-budget-{session_id}-{target_sha}"
+            expected_payload = {
+                "schema_version": "1.0", "operation_id": operation_id,
+                "project_id": project_id, "session_id": session_id,
+                "target_sha": target_sha, "original_limit": original_limit,
+                "new_limit": new_limit, "original_dispatches": dispatches,
+            }
+            already_authorized = (
+                "delivery_budget_authorization" in session.artifact_hashes
+            )
+            authorization_path = store.ensure_safe_path(
+                store.artifacts_dir / session_id / "delivery-budget-authorization.json"
+            )
+            if "delivery_budget_authorization" in session.artifact_hashes:
+                existing_hash = session.artifact_hashes["delivery_budget_authorization"]
+                if store.artifact_hash(str(authorization_path)) != existing_hash:
+                    raise RuntimeError("persisted delivery authorization hash differs")
+                record = json.loads(authorization_path.read_text(encoding="utf-8"))
+            elif authorization_path.exists():
+                record = json.loads(authorization_path.read_text(encoding="utf-8"))
+            else:
+                payload = {**expected_payload, "issued_at": _now()}
+                record = {
+                    "payload": payload,
+                    "envelope": sign_envelope(payload, _generation_root()),
+                }
+                store.write_artifact(
+                    session_id, "delivery-budget-authorization.json",
+                    json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n",
+                )
+            payload = record.get("payload")
+            if (not isinstance(payload, dict)
+                    or set(payload) != {*expected_payload, "issued_at"}
+                    or any(payload.get(key) != value
+                           for key, value in expected_payload.items())
+                    or not isinstance(payload.get("issued_at"), str)):
+                raise RuntimeError("persisted delivery authorization binding differs")
+            verify_envelope(payload, record.get("envelope", {}))
+            digest = store.artifact_hash(str(authorization_path))
+            if ("delivery_budget_authorization" in session.artifact_hashes
+                    and session.artifact_hashes["delivery_budget_authorization"] != digest):
+                raise RuntimeError("persisted delivery authorization reference differs")
+            if already_authorized:
+                return {"status": "ALREADY_AUTHORIZED", "operation_id": operation_id,
+                        "session_id": session_id, "project_id": project_id,
+                        "target_sha": target_sha, "authorization_sha256": digest}
+            artifact = str(authorization_path)
+            session.artifact_hashes["delivery_budget_authorization"] = digest
+            journal_directory = store.ensure_safe_path(store.artifacts_dir / session_id)
+            evidence_refs = [artifact, *sorted(
+                str(path) for pattern in (
+                    "execution-started-*.json", "execution-finished-*.json",
+                ) for path in journal_directory.glob(pattern)
+            )]
+            SessionManager._append_event(
+                session, session.status, session.status,
+                "owner-signed one additional delivery dispatch, bound to the current target",
+                evidence_refs, session.blocking_issues, "HUMAN", operation_id,
+            )
+            store.save(session)
+            return {"status": "AUTHORIZED", "operation_id": operation_id,
+                    "session_id": session_id, "project_id": project_id,
+                    "target_sha": target_sha, "original_limit": original_limit,
+                    "new_limit": new_limit, "dispatches_before": len(dispatches),
+                    "authorization_sha256": digest}
 def main() -> int:
     parser = argparse.ArgumentParser(description="external owner Ed25519 authority controller")
     parser.add_argument("--project", required=True)
@@ -1286,6 +1387,9 @@ def main() -> int:
     parser.add_argument("--cutover-generation")
     parser.add_argument("--renew-provider-candidate")
     parser.add_argument("--authorize-scope", action="store_true")
+    parser.add_argument("--authorize-session-delivery-attempt", action="store_true")
+    parser.add_argument("--original-attempt-limit", type=int)
+    parser.add_argument("--new-attempt-limit", type=int)
     parser.add_argument("--session-id")
     parser.add_argument("--scope-id")
     parser.add_argument("--boundary", action="append", default=[])
@@ -1310,6 +1414,16 @@ def main() -> int:
             args.project, args.operation_id, session_id=args.session_id,
             target_sha=args.target_sha, scope_id=args.scope_id,
             boundaries=tuple(args.boundary),
+        )
+    elif args.authorize_session_delivery_attempt:
+        if (not args.session_id or not args.target_sha
+                or args.original_attempt_limit is None or args.new_attempt_limit is None):
+            raise RuntimeError(
+                "session delivery authorization requires session, target, and limits"
+            )
+        result = authorize_session_delivery_attempt(
+            args.project, args.session_id, args.target_sha,
+            args.original_attempt_limit, args.new_attempt_limit,
         )
     elif args.create_prospective_baseline:
         result = create_prospective_baseline(
