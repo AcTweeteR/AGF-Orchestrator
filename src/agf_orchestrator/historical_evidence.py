@@ -15,6 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from . import owner_authority
 from .authority_context import resolve_authority
 from .owner_authority import OwnerAuthorityError, verify_envelope
 from .project_registry import ProjectRegistry
@@ -330,7 +331,7 @@ def load_historical_baseline(
             or payload["policy_generation"] < 1
             or not _HEX.fullmatch(payload["constitution_record_hash"])
             or payload["owner_fingerprint"]
-            != "d23e23484571f256610658dd2b851ef3e4144dbd03827b8a66ee421c93ffe42a"
+            != owner_authority.PINNED_OWNER_FINGERPRINT
             or not isinstance(payload["evidence_definition_version"], str)
             or not payload["evidence_definition_version"]
             or not isinstance(payload["source_set"], list)
@@ -576,7 +577,7 @@ def verify_current_baseline_bindings(baseline: HistoricalBaseline) -> None:
     ):
         raise HistoricalEvidenceError("historical baseline Constitution hash is stale")
     if baseline.owner_fingerprint is not None and baseline.owner_fingerprint != (
-        "d23e23484571f256610658dd2b851ef3e4144dbd03827b8a66ee421c93ffe42a"
+        owner_authority.PINNED_OWNER_FINGERPRINT
     ):
         raise HistoricalEvidenceError("historical baseline owner authority is stale")
     if baseline.target_identity is not None:

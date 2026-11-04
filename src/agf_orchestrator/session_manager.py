@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
+import subprocess
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -67,6 +70,47 @@ def _canonical_plan_hash(payload: dict[str, object]) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def _dirty_planning_fingerprint(root: Path) -> str:
+    """Bind recovery to tracked diffs and untracked contents without storing them."""
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(root), *args])
+
+    if any(entry.startswith(b"160000 ") for entry in git("ls-files", "--stage", "-z").split(b"\0")):
+        raise SessionManagerError("dirty planning recovery with submodules is unsupported")
+    digest = hashlib.sha256()
+    for data in (git("status", "--porcelain=v1", "-z"),
+                 git("diff", "--no-ext-diff", "--binary", "HEAD", "--"),
+                 git("diff", "--no-ext-diff", "--binary", "--cached", "HEAD", "--")):
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    for name in sorted(git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0")):
+        if not name:
+            continue
+        path = root / os.fsdecode(name)
+        metadata = path.lstat()
+        mode = metadata.st_mode
+        digest.update(len(name).to_bytes(8, "big"))
+        digest.update(name)
+        digest.update(mode.to_bytes(8, "big"))
+        if stat.S_ISLNK(mode):
+            digest.update(hashlib.sha256(os.fsencode(os.readlink(path))).digest())
+        elif stat.S_ISREG(mode):
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, "rb") as stream:
+                opened = os.fstat(stream.fileno())
+                if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+                    raise SessionManagerError("untracked file changed during planning snapshot")
+                digest.update(hashlib.file_digest(stream, "sha256").digest())
+                after = os.fstat(stream.fileno())
+                if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (
+                    after.st_size, after.st_mtime_ns, after.st_ctime_ns
+                ):
+                    raise SessionManagerError("untracked file changed during planning snapshot")
+        else:
+            raise SessionManagerError("dirty planning includes an unsupported special file")
+    return digest.hexdigest()
 
 
 def _objective_validation_bindings(project, session):
@@ -288,24 +332,11 @@ class SessionManager:
             dirty = bool(_git(Path(project.repository_root), "status", "--porcelain"))
             if dirty and not project.policy.allow_dirty_planning:
                 raise SessionManagerError("project is dirty and policy disallows dirty planning")
-            plan = self.director.create_plan(
-                goal, self._repository_context(project, clean=not dirty)
-            )
             session_id = (
                 "session-"
                 + hashlib.sha256(
                     f"{project.project_id}:{goal}:{project.current_head_sha}:{uuid4()}".encode()
                 ).hexdigest()[:20]
-            )
-            plan_path, plan_hash = self.store.write_artifact(
-                session_id,
-                "plan.json",
-                json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n",
-            )
-            status = (
-                SessionStatus.READY
-                if plan.status is PlanStatus.READY
-                else SessionStatus.HUMAN_REQUIRED
             )
             session = Session(
                 session_id=session_id,
@@ -314,38 +345,131 @@ class SessionManager:
                 created_at=_now(),
                 updated_at=_now(),
                 base_sha=project.current_head_sha,
-                current_stage=status.value,
-                status=status,
-                plan_path=plan_path,
-                blocking_issues=(
-                    []
-                    if status is SessionStatus.READY
-                    else ["generated plan requires human clarification"]
-                ),
-                required_human_actions=(
-                    [] if status is SessionStatus.READY else ["clarify the goal"]
-                ),
-                artifact_hashes={"plan": plan_hash},
+                current_stage=SessionStatus.PLANNING.value,
+                status=SessionStatus.PLANNING,
             )
+            with session_lock(self.store.state_dir, session_id, "session-start"):
+                if dirty:
+                    fingerprint = _dirty_planning_fingerprint(Path(project.repository_root))
+                    if fingerprint != _dirty_planning_fingerprint(Path(project.repository_root)):
+                        raise SessionManagerError("worktree changed while recording planning state")
+                    _, digest = self.store.write_artifact(
+                        session_id, "initial-planning-worktree.json",
+                        json.dumps({"sha256": fingerprint}, sort_keys=True) + "\n",
+                    )
+                    session.artifact_hashes["initial_planning_worktree"] = digest
+                self._save(session)
+                return self._finish_initial_plan(session, project, clean=not dirty)
+
+    def _finish_initial_plan(self, session: Session, project, *, clean: bool) -> Session:
+        attempts = session.attempts.get("initial_planning", 0)
+        if type(attempts) is not int or attempts < 0:
+            raise SessionManagerError("initial planning attempt history is invalid")
+        if attempts >= 2:
             session = self._append_event(
-                session,
-                SessionStatus.PLANNING,
-                status,
-                "session started and plan generated",
-                [plan_path],
-                session.blocking_issues,
-                "DIRECTOR",
-                "session-start",
+                session, SessionStatus.PLANNING, SessionStatus.BLOCKED,
+                "initial planning retry budget exhausted", [],
+                ["initial planning retry budget exhausted"], "SYSTEM", "initial-planning-exhausted",
             )
-            origin = {"schema_version": "1.0", "protocol": "governed-session/1",
-                      "session_id": session_id, "project_id": project.project_id,
-                      "initial_plan_sha256": plan_hash}
-            _, origin_hash = self.store.write_artifact(
-                session_id, "planning-origin.json", json.dumps(origin, sort_keys=True) + "\n",
-            )
-            session.artifact_hashes["planning_origin"] = origin_hash
             self._save(session)
             return session
+        session.attempts["initial_planning"] = attempts + 1
+        self._save(session)
+        plan = self.director.create_plan(
+            session.goal, self._repository_context(project, clean=clean)
+        )
+        self._verify_initial_worktree(session, project, clean=clean)
+        session_id = session.session_id
+        plan_content = json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n"
+        candidate = hashlib.sha256(plan_content.encode()).hexdigest()
+        previous = session.artifact_hashes.get("initial_plan_candidate")
+        if previous is not None and previous != candidate:
+            raise SessionManagerError("initial planning candidate changed during recovery")
+        session.artifact_hashes["initial_plan_candidate"] = candidate
+        self._save(session)
+        plan_path, plan_hash = self.store.write_artifact(
+            session_id, "plan.json", plan_content,
+        )
+        return self._commit_initial_plan(session, project, plan, plan_path, plan_hash)
+
+    def _verify_initial_worktree(self, session, project, *, clean):
+        root = Path(project.repository_root)
+        if (_git(root, "rev-parse", "HEAD") != session.base_sha
+                or _git(root, "branch", "--show-current") != project.default_branch
+                or parse_remote_url(_git(root, "config", "--get", "remote.origin.url")).identity
+                != parse_remote_url(project.origin_url).identity):
+            raise SessionManagerError("repository identity changed during initial planning")
+        if clean:
+            if _git(root, "status", "--porcelain"):
+                raise SessionManagerError("worktree changed during initial planning")
+        else:
+            snapshot_path = (self.store.artifacts_dir / session.session_id
+                             / "initial-planning-worktree.json")
+            if self.store.artifact_hash(str(snapshot_path)) != session.artifact_hashes.get(
+                "initial_planning_worktree"
+            ):
+                raise SessionManagerError("planning worktree evidence changed")
+            snapshot = json.loads(snapshot_path.read_text())
+            fingerprint = _dirty_planning_fingerprint(root)
+            if (snapshot.get("sha256") != fingerprint
+                    or fingerprint != _dirty_planning_fingerprint(root)):
+                raise SessionManagerError("worktree changed during initial planning")
+    def _commit_initial_plan(self, session, project, plan, plan_path, plan_hash):
+        session_id = session.session_id
+        status = (
+            SessionStatus.READY
+            if plan.status is PlanStatus.READY
+            else SessionStatus.HUMAN_REQUIRED
+        )
+        session.plan_path = plan_path
+        session.blocking_issues = (
+            [] if status is SessionStatus.READY else ["generated plan requires human clarification"]
+        )
+        session.required_human_actions = (
+            [] if status is SessionStatus.READY else ["clarify the goal"]
+        )
+        session.artifact_hashes["plan"] = plan_hash
+        session = self._append_event(
+            session,
+            SessionStatus.PLANNING,
+            status,
+            "session started and plan generated",
+            [plan_path],
+            session.blocking_issues,
+            "DIRECTOR",
+            "session-start",
+        )
+        origin = {"schema_version": "1.0", "protocol": "governed-session/1",
+                  "session_id": session_id, "project_id": project.project_id,
+                  "initial_plan_sha256": plan_hash}
+        _, origin_hash = self.store.write_artifact(
+            session_id, "planning-origin.json", json.dumps(origin, sort_keys=True) + "\n",
+        )
+        session.artifact_hashes["planning_origin"] = origin_hash
+        self._save(session)
+        return session
+
+    def _recover_initial_plan(self, session, project, *, clean):
+        expected = session.artifact_hashes.get("initial_plan_candidate")
+        if expected is None:
+            return None
+        path = self.store.ensure_safe_path(
+            self.store.artifacts_dir / session.session_id / "plan.json"
+        )
+        if not path.is_file():
+            return None
+        try:
+            if self.store.artifact_hash(str(path)) != expected:
+                raise SessionManagerError("initial plan candidate hash differs")
+            plan = plan_from_dict(json.loads(path.read_text()))
+            plan.validate()
+            repository = self._repository_context(project, clean=clean)
+            if plan.repository != repository or plan.goal != session.goal:
+                raise SessionManagerError("initial plan candidate binding differs")
+        except (OSError, ValueError, TypeError, KeyError, SessionStoreError) as exc:
+            raise SessionManagerError("initial plan candidate is invalid") from exc
+        self._verify_initial_worktree(session, project, clean=clean)
+        return self._commit_initial_plan(session, project, plan, str(path), expected)
 
     @staticmethod
     def _repository_context(project, *, clean: bool):
@@ -1723,6 +1847,40 @@ class SessionManager:
                 f"base SHA drifted: expected {session.base_sha}, found {head}",
                 "review the drift and start a new session if appropriate",
             )
+        if session.status is SessionStatus.PLANNING and not session.plan_path:
+            allowed_artifacts = {"initial_planning_worktree", "initial_plan_candidate"}
+            if (set(session.artifact_hashes) - allowed_artifacts
+                    or session.events
+                    or project.current_head_sha != session.base_sha):
+                return self._mark_stale(
+                    session, "initial planning state is inconsistent", "inspect session evidence",
+                )
+            dirty = bool(_git(root, "status", "--porcelain"))
+            snapshot_hash = session.artifact_hashes.get("initial_planning_worktree")
+            if "initial_planning_worktree" in session.artifact_hashes:
+                path = (self.store.artifacts_dir / session.session_id
+                        / "initial-planning-worktree.json")
+                try:
+                    actual_hash = self.store.artifact_hash(str(path))
+                    snapshot = json.loads(path.read_text())
+                    fingerprint = _dirty_planning_fingerprint(root)
+                    matches = (project.policy.allow_dirty_planning and dirty
+                               and actual_hash == snapshot_hash
+                               and set(snapshot) == {"sha256"}
+                               and snapshot["sha256"] == fingerprint
+                               and fingerprint == _dirty_planning_fingerprint(root))
+                except (OSError, ValueError, TypeError, SessionStoreError, SessionManagerError,
+                        subprocess.SubprocessError):
+                    matches = False
+            else:
+                matches = not dirty
+            if not matches:
+                return self._mark_stale(
+                    session, "worktree changed during initial planning",
+                    "restore the original state",
+                )
+            recovered = self._recover_initial_plan(session, project, clean=not dirty)
+            return recovered or self._finish_initial_plan(session, project, clean=not dirty)
         try:
             self._validate_plan_identity(session, project)
             self._validate_plan_lineage(session, project)

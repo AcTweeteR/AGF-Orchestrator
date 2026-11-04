@@ -48,7 +48,10 @@ def contract(project, session):
     }
 
 
-def install_fixture_generation(tmp_path, monkeypatch, payload, *, schema="2.0", policy_state=False):
+def install_fixture_generation(
+    tmp_path, monkeypatch, payload, *, schema="2.0", policy_state=False,
+    freshness_limits=None,
+):
     """Simulate only an external owner in an isolated test home; no production keys."""
     key = Ed25519PrivateKey.generate()
     public = key.public_key().public_bytes_raw()
@@ -79,7 +82,7 @@ def install_fixture_generation(tmp_path, monkeypatch, payload, *, schema="2.0", 
     }
     artifacts["policy"] = {
         "policy_id": "fixture-policy", "version": "1", "key_id": "fixture-owner",
-        "body": {"freshness_limits": {}},
+        "body": {"freshness_limits": freshness_limits or {}},
         "project_id": payload["project_id"], "schema_version": "1.0",
         "compatibility": "fixture", "signature": "component-signed",
         "created_at": "2026-09-08T00:00:00Z",

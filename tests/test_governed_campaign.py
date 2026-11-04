@@ -314,3 +314,36 @@ def test_cli_persists_absolute_architect_path_across_cwd_changes(tmp_path, monke
     monkeypatch.chdir(state)
     spec, = CampaignDaemon(state)._load_specs()
     assert spec.architect_config == str(state / "config.json")
+
+
+def test_governed_free_first_uses_deterministic_reviewer_and_canonical_pipeline(monkeypatch):
+    spec = GovernedSessionDriverSpec(
+        "project-test", "campaign-test", "/tmp/state", "session-test",
+        adapter="free-first",
+    )
+    assert GovernedSessionDriverSpec.from_dict(spec.to_dict()) == spec
+    captured = {}
+    class FakeContinuation:
+        def __init__(self, manager, pipeline, architect_factory):
+            captured["pipeline"] = pipeline
+            captured["architect"] = architect_factory()
+        def tick(self, session_id, **kwargs):
+            return {"status": "HUMAN_REQUIRED", "reason": "safe boundary"}
+    def pipeline(args, project):
+        captured["adapter"] = args.adapter
+        captured["reviewer"] = args.reviewer
+        return object()
+    from agf_orchestrator import cli, governed_campaign
+    monkeypatch.setattr(cli, "_delivery_pipeline", pipeline)
+    monkeypatch.setattr(governed_campaign, "SessionContinuation", FakeContinuation)
+    monkeypatch.setattr(governed_campaign, "SessionStore", lambda *a, **kw: SimpleNamespace(
+        state_dir=__import__("pathlib").Path("/tmp/state").resolve()))
+    driver = GovernedSessionDriver(spec, manager_factory=lambda: object())
+    monkeypatch.setattr(driver, "snapshot", lambda state: (object(), SimpleNamespace(
+        session_id="session-test"), None, None))
+    monkeypatch.setattr(driver, "_verify_budget_binding", lambda state, session: None)
+    result = driver.work(SimpleNamespace())
+    assert result.outcome == "HUMAN_REQUIRED"
+    assert captured["adapter"] == "free-first"
+    assert captured["reviewer"] == "deterministic"
+    assert captured["architect"] is None

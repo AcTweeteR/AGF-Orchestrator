@@ -60,6 +60,26 @@ class SessionContinuation:
                 return self._result(session, "BLOCKED", "evidence-gate",
                                     "canonical evidence failed; inspect retained artifacts")
 
+    @staticmethod
+    def _signed_first_plan_ready(session, project, plan):
+        """Only an exact owner-signed, session-bound plan may skip fresh Architect.
+
+        This does not grant a provider new authority. It avoids discarding a
+        validated owner decision when an optional Architect is unavailable.
+        All original Objective, scope, validation and delivery gates still run.
+        """
+        if "objective_binding" not in session.artifact_hashes:
+            return False
+        try:
+            acceptance = read_objective_acceptance(project, session)
+        except ObjectiveAcceptanceError:
+            return False
+        return (
+            bool(acceptance.approved_plan_sha256)
+            and acceptance.component_sha256 == session.artifact_hashes["objective_binding"]
+            and content_hash(plan.to_dict()) == acceptance.approved_plan_sha256
+        )
+
     def _tick(self, session_id):
         manager = self.manager
         store = manager.store
@@ -87,8 +107,9 @@ class SessionContinuation:
             raise SessionManagerError("continuation plan hash differs")
         plan = plan_from_dict(json.loads(path.read_text()))
         intents = DeliveryIntentStore(store.state_dir).for_session(project.project_id, session_id)
+        signed_first_plan = self._signed_first_plan_ready(session, project, plan)
         if not intents:
-            if "assessment" not in session.artifact_hashes:
+            if "assessment" not in session.artifact_hashes and not signed_first_plan:
                 return self._assess(session)
             gate = self._objective_gate(session, project, plan)
             if gate is not None:
@@ -126,7 +147,10 @@ class SessionContinuation:
             return self._result(session, "WAIT", "external-integration",
                                 "await exact delivery integration before continuing",
                                 delivery_id=item.delivery_id)
-        if not integrated and "assessment" not in session.artifact_hashes:
+        if (
+            not integrated and "assessment" not in session.artifact_hashes
+            and not signed_first_plan
+        ):
             return self._assess(session)
         gate = self._objective_gate(session, project, plan)
         if gate is not None:
