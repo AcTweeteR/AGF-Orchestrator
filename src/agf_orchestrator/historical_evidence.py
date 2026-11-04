@@ -274,9 +274,15 @@ def load_historical_baseline(
     project_id: str,
     *,
     state_root: str | Path | None = None,
-    max_age_seconds: int = 86400,
+    max_age_seconds: int | None = 86400,
 ) -> HistoricalBaseline | None:
-    """Load the separately signed owner baseline bound to a project."""
+    """Load the signed Owner baseline for the exact project and policy.
+
+    ``max_age_seconds=None`` is reserved for a durable, current-bound anchor.
+    It still checks future timestamps, Ed25519 signatures, generation, current
+    project SHA, policy/Constitution and the complete archived predecessor chain.
+    It NEVER extends freshness of mutable rollback/incident observations.
+    """
     if not _PROJECT.fullmatch(project_id):
         raise HistoricalEvidenceError("historical baseline identity is invalid")
     root = Path(state_root or (Path.home() / ".agf-orchestrator")).expanduser().resolve()
@@ -361,8 +367,9 @@ def load_historical_baseline(
         generated = _timestamp(payload["generated_at"])
         if generated < _timestamp(payload["coverage_start"]):
             return None
-        if generated > datetime.now(UTC) or datetime.now(UTC) - generated > timedelta(
-            seconds=max_age_seconds
+        if generated > datetime.now(UTC) or (
+            max_age_seconds is not None
+            and datetime.now(UTC) - generated > timedelta(seconds=max_age_seconds)
         ):
             return None
     except (TypeError, ValueError):

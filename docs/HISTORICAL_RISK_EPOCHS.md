@@ -71,3 +71,22 @@ period**; its observation is only prospective from the new baseline.
 
 Tests use disposable Git repositories and ephemeral Ed25519 keys; they never
 touch the actual Owner private key, archival state, or user project files.
+
+
+## Durability versus freshness
+
+A signed prospective baseline is a **durable trust anchor**, not a measurement of
+incident counts. Once Owner-signed for the current project SHA and authority
+generation, it remains valid beyond the normal 24-hour policy evidence window
+as long as its project/target/Constitution/policy bindings and complete
+archived signature chain continue to verify.
+
+Only the independently signed incident and rollback **observations** must
+be renewed within the active policy's freshness limit. A stale observation
+still fails closed as UNKNOWN; it cannot inherit freshness from its valid
+baseline. This avoids daily forced baseline rotations, which would otherwise
+discard continuous monitoring whenever there was no code change.
+
+Owner evidence renewal uses the immutable baseline even when its initial
+timestamp is older than one day. It still must sign fresh source snapshots;
+no model or daemon gains a private-key signing route.
