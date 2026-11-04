@@ -280,3 +280,89 @@ def test_documented_owner_cli_imports_epoch_controller_when_executed_as_script()
     assert process.returncode != 0
     assert "historical epoch operation identity is invalid" in process.stderr
     assert "ModuleNotFoundError" not in process.stderr
+
+
+
+def test_signed_baseline_outlives_snapshot_ttl_without_relaxing_event_freshness(
+    setup, monkeypatch,
+):
+    """Simulate three days later; target and Owner bindings remain unchanged."""
+    from datetime import datetime as ActualDatetime
+
+    from agf_orchestrator.delivery import _load_prospective_evidence
+
+    state, _repo, _registry, shift = setup
+    shift(-10)
+    created = epoch.rollover_prospective_baseline(
+        PROJECT, "historical-baseline-epoch-durable-anchor-test",
+    )
+    shift(-4)
+    signed = controller.renew_prospective_evidence(
+        PROJECT, "historical-renewal-durable-anchor-test",
+    )
+    assert signed["status"] == "COMMITTED"
+    original = historical_evidence.datetime
+
+    class FutureTime(original):
+        @classmethod
+        def now(cls, tz=None):
+            return ActualDatetime.now(tz) + timedelta(days=3)
+
+    monkeypatch.setattr(historical_evidence, "datetime", FutureTime)
+    assert historical_evidence.load_historical_baseline(
+        PROJECT, state_root=state, max_age_seconds=86400,
+    ) is None
+    durable = historical_evidence.load_historical_baseline(
+        PROJECT, state_root=state, max_age_seconds=None,
+    )
+    assert durable is not None
+    assert durable.baseline_id == created["baseline_id"]
+    assert durable.authoritative
+    assert historical_evidence.load_historical_evidence(
+        PROJECT, "rollback", state_root=state, max_age_seconds=3600,
+    ) is None
+    assert historical_evidence.load_historical_evidence(
+        PROJECT, "incident", state_root=state, max_age_seconds=3600,
+    ) is None
+    # Production delivery never uses the old signed zero count as a fresh fact.
+    monkeypatch.setattr(
+        "agf_orchestrator.delivery.load_historical_baseline",
+        lambda project_id, **kwargs:
+            historical_evidence.load_historical_baseline(
+                project_id, state_root=state, **kwargs
+            ),
+    )
+    monkeypatch.setattr(
+        "agf_orchestrator.delivery.load_historical_evidence",
+        lambda project_id, kind, **kwargs:
+            historical_evidence.load_historical_evidence(
+                project_id, kind, state_root=state, **kwargs
+            ),
+    )
+    future_decision = FutureTime.now(UTC).replace(microsecond=0).isoformat()
+    assert _load_prospective_evidence(
+        PROJECT, "incident", future_decision, 3600
+    ) is None
+
+
+def test_future_dated_signed_anchor_is_never_accepted_even_without_age_limit(
+    setup, monkeypatch,
+):
+    from datetime import datetime as ActualDatetime
+
+    state, _repo, _registry, shift = setup
+    shift(-10)
+    epoch.rollover_prospective_baseline(
+        PROJECT, "historical-baseline-epoch-future-anchor-test",
+    )
+    original = historical_evidence.datetime
+
+    class PastTime(original):
+        @classmethod
+        def now(cls, tz=None):
+            return ActualDatetime.now(tz) - timedelta(days=1)
+
+    monkeypatch.setattr(historical_evidence, "datetime", PastTime)
+    assert historical_evidence.load_historical_baseline(
+        PROJECT, state_root=state, max_age_seconds=None
+    ) is None

@@ -610,7 +610,10 @@ def _load_prospective_evidence(
     The plan may predate the baseline.  That history remains UNKNOWN; only a
     signed record whose baseline covers the current decision can authorize it.
     """
-    baseline = load_historical_baseline(project_id, max_age_seconds=max_age)
+    # The Owner-signed baseline is a durable target/policy anchor, not a
+    # short-lived measurement. Only current incident/rollback snapshots must
+    # satisfy policy freshness. Both remain cryptographically verified.
+    baseline = load_historical_baseline(project_id, max_age_seconds=None)
     evidence = load_historical_evidence(project_id, evidence_type, max_age_seconds=max_age)
     if (
         baseline is None

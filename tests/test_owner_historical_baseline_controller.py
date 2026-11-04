@@ -59,7 +59,7 @@ def _setup(monkeypatch, tmp_path):
         "sign_envelope",
         lambda payload, _root: {"payload_hash": controller._object_hash(payload)},
     )
-    def fake_load(_project, state_root=None):
+    def fake_load(_project, state_root=None, **_kwargs):
         document = json.loads(
             (Path(state_root) / "historical-evidence" / PROJECT / "baseline.json").read_text()
         )

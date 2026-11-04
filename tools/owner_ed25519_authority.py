@@ -705,7 +705,9 @@ def renew_prospective_evidence(project_id: str, operation_id: str) -> dict[str, 
         authority = resolve_authority(project_id)
         if authority.constitution is None or authority.policy is None or authority.snapshot is None:
             raise RuntimeError("current project authority is unavailable")
-        baseline = load_historical_baseline(project_id, state_root=state_dir)
+        baseline = load_historical_baseline(
+            project_id, state_root=state_dir, max_age_seconds=None
+        )
         if baseline is None or not baseline.authoritative:
             raise RuntimeError("an authoritative prospective baseline is required")
         observed_sha = subprocess.run(
