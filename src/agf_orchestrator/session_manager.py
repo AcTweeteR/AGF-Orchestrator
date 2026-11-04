@@ -398,11 +398,20 @@ class SessionManager:
                     or fingerprint != _dirty_planning_fingerprint(root)):
                 raise SessionManagerError("worktree changed during initial planning")
         session_id = session.session_id
+        plan_content = json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n"
+        candidate = hashlib.sha256(plan_content.encode()).hexdigest()
+        previous = session.artifact_hashes.get("initial_plan_candidate")
+        if previous is not None and previous != candidate:
+            raise SessionManagerError("initial planning candidate changed during recovery")
+        session.artifact_hashes["initial_plan_candidate"] = candidate
+        self._save(session)
         plan_path, plan_hash = self.store.write_artifact(
-            session_id,
-            "plan.json",
-            json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n",
+            session_id, "plan.json", plan_content,
         )
+        return self._commit_initial_plan(session, project, plan, plan_path, plan_hash)
+
+    def _commit_initial_plan(self, session, project, plan, plan_path, plan_hash):
+        session_id = session.session_id
         status = (
             SessionStatus.READY
             if plan.status is PlanStatus.READY
@@ -435,6 +444,27 @@ class SessionManager:
         session.artifact_hashes["planning_origin"] = origin_hash
         self._save(session)
         return session
+
+    def _recover_initial_plan(self, session, project, *, clean):
+        expected = session.artifact_hashes.get("initial_plan_candidate")
+        if expected is None:
+            return None
+        path = self.store.ensure_safe_path(
+            self.store.artifacts_dir / session.session_id / "plan.json"
+        )
+        if not path.is_file():
+            return None
+        try:
+            if self.store.artifact_hash(str(path)) != expected:
+                raise SessionManagerError("initial plan candidate hash differs")
+            plan = plan_from_dict(json.loads(path.read_text()))
+            plan.validate()
+            repository = self._repository_context(project, clean=clean)
+            if plan.repository != repository or plan.goal != session.goal:
+                raise SessionManagerError("initial plan candidate binding differs")
+        except (OSError, ValueError, TypeError, KeyError, SessionStoreError) as exc:
+            raise SessionManagerError("initial plan candidate is invalid") from exc
+        return self._commit_initial_plan(session, project, plan, str(path), expected)
 
     @staticmethod
     def _repository_context(project, *, clean: bool):
@@ -1813,7 +1843,9 @@ class SessionManager:
                 "review the drift and start a new session if appropriate",
             )
         if session.status is SessionStatus.PLANNING and not session.plan_path:
-            if (set(session.artifact_hashes) - {"initial_planning_worktree"} or session.events
+            allowed_artifacts = {"initial_planning_worktree", "initial_plan_candidate"}
+            if (set(session.artifact_hashes) - allowed_artifacts
+                    or session.events
                     or project.current_head_sha != session.base_sha):
                 return self._mark_stale(
                     session, "initial planning state is inconsistent", "inspect session evidence",
@@ -1842,7 +1874,8 @@ class SessionManager:
                     session, "worktree changed during initial planning",
                     "restore the original state",
                 )
-            return self._finish_initial_plan(session, project, clean=not dirty)
+            recovered = self._recover_initial_plan(session, project, clean=not dirty)
+            return recovered or self._finish_initial_plan(session, project, clean=not dirty)
         try:
             self._validate_plan_identity(session, project)
             self._validate_plan_lineage(session, project)

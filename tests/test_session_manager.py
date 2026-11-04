@@ -192,6 +192,56 @@ def test_initial_planning_recovers_existing_immutable_plan(tmp_path, monkeypatch
     assert path.read_bytes() == original
 
 
+def test_completed_plan_recovers_after_final_save_at_attempt_limit(tmp_path, monkeypatch):
+    _, state = registered(tmp_path)
+    first = SessionManager(state)
+    monkeypatch.setattr(first.director, "create_plan", lambda *a, **k: (_ for _ in ()).throw(
+        KeyboardInterrupt()
+    ))
+    with pytest.raises(KeyboardInterrupt):
+        first.start("alpha", "Add contributor link validation")
+    session_id = first.list()[0].session_id
+    second = SessionManager(state)
+    save = second.store.save
+
+    def interrupt_final(session):
+        if session.status is SessionStatus.READY:
+            raise KeyboardInterrupt()
+        save(session)
+
+    monkeypatch.setattr(second.store, "save", interrupt_final)
+    with pytest.raises(KeyboardInterrupt):
+        second.resume(session_id)
+    saved = SessionManager(state).get(session_id)
+    assert saved.status is SessionStatus.PLANNING
+    assert saved.attempts["initial_planning"] == 2
+    assert "initial_plan_candidate" in saved.artifact_hashes
+    third = SessionManager(state)
+    monkeypatch.setattr(third.director, "create_plan", lambda *a, **k: pytest.fail("redispatch"))
+    recovered = third.resume(session_id)
+    assert recovered.status is SessionStatus.READY
+    assert recovered.attempts["initial_planning"] == 2
+
+
+def test_tampered_initial_plan_candidate_fails_closed(tmp_path, monkeypatch):
+    _, state = registered(tmp_path)
+    manager = SessionManager(state)
+    save = manager.store.save
+
+    def interrupt_final(session):
+        if session.status is SessionStatus.READY:
+            raise KeyboardInterrupt()
+        save(session)
+
+    monkeypatch.setattr(manager.store, "save", interrupt_final)
+    with pytest.raises(KeyboardInterrupt):
+        manager.start("alpha", "Add contributor link validation")
+    session = manager.list()[0]
+    (manager.store.artifacts_dir / session.session_id / "plan.json").write_text("{}")
+    with pytest.raises(SessionManagerError, match="hash differs"):
+        SessionManager(state).resume(session.session_id)
+
+
 def test_initial_plan_is_not_published_after_worktree_changes(tmp_path, monkeypatch):
     root, state = registered(tmp_path)
     manager = SessionManager(state)
