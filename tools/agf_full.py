@@ -9,6 +9,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -86,7 +87,10 @@ def inventory(root: Path, query: str = "", scope: str = "") -> list[str]:
     return [name for _, name in eligible[:220]]
 
 
-def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M"):
+def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M",
+               usage_observer=None):
+    if not isinstance(model, str) or not model.startswith("ollama/") or not model[7:]:
+        raise ValueError("only an explicit local Ollama model is permitted")
     messages = [
         {
             "role": "system",
@@ -110,9 +114,6 @@ def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M"):
             timeout=150,
         )
         actual = reply.get("model")
-        if actual not in {model, model.removeprefix("ollama/")}:
-            raise ValueError("unexpected gateway model")
-        result = json.loads(reply["choices"][0]["message"]["content"])
         usage = reply.get("usage", {})
         evidence = {
             "purpose": purpose,
@@ -123,6 +124,11 @@ def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M"):
             "completion_tokens": usage.get("completion_tokens", 0),
             "api_eur": 0,
         }
+        if usage_observer is not None:
+            usage_observer(evidence)
+        if actual not in {model, model.removeprefix("ollama/")}:
+            raise ValueError("unexpected gateway model")
+        content = reply["choices"][0]["message"]["content"]
     except (OSError, ValueError, KeyError, IndexError, TypeError):
         # Local, no-cost fallback; never upgrade to API-based providers.
         reply = chat.request(
@@ -141,9 +147,6 @@ def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M"):
             timeout=150,
         )
         actual = reply.get("model")
-        if actual != model.removeprefix("ollama/"):
-            raise ValueError("unexpected local model")
-        result = json.loads(reply["message"]["content"])
         evidence = {
             "purpose": purpose,
             "provider": "ollama",
@@ -153,6 +156,12 @@ def route_json(prompt: str, *, purpose: str, model="ollama/qwen3.5:9b-q4_K_M"):
             "completion_tokens": reply.get("eval_count", 0),
             "api_eur": 0,
         }
+        if usage_observer is not None:
+            usage_observer(evidence)
+        if actual != model.removeprefix("ollama/"):
+            raise ValueError("unexpected local model")
+        content = reply["message"]["content"]
+    result = json.loads(content)
     if not isinstance(result, dict):
         raise ValueError("model response is not a JSON object")
     return result, evidence
@@ -165,6 +174,7 @@ def plan(
     *,
     model="ollama/qwen3.5:9b-q4_K_M",
     scope: str = "",
+    usage_observer=None,
 ) -> tuple[list[dict], dict]:
     allowed = inventory(root, query=objective, scope=scope)
     if not allowed:
@@ -181,7 +191,8 @@ def plan(
         "changes. If goal is complex, focus on an independently verifiable first slice."
         f"\nOBJECTIVE:\n{objective}\nINVENTORY:\n" + json.dumps(allowed)
     )
-    data, evidence = route_json(prompt, purpose="planning", model=model)
+    data, evidence = route_json(prompt, purpose="planning", model=model,
+                                usage_observer=usage_observer)
     raw = data.get("tasks")
     if not isinstance(raw, list) or not 1 <= len(raw) <= 4:
         raise ValueError("planner returned no bounded task list")
@@ -259,6 +270,8 @@ def start(
     scope: str = "",
 ) -> dict:
     repository = repository.resolve()
+    if not isinstance(model, str) or not model.startswith("ollama/") or not model[7:]:
+        raise ValueError("only an explicit local Ollama model is permitted")
     if scope and (
         scope.startswith("/") or ".." in Path(scope).parts or ".git" in Path(scope).parts
     ):
@@ -286,7 +299,10 @@ def start(
         "branch": None,
         "objective": objective,
         "scope": scope,
-        "tasks": [],
+        "tasks": None,
+        "planning_tests": shlex.split(tests) if isinstance(tests, str) else tests,
+        "planning_model": model,
+        "planning_attempts": 0,
         "index": 0,
         "attempt": 0,
         "max_attempts": max(1, min(5, max_attempts)),
@@ -298,70 +314,66 @@ def start(
         "planning_pid": os.getpid(),
     }
     # Persist before creating a worktree or invoking a potentially slow model.
-    chat.write_json(path, record)
     worktree = None
     branch = None
-    try:
-        worktree, branch = create_worktree(repository, mission_id)
-        record.update(worktree=str(worktree), branch=branch)
-        chat.write_json(path, record)
-        if tasks_path:
-            tasks = json.loads(tasks_path.read_text())
-            planning = None
-        else:
-            tasks, planning = plan(worktree, objective or "", tests, model=model, scope=scope)
-        if not isinstance(tasks, list) or not 1 <= len(tasks) <= 30:
-            raise ValueError("must have between 1 and 30 tasks")
-        approved = inventory(worktree, query=objective or "", scope=scope)
-        for task in tasks:
-            check_task(worktree, task, approved_files=approved)
-            if scope and any(
-                not (name == scope or name.startswith(scope.rstrip("/") + "/"))
-                for name in task["files"]
-            ):
-                raise ValueError("task file outside owner-selected scope")
-        record.update(status="PENDING", tasks=tasks, usage=[planning] if planning else [])
-        record.pop("planning_pid", None)
-        chat.write_json(path, record)
-    except Exception as exc:
-        record.update(
-            status="BLOCKED",
-            reason=f"Mission preparation failed: {type(exc).__name__}: {str(exc)[:600]}",
-        )
-        record.pop("planning_pid", None)
-        chat.write_json(path, record)
-        if worktree is not None:
-            subprocess.run(
-                ["git", "-C", str(repository), "worktree", "remove", "--force", str(worktree)],
-                capture_output=True,
+    with chat.control_lock(path):
+        chat._write_json_unlocked(path, record)
+        try:
+            worktree, branch = create_worktree(repository, mission_id)
+            head = subprocess.check_output(
+                ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True
+            ).strip()
+            record.update(worktree=str(worktree), branch=branch, expected_head=head)
+            chat._write_json_unlocked(path, record)
+            tasks = json.loads(tasks_path.read_text()) if tasks_path else None
+            if tasks is not None and (not isinstance(tasks, list) or not 1 <= len(tasks) <= 30):
+                raise ValueError("must have between 1 and 30 tasks")
+            approved = inventory(worktree, query=objective or "", scope=scope)
+            for task in tasks or []:
+                check_task(worktree, task, approved_files=approved)
+                if scope and any(
+                    not (name == scope or name.startswith(scope.rstrip("/") + "/"))
+                    for name in task["files"]
+                ):
+                    raise ValueError("task file outside owner-selected scope")
+            record.update(status="PENDING", tasks=tasks)
+            record.pop("planning_pid", None)
+            chat._write_json_unlocked(path, record)
+        except Exception as exc:
+            record.update(
+                status="BLOCKED",
+                reason=f"Mission preparation failed: {type(exc).__name__}: {str(exc)[:600]}",
             )
-        if branch is not None:
-            subprocess.run(
-                ["git", "-C", str(repository), "branch", "-D", branch], capture_output=True
-            )
-        return {"mission_id": mission_id, "status": "BLOCKED", "reason": record["reason"]}
-    if background:
-        with (state_dir / (mission_id + ".log")).open("ab") as logfile:
-            subprocess.Popen(
-                [
-                    sys.executable,
-                    str(Path(__file__).with_name("agf_chat.py")),
-                    "--state-dir",
-                    str(state_dir),
-                    "run",
-                    mission_id,
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=logfile,
-                stderr=logfile,
-                start_new_session=True,
-            )
-    return {
-        "mission_id": mission_id,
-        "status": "STARTED" if background else "PENDING",
-        "worktree": str(worktree),
-        "branch": branch,
-    }
+            record.pop("planning_pid", None)
+            chat._write_json_unlocked(path, record)
+            if worktree is not None:
+                subprocess.run(
+                    ["git", "-C", str(repository), "worktree", "remove", "--force", str(worktree)],
+                    capture_output=True,
+                )
+            if branch is not None:
+                subprocess.run(
+                    ["git", "-C", str(repository), "branch", "-D", branch], capture_output=True
+                )
+            return {"mission_id": mission_id, "status": "BLOCKED", "reason": record["reason"]}
+    with chat.control_lock(path):
+        record = json.loads(path.read_text())
+        if record["status"] == "PENDING" and background:
+            with (state_dir / (mission_id + ".log")).open("ab") as logfile:
+                subprocess.Popen(
+                    [sys.executable, str(Path(__file__).with_name("agf_chat.py")),
+                     "--state-dir", str(state_dir), "run", mission_id],
+                    stdin=subprocess.DEVNULL, stdout=logfile, stderr=logfile,
+                    start_new_session=True,
+                )
+        return {
+            "mission_id": mission_id,
+            "status": (
+                "STARTED" if background and record["status"] == "PENDING" else record["status"]
+            ),
+            "worktree": str(worktree),
+            "branch": branch,
+        }
 
 
 def relevant_excerpt(content: str, objective: str, limit: int = 2800) -> str:
@@ -383,7 +395,8 @@ def relevant_excerpt(content: str, objective: str, limit: int = 2800) -> str:
 
 
 def propose_edits(
-    root: Path, task: dict, previous_error: str, *, model="ollama/qwen3.5:9b-q4_K_M"
+    root: Path, task: dict, previous_error: str, *, model="ollama/qwen3.5:9b-q4_K_M",
+    usage_observer=None,
 ) -> tuple[dict[str, str], dict]:
     current = {
         name: chat.safe_target(root, name).read_text(encoding="utf-8") for name in task["files"]
@@ -408,7 +421,17 @@ def propose_edits(
         f"\nPREVIOUS FAILURE:\n{previous_error[-2600:]}"
         f"\nALLOWED FILES:\n{context}"
     )
-    result, usage = route_json(prompt, purpose="implementation", model=model)
+    observed = []
+
+    def observe(usage):
+        if usage_observer is not None:
+            usage_observer(usage)
+        observed.append(usage)
+
+    result, usage = route_json(prompt, purpose="implementation", model=model,
+                               usage_observer=observe)
+    if not observed and usage_observer is not None:
+        usage_observer(usage)
     operations = result.get("changes")
     if not isinstance(operations, list) or not 1 <= len(operations) <= 12:
         raise ValueError("model returned no bounded change list")
@@ -477,13 +500,17 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
         except BlockingIOError:
             return {"mission_id": mission_id, "status": "ALREADY_RUNNING"}
         state = json.loads(path.read_text())
-        if state["status"] in {"COMPLETED", "BLOCKED", "PAUSED", "STOPPED"}:
+        if state["status"] in {"COMPLETED", "BLOCKED", "PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
             return state
-        # PLANNING is never runnable: it has no validated tasks. If its owner
-        # disappeared, retain the record and require an explicit new plan.
-        if state["status"] == "PLANNING":
+        if state["status"] == "PLANNING" and state.get("planning_pid"):
             return state
-        if not state.get("worktree") or not state.get("tasks"):
+        if state["status"] in {"RUNNING", "PAUSING"}:
+            state["status"] = "HUMAN_REQUIRED"
+            state["reason"] = "execution interrupted; reconcile the worktree before resuming"
+            state.pop("pid", None)
+            chat.write_json(path, state)
+            return state
+        if not state.get("worktree"):
             state["status"] = "BLOCKED"
             state["reason"] = "mission has no validated worktree or tasks"
             state.pop("pid", None)
@@ -495,35 +522,154 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
             state["reason"] = "isolated mission worktree is missing"
             chat.write_json(path, state)
             return state
+        try:
+            actual_head = subprocess.check_output(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+            ).strip()
+            actual_branch = subprocess.check_output(
+                ["git", "-C", str(root), "branch", "--show-current"], text=True
+            ).strip()
+            actual_root = subprocess.check_output(
+                ["git", "-C", str(root), "rev-parse", "--show-toplevel"], text=True
+            ).strip()
+            if (actual_head != state.get("expected_head")
+                    or actual_branch != state.get("branch")
+                    or Path(actual_root).resolve() != root):
+                raise ValueError("worktree identity or HEAD changed")
+            if subprocess.check_output(
+                ["git", "-C", str(root), "status", "--porcelain"], text=True
+            ).strip():
+                raise ValueError("worktree has uncommitted changes")
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            state["status"] = "HUMAN_REQUIRED"
+            state["reason"] = f"worktree identity cannot be verified: {exc}"
+            chat.write_json(path, state)
+            return state
+        if state.get("tasks") is None:
+            if state.get("planning_attempts", 0) >= 2:
+                state["status"] = "BLOCKED"
+                state["reason"] = "planning retry limit reached after interruption"
+                state.pop("pid", None)
+                chat.write_json(path, state)
+                return state
+            state["status"] = "PLANNING"
+            state["planning_attempts"] = state.get("planning_attempts", 0) + 1
+            state["pid"] = os.getpid()
+            chat.write_json(path, state)
+            if state["status"] in {"PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
+                state.pop("pid", None)
+                chat.write_json(path, state)
+                return state
+            recorded_planning_usage = []
+
+            def record_planning_usage(usage):
+                current = json.loads(path.read_text())
+                current["usage"].append(usage)
+                chat.write_json(path, current)
+                state["usage"] = current["usage"]
+                recorded_planning_usage.append(usage)
+
+            try:
+                tasks, usage = plan(root, state.get("objective") or "", state["planning_tests"],
+                                    model=state["planning_model"], scope=state.get("scope", ""),
+                                    usage_observer=record_planning_usage)
+                approved = inventory(
+                    root, query=state.get("objective") or "", scope=state.get("scope") or ""
+                )
+                for task in tasks:
+                    check_task(root, task, approved_files=approved)
+                latest = json.loads(path.read_text())
+                if not recorded_planning_usage:
+                    latest["usage"].append(usage)
+                if latest["status"] in {"PAUSED", "STOPPED"}:
+                    latest.pop("pid", None)
+                    chat.write_json(path, latest)
+                    return latest
+                state = latest
+                state["tasks"] = tasks
+                chat.write_json(path, state)
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+                latest = json.loads(path.read_text())
+                latest["status"] = (
+                    latest["status"] if latest["status"] in {"PAUSED", "STOPPED"} else "BLOCKED"
+                )
+                latest["reason"] = "planning failed: " + str(exc)[:500]
+                latest.pop("pid", None)
+                chat.write_json(path, latest)
+                return latest
         state["status"] = "RUNNING"
         state.pop("reason", None)
         state["pid"] = os.getpid()
         chat.write_json(path, state)
+        if state["status"] in {"PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
+            state.pop("pid", None)
+            chat.write_json(path, state)
+            return state
         approved = inventory(
             root, query=state.get("objective") or "", scope=state.get("scope") or ""
         )
         for index in range(state["index"], len(state["tasks"])):
             task = state["tasks"][index]
+            historical_attempts = sum(
+                1 for event in state["events"]
+                if event.get("task") == index and type(event.get("attempt")) is int
+            )
+            state["attempt"] = max(state.get("attempt", 0), historical_attempts)
             failure = ""
             passed = False
-            for attempt in range(1, state["max_attempts"] + 1):
+            for attempt in range(state.get("attempt", 0) + 1, state["max_attempts"] + 1):
                 if json.loads(path.read_text()).get("status") in {"STOPPED", "PAUSED"}:
                     return json.loads(path.read_text())
+                state["attempt"] = attempt
+                chat.write_json(path, state)
+                if state["status"] in {"PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
+                    state.pop("pid", None)
+                    chat.write_json(path, state)
+                    return state
                 backups = {}
                 try:
                     check_task(root, task, approved_files=approved)
-                    changes, usage = propose_edits(root, task, failure)
-                    backups = {
-                        name: chat.safe_target(root, name).read_text(encoding="utf-8")
-                        for name in changes
-                    }
-                    for name, new in changes.items():
-                        chat.safe_target(root, name).write_text(new, encoding="utf-8")
+                    recorded_usage = []
+
+                    def record_usage(usage):
+                        current = json.loads(path.read_text())
+                        current["usage"].append(usage)
+                        chat.write_json(path, current)
+                        state["usage"] = current["usage"]
+                        recorded_usage.append(usage)
+
+                    changes, usage = propose_edits(
+                        root, task, failure,
+                        model=state.get("planning_model", "ollama/qwen3.5:9b-q4_K_M"),
+                        usage_observer=record_usage,
+                    )
+                    with chat.control_lock(path):
+                        current = json.loads(path.read_text())
+                        if current["status"] in {"STOPPED", "PAUSED", "HUMAN_REQUIRED"}:
+                            if not recorded_usage:
+                                current["usage"].append(usage)
+                            current.pop("pid", None)
+                            chat._write_json_unlocked(path, current)
+                            return current
+                        backups = {
+                            name: chat.safe_target(root, name).read_text(encoding="utf-8")
+                            for name in changes
+                        }
+                        for name, new in changes.items():
+                            chat.safe_target(root, name).write_text(new, encoding="utf-8")
                     safe, info = check_edits(root, task["files"])
                     if safe and index == len(state["tasks"]) - 1:
                         # Full acceptance tests are run on the integrated final state.
                         # Earlier tasks may intentionally leave tests for later tasks failing.
-                        safe, validation = chat.execute_tests(root, task["tests"], timeout=100)
+                        with chat.control_lock(path):
+                            current = json.loads(path.read_text())
+                            if current["status"] in {"STOPPED", "PAUSED", "HUMAN_REQUIRED"}:
+                                if not recorded_usage:
+                                    current["usage"].append(usage)
+                                current.pop("pid", None)
+                                chat._write_json_unlocked(path, current)
+                                return current
+                            safe, validation = chat.execute_tests(root, task["tests"], timeout=100)
                         info += "\n" + validation[-3500:]
                     elif safe:
                         info += (
@@ -532,13 +678,25 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                         )
                     if not safe:
                         failure = info[-3200:]
-                    # Restore failed attempt so the next model repairs known baseline
-                    # rather than being conditioned on broken intermediate source.
-                    if not safe:
-                        for name, original in backups.items():
-                            chat.safe_target(root, name).write_text(original, encoding="utf-8")
+                        current = json.loads(path.read_text())
+                        if current["status"] in {"STOPPED", "PAUSING"}:
+                            with chat.control_lock(path):
+                                current = json.loads(path.read_text())
+                                if current["status"] == "PAUSING":
+                                    current["status"] = "HUMAN_REQUIRED"
+                                    current["reason"] = (
+                                        "failed in-flight edits require reconciliation after pause"
+                                    )
+                                current["usage"] = state["usage"]
+                                current["events"].append({"task": index, "attempt": attempt,
+                                                          "error": failure[:500]})
+                                current.pop("pid", None)
+                                chat._write_json_unlocked(path, current)
+                                return current
+                    # Failed edits remain isolated and are included in the next correction.
                     current = json.loads(path.read_text())
-                    state["usage"].append(usage)
+                    if not recorded_usage:
+                        state["usage"].append(usage)
                     state["events"].append(
                         {
                             "task": index,
@@ -552,9 +710,12 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     )
                     state["updated_at"] = time.time()
                     if current["status"] in {"STOPPED", "PAUSED"}:
-                        state["status"] = current["status"]
-                        chat.write_json(path, state)
-                        return state
+                        current["usage"] = state["usage"]
+                        current["events"] = state["events"]
+                        current["updated_at"] = state["updated_at"]
+                        current.pop("pid", None)
+                        chat.write_json(path, current)
+                        return current
                     chat.write_json(path, state)
                     if safe:
                         passed = True
@@ -567,12 +728,31 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     subprocess.CalledProcessError,
                     subprocess.TimeoutExpired,
                 ) as exc:
-                    for name, original in backups.items():
-                        chat.safe_target(root, name).write_text(original, encoding="utf-8")
+                    current = json.loads(path.read_text())
+                    if current["status"] in {"STOPPED", "PAUSING"}:
+                        with chat.control_lock(path):
+                            current = json.loads(path.read_text())
+                            if current["status"] == "PAUSING":
+                                current["status"] = "HUMAN_REQUIRED" if backups else "PAUSED"
+                                current["reason"] = (
+                                    "in-flight attempt ended during pause: " + str(exc)[:400]
+                                )
+                            current["events"].append({"task": index, "attempt": attempt,
+                                                      "error": str(exc)[:500]})
+                            current.pop("pid", None)
+                            chat._write_json_unlocked(path, current)
+                            return current
                     failure = str(exc)[-2000:]
                     state["events"].append(
                         {"task": index, "attempt": attempt, "error": failure[:500]}
                     )
+                    current = json.loads(path.read_text())
+                    if current["status"] in {"STOPPED", "PAUSED"}:
+                        current["usage"] = state["usage"]
+                        current["events"] = state["events"]
+                        current.pop("pid", None)
+                        chat.write_json(path, current)
+                        return current
                     chat.write_json(path, state)
             if not passed:
                 state["status"] = "BLOCKED"
@@ -580,52 +760,68 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                 state.pop("pid", None)
                 chat.write_json(path, state)
                 return state
-            # Commits stay on the isolated local branch, never pushed automatically.
-            subprocess.run(
-                ["git", "-C", str(root), "add", "--", *task["files"]],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            committed = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(root),
-                    "-c",
-                    "user.name=AGF Free-first",
-                    "-c",
-                    "user.email=agf-free-first@localhost",
-                    "commit",
-                    "-q",
-                    "-m",
-                    f"AGF free-first task {index + 1}: {task['instruction'][:65]}",
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if committed.returncode:
-                state["status"] = "BLOCKED"
-                state["reason"] = "local Git commit failed: " + committed.stderr[-450:]
-                chat.write_json(path, state)
-                return state
-            state["index"] = index + 1
+            with chat.control_lock(path):
+                current = json.loads(path.read_text())
+                if current.get("status") in {"STOPPED", "PAUSED", "HUMAN_REQUIRED"}:
+                    current.pop("pid", None)
+                    chat._write_json_unlocked(path, current)
+                    return current
+                state = current
+                # Commits stay on the isolated local branch, never pushed automatically.
+                subprocess.run(
+                    ["git", "-C", str(root), "add", "--", *task["files"]],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                committed = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(root),
+                        "-c",
+                        "user.name=AGF Free-first",
+                        "-c",
+                        "user.email=agf-free-first@localhost",
+                        "commit",
+                        "-q",
+                        "-m",
+                        f"AGF free-first task {index + 1}: {task['instruction'][:65]}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                if committed.returncode:
+                    state["status"] = "BLOCKED"
+                    state["reason"] = "local Git commit failed: " + committed.stderr[-450:]
+                    chat._write_json_unlocked(path, state)
+                    return state
+                state["index"] = index + 1
+                state["expected_head"] = subprocess.check_output(
+                    ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+                ).strip()
+                state["attempt"] = 0
+                state["updated_at"] = time.time()
+                state["events"].append(
+                    {
+                        "task": index,
+                        "committed": True,
+                        "commit": subprocess.check_output(
+                            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"], text=True
+                        ).strip(),
+                    }
+                )
+                if state["status"] == "PAUSING":
+                    state["status"] = "PAUSED"
+                    state.pop("pid", None)
+                    chat._write_json_unlocked(path, state)
+                    return state
+                chat._write_json_unlocked(path, state)
+        with chat.control_lock(path):
+            state = json.loads(path.read_text())
+            if state.get("status") not in {"STOPPED", "PAUSED", "HUMAN_REQUIRED"}:
+                state["status"] = "COMPLETED"
+            state.pop("pid", None)
             state["updated_at"] = time.time()
-            state["events"].append(
-                {
-                    "task": index,
-                    "committed": True,
-                    "commit": subprocess.check_output(
-                        ["git", "-C", str(root), "rev-parse", "--short", "HEAD"], text=True
-                    ).strip(),
-                }
-            )
-            chat.write_json(path, state)
-        latest = json.loads(path.read_text())
-        if latest.get("status") in {"STOPPED", "PAUSED"}:
-            return latest
-        state["status"] = "COMPLETED"
-        state.pop("pid", None)
-        state["updated_at"] = time.time()
-        chat.write_json(path, state)
-        return state
+            chat._write_json_unlocked(path, state)
+            return state
