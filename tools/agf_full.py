@@ -642,17 +642,33 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                         model=state.get("planning_model", "ollama/qwen3.5:9b-q4_K_M"),
                         usage_observer=record_usage,
                     )
-                    backups = {
-                        name: chat.safe_target(root, name).read_text(encoding="utf-8")
-                        for name in changes
-                    }
-                    for name, new in changes.items():
-                        chat.safe_target(root, name).write_text(new, encoding="utf-8")
+                    with chat.control_lock(path):
+                        current = json.loads(path.read_text())
+                        if current["status"] in {"STOPPED", "PAUSED", "HUMAN_REQUIRED"}:
+                            if not recorded_usage:
+                                current["usage"].append(usage)
+                            current.pop("pid", None)
+                            chat._write_json_unlocked(path, current)
+                            return current
+                        backups = {
+                            name: chat.safe_target(root, name).read_text(encoding="utf-8")
+                            for name in changes
+                        }
+                        for name, new in changes.items():
+                            chat.safe_target(root, name).write_text(new, encoding="utf-8")
                     safe, info = check_edits(root, task["files"])
                     if safe and index == len(state["tasks"]) - 1:
                         # Full acceptance tests are run on the integrated final state.
                         # Earlier tasks may intentionally leave tests for later tasks failing.
-                        safe, validation = chat.execute_tests(root, task["tests"], timeout=100)
+                        with chat.control_lock(path):
+                            current = json.loads(path.read_text())
+                            if current["status"] in {"STOPPED", "PAUSED", "HUMAN_REQUIRED"}:
+                                if not recorded_usage:
+                                    current["usage"].append(usage)
+                                current.pop("pid", None)
+                                chat._write_json_unlocked(path, current)
+                                return current
+                            safe, validation = chat.execute_tests(root, task["tests"], timeout=100)
                         info += "\n" + validation[-3500:]
                     elif safe:
                         info += (

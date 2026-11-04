@@ -354,10 +354,12 @@ def test_stop_during_execution_clears_pid(repo, tmp_path, monkeypatch):
         }
 
     with patch.object(agf_full, "propose_edits", side_effect=stop_then_edit), \
-         patch.object(agf_full.chat, "execute_tests", return_value=(True, "passed")):
+         patch.object(agf_full.chat, "execute_tests", return_value=(True, "passed")) as tests:
         result = agf_full.run_mission(state_dir, queued["mission_id"])
     assert result["status"] == "STOPPED" and "pid" not in result
     assert result["owner_note"] == "retain"
+    tests.assert_not_called()
+    assert "return 0" in (Path(result["worktree"]) / "logic.py").read_text()
 
 
 @pytest.mark.parametrize("test_passes", [True, False])
