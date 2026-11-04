@@ -57,7 +57,7 @@ class FreeMissionTests(unittest.TestCase):
     def test_automatic_retry_after_failed_tests_and_gateway_fallback(self):
         calls = []
 
-        def mock_model(prompt, *, provider, model):
+        def mock_model(prompt, *, provider, model, **kwargs):
             calls.append((provider, model))
             if provider == "omniroute":
                 raise ValueError("offline gateway")

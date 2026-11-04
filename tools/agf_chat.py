@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 DEFAULT_STATE = Path.home() / ".local/state/agf-free-first"
@@ -23,7 +24,15 @@ OMNI_URL = "http://127.0.0.1:20128"
 DEFAULT_MODELS = ("qwen3.5:9b-q4_K_M", "qwen3:14b")
 
 
-def write_json(path: Path, record: dict) -> None:
+@contextmanager
+def control_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_suffix(".control.lock").open("a+") as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        yield
+
+
+def _write_json_unlocked(path: Path, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".agf-", dir=path.parent)
     try:
@@ -36,6 +45,21 @@ def write_json(path: Path, record: dict) -> None:
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+
+
+def write_json(path: Path, record: dict) -> None:
+    with control_lock(path):
+        if path.is_file():
+            current = json.loads(path.read_text())
+            if current.get("status") in {"PAUSING", "PAUSED", "STOPPED", "HUMAN_REQUIRED"}:
+                for key in ("usage", "events", "updated_at", "attempt"):
+                    if key in record:
+                        current[key] = record[key]
+                if "pid" not in record:
+                    current.pop("pid", None)
+                record.clear()
+                record.update(current)
+        _write_json_unlocked(path, record)
 
 
 def request(
@@ -75,7 +99,7 @@ def provider_status() -> dict:
     return result
 
 
-def ask_model(prompt: str, *, provider: str, model: str) -> tuple[dict, dict]:
+def ask_model(prompt: str, *, provider: str, model: str, usage_observer=None) -> tuple[dict, dict]:
     messages = [
         {
             "role": "system",
@@ -100,7 +124,6 @@ def ask_model(prompt: str, *, provider: str, model: str) -> tuple[dict, dict]:
             },
             timeout=180,
         )
-        raw = reply["message"]["content"]
         usage = {
             "provider": "ollama",
             "model": reply.get("model", model),
@@ -108,6 +131,9 @@ def ask_model(prompt: str, *, provider: str, model: str) -> tuple[dict, dict]:
             "completion_tokens": reply.get("eval_count", 0),
             "api_eur": 0,
         }
+        if usage_observer:
+            usage_observer(usage)
+        raw = reply["message"]["content"]
     elif provider == "omniroute":
         key = os.environ.get("AGF_OMNIROUTE_KEY")
         # Loopback OmniRoute may permit local keyless requests; if API-key
@@ -133,9 +159,6 @@ def ask_model(prompt: str, *, provider: str, model: str) -> tuple[dict, dict]:
         # OmniRoute reports the Ollama upstream's bare model ID even for an
         # explicitly addressed ollama/<id> request. Permit only that exact
         # canonical alias; never permit unrelated fallbacks or auto routing.
-        if used not in {model, model.removeprefix("ollama/")}:
-            raise ValueError(f"OmniRoute model substitution not approved: {used!r}")
-        raw = reply["choices"][0]["message"]["content"]
         usage_data = reply.get("usage") or {}
         usage = {
             "provider": "omniroute/ollama",
@@ -145,6 +168,11 @@ def ask_model(prompt: str, *, provider: str, model: str) -> tuple[dict, dict]:
             "completion_tokens": usage_data.get("completion_tokens", 0),
             "api_eur": 0,
         }
+        if usage_observer:
+            usage_observer(usage)
+        if used not in {model, model.removeprefix("ollama/")}:
+            raise ValueError(f"OmniRoute model substitution not approved: {used!r}")
+        raw = reply["choices"][0]["message"]["content"]
     else:
         raise ValueError(f"unknown provider {provider}")
     output = json.loads(raw)
@@ -153,7 +181,9 @@ def ask_model(prompt: str, *, provider: str, model: str) -> tuple[dict, dict]:
     return output, usage
 
 
-def plan_objective(root: Path, objective: str, tests: list[str]) -> tuple[list[dict], dict]:
+def plan_objective(
+    root: Path, objective: str, tests: list[str], *, usage_observer=None
+) -> tuple[list[dict], dict]:
     """Build a bounded task plan using the local free model, no paid provider."""
     if not objective.strip() or len(objective) > 4000:
         raise ValueError("objective must contain 1-4000 characters")
@@ -196,6 +226,16 @@ def plan_objective(root: Path, objective: str, tests: list[str]) -> tuple[list[d
         },
         timeout=150,
     )
+    usage = {
+        "provider": "ollama",
+        "model": reply.get("model", DEFAULT_MODELS[0]),
+        "prompt_tokens": reply.get("prompt_eval_count", 0),
+        "completion_tokens": reply.get("eval_count", 0),
+        "api_eur": 0,
+        "purpose": "planning",
+    }
+    if usage_observer:
+        usage_observer(usage)
     data = json.loads(reply["message"]["content"])
     raw_tasks = data.get("tasks") if isinstance(data, dict) else None
     if not isinstance(raw_tasks, list) or not 1 <= len(raw_tasks) <= 3:
@@ -212,23 +252,17 @@ def plan_objective(root: Path, objective: str, tests: list[str]) -> tuple[list[d
         tasks.append(
             {"file": item["file"], "instruction": item["instruction"], "tests": list(tests)}
         )
-    usage = {
-        "provider": "ollama",
-        "model": reply.get("model", DEFAULT_MODELS[0]),
-        "prompt_tokens": reply.get("prompt_eval_count", 0),
-        "completion_tokens": reply.get("eval_count", 0),
-        "api_eur": 0,
-        "purpose": "planning",
-    }
     return tasks, usage
 
 
 def safe_target(root: Path, name: str) -> Path:
-    p = (root / name).resolve()
+    root = root.resolve()
+    target = root / name
+    if target.is_symlink():
+        raise ValueError("symlink target not allowed")
+    p = target.resolve()
     if not p.is_relative_to(root) or p == root:
         raise ValueError("target file outside approved repository")
-    if p.is_symlink():
-        raise ValueError("symlink target not allowed")
     return p
 
 
@@ -257,20 +291,95 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
         state = json.loads(path.read_text())
         if state["status"] in ("COMPLETED", "BLOCKED", "STOPPED", "PAUSED"):
             return state
+        if state["status"] == "RUNNING":
+            with control_lock(path):
+                state = json.loads(path.read_text())
+                if state["status"] == "RUNNING":
+                    state["status"] = "HUMAN_REQUIRED"
+                    state["reason"] = "interrupted legacy task requires reconciliation"
+                    _write_json_unlocked(path, state)
+            return state
         root = Path(state["repository"]).resolve()
-        state["status"] = "RUNNING"
-        state["pid"] = os.getpid()
-        write_json(path, state)
+        if state["status"] == "PLANNING":
+            with control_lock(path):
+                state = json.loads(path.read_text())
+                if state["status"] != "PLANNING":
+                    return state
+                attempts = state.get("planning_attempts", 0)
+                if (
+                    not isinstance(attempts, int)
+                    or isinstance(attempts, bool)
+                    or attempts < 0
+                    or attempts >= 2
+                ):
+                    state["status"] = "BLOCKED"
+                    state["reason"] = "planning attempt budget exhausted or invalid"
+                    _write_json_unlocked(path, state)
+                    return state
+                state["planning_attempts"] = attempts + 1
+                _write_json_unlocked(path, state)
+            recorded_usage = []
+
+            def record_planning_usage(usage):
+                with control_lock(path):
+                    current = json.loads(path.read_text())
+                    current["usage"].append(usage)
+                    _write_json_unlocked(path, current)
+                recorded_usage.append(usage)
+
+            try:
+                tasks, usage = plan_objective(root, state["objective"], state["planning_tests"],
+                                              usage_observer=record_planning_usage)
+                validate_tasks(root, tasks)
+            except (ValueError, OSError, KeyError, subprocess.SubprocessError) as exc:
+                with control_lock(path):
+                    state = json.loads(path.read_text())
+                    if state["status"] == "PLANNING":
+                        state["status"] = "BLOCKED"
+                        state["reason"] = f"planning failed: {str(exc)[:500]}"
+                        _write_json_unlocked(path, state)
+                return state
+            with control_lock(path):
+                state = json.loads(path.read_text())
+                if usage and not recorded_usage:
+                    state["usage"].append(usage)
+                if state["status"] != "PLANNING":
+                    _write_json_unlocked(path, state)
+                    return state
+                state["tasks"] = tasks
+                state["status"] = "PENDING"
+                _write_json_unlocked(path, state)
+        with control_lock(path):
+            state = json.loads(path.read_text())
+            if state["status"] not in ("PENDING", "RUNNING"):
+                return state
+            state["status"] = "RUNNING"
+            state["pid"] = os.getpid()
+            _write_json_unlocked(path, state)
         while state["index"] < len(state["tasks"]):
             task = state["tasks"][state["index"]]
             target = safe_target(root, task["file"])
             tests = task["tests"]
             failure = ""
             completed = False
-            for attempt in range(1, state["max_attempts"] + 1):
+            historical = sum(
+                1 for event in state["events"]
+                if event.get("task") == state["index"] and type(event.get("attempt")) is int
+            )
+            attempts = state.get("attempt", 0)
+            if type(attempts) is not int or attempts < 0:
+                state["status"] = "HUMAN_REQUIRED"
+                state["reason"] = "invalid persisted attempt budget"
+                write_json(path, state)
+                return state
+            for attempt in range(max(attempts, historical) + 1, state["max_attempts"] + 1):
                 latest = json.loads(path.read_text())
                 if latest["status"] in ("PAUSED", "STOPPED"):
                     return latest
+                state["attempt"] = attempt
+                write_json(path, state)
+                if state["status"] in ("PAUSED", "STOPPED", "HUMAN_REQUIRED"):
+                    return state
                 prompt = (
                     f"Task: {task['instruction']}\nFile: {task['file']}\n"
                     f"Current file content:\n{target.read_text() if target.exists() else ''}\n"
@@ -283,8 +392,21 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     routes = state["routes"]
                     errors = []
                     for route in routes:
+                        latest = json.loads(path.read_text())
+                        if latest["status"] in ("PAUSED", "STOPPED", "HUMAN_REQUIRED"):
+                            return latest
                         try:
-                            output, usage = ask_model(prompt, **route)
+                            observed = []
+
+                            def record_usage(usage):
+                                with control_lock(path):
+                                    current = json.loads(path.read_text())
+                                    current["usage"].append(usage)
+                                    _write_json_unlocked(path, current)
+                                    state["usage"] = current["usage"]
+                                observed.append(usage)
+
+                            output, usage = ask_model(prompt, **route, usage_observer=record_usage)
                             new_content = output["content"]
                             if not new_content.strip() or len(new_content) > 120000:
                                 raise ValueError("model returned empty or oversized source")
@@ -299,13 +421,35 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                             errors.append(f"{route['provider']}/{route['model']}: {str(err)[:160]}")
                     else:
                         raise ValueError("; ".join(errors))
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(new_content)
-                    ok, report = execute_tests(root, tests)
+                    with control_lock(path):
+                        latest = json.loads(path.read_text())
+                        if not observed:
+                            latest["usage"].append(usage)
+                        _write_json_unlocked(path, latest)
+                        if latest["status"] in ("PAUSED", "STOPPED", "HUMAN_REQUIRED"):
+                            return latest
+                        state["usage"] = latest["usage"]
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        fd, temp_path = tempfile.mkstemp(prefix=".agf-edit-", dir=target.parent)
+                        try:
+                            with os.fdopen(fd, "w") as stream:
+                                stream.write(new_content)
+                                stream.flush()
+                                os.fsync(stream.fileno())
+                            if target.exists():
+                                os.chmod(temp_path, target.stat().st_mode & 0o777)
+                            os.replace(temp_path, target)
+                        finally:
+                            if os.path.exists(temp_path):
+                                os.unlink(temp_path)
+                    with control_lock(path):
+                        latest = json.loads(path.read_text())
+                        if latest["status"] in ("PAUSED", "STOPPED", "HUMAN_REQUIRED"):
+                            return latest
+                        ok, report = execute_tests(root, tests)
                     latest = json.loads(path.read_text())
                     if latest["status"] in ("PAUSED", "STOPPED"):
                         return latest
-                    state["usage"].append(usage)
                     state["events"].append(
                         {
                             "task": state["index"],
@@ -337,6 +481,7 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                 write_json(path, state)
                 return state
             state["index"] += 1
+            state["attempt"] = 0
             state["updated_at"] = time.time()
             write_json(path, state)
         latest = json.loads(path.read_text())
@@ -346,6 +491,97 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
         state.pop("pid", None)
         write_json(path, state)
         return state
+
+
+def validate_tasks(root: Path, tasks) -> None:
+    if not isinstance(tasks, list) or not tasks:
+        raise ValueError("tasks must be a nonempty JSON array")
+    for item in tasks:
+        if not isinstance(item, dict) or not isinstance(item.get("instruction"), str):
+            raise ValueError("invalid task")
+        safe_target(root, item["file"])
+        if not isinstance(item.get("tests"), list):
+            raise ValueError("tests must be an argument array")
+
+
+def _running_pid(pid) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def dispatch_queued_missions(state_dir: Path, *, max_workers: int = 1) -> dict:
+    """Bounded, non-blocking dispatcher: model work never stalls the router.
+
+    DeepSeek Superagent separates its router from long-running Executors. The
+    AGF worker follows that principle while retaining per-mission file locks,
+    owner-defined tasks, and zero-paid-route restrictions.
+    """
+    if not 1 <= max_workers <= 4:
+        raise ValueError("worker slots must be between 1 and 4")
+    dispatch_lock = state_dir / ".worker-dispatch.lock"
+    with dispatch_lock.open("a+") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"status": "ALREADY_DISPATCHING", "dispatched": []}
+        busy = 0
+        queued = []
+        for record in sorted(state_dir.glob("*.json")):
+            try:
+                state = json.loads(record.read_text())
+                mission_id = state.get("mission_id")
+                if (
+                    not isinstance(mission_id, str)
+                    or len(mission_id) != 16
+                    or any(ch not in "0123456789abcdef" for ch in mission_id)
+                    or mission_id != record.stem
+                ):
+                    continue
+                status = state.get("status")
+                pid = state.get("pid") or state.get("planning_pid")
+                if status in {"RUNNING", "PAUSING", "PLANNING"} and _running_pid(pid):
+                    busy += 1
+                elif status == "PENDING" and _running_pid(state.get("dispatch_pid")):
+                    busy += 1
+                elif status in {"PENDING", "RUNNING", "PLANNING"}:
+                    queued.append((mission_id, record))
+            except (OSError, ValueError, TypeError):
+                continue
+        started = []
+        for mission_id, record in queued:
+            if busy >= max_workers:
+                break
+            try:
+                with (state_dir / f"{mission_id}.log").open("ab") as output:
+                    process = subprocess.Popen(
+                        [sys.executable, str(Path(__file__).resolve()),
+                         "--state-dir", str(state_dir), "run", mission_id],
+                        stdin=subprocess.DEVNULL, stdout=output, stderr=output,
+                        start_new_session=True,
+                    )
+            except OSError:
+                # A subsequent scheduled wake can retry spawning this mission.
+                continue
+            started.append(mission_id)
+            busy += 1
+            # The executor can already hold this lock during validation. Never
+            # block the router waiting to record advisory dispatch metadata.
+            try:
+                with record.with_suffix(".control.lock").open("a+") as ctl:
+                    fcntl.flock(ctl.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    latest = json.loads(record.read_text())
+                    latest["dispatch_pid"] = process.pid
+                    _write_json_unlocked(record, latest)
+            except (BlockingIOError, OSError, ValueError):
+                pass
+        return {"status": "WORKER_DISPATCHED", "dispatched": started, "active": busy}
 
 
 def parse_args():
@@ -378,7 +614,8 @@ def parse_args():
     for name in ("run", "status", "report", "pause", "resume", "stop"):
         c = sub.add_parser(name)
         c.add_argument("mission_id")
-    sub.add_parser("worker")
+    worker = sub.add_parser("worker")
+    worker.add_argument("--max-workers", type=int, default=1)
     return parser.parse_args()
 
 
@@ -424,6 +661,8 @@ def main():
             )
             print(json.dumps(result, ensure_ascii=False))
             return
+        if args.scope:
+            raise SystemExit("--scope requires --project-wide")
         root = args.repository.expanduser().resolve()
         if not root.is_dir():
             raise SystemExit("repository does not exist")
@@ -435,19 +674,9 @@ def main():
         )
         if args.tasks:
             tasks = json.loads(args.tasks.read_text())
-            planning_usage = None
+            validate_tasks(root, tasks)
         else:
-            tasks, planning_usage = plan_objective(
-                root, args.objective, shlex.split(args.test_command)
-            )
-        if not isinstance(tasks, list) or not tasks:
-            raise SystemExit("tasks must be a nonempty JSON array")
-        for item in tasks:
-            if not isinstance(item, dict) or not isinstance(item.get("instruction"), str):
-                raise SystemExit("invalid task")
-            safe_target(root, item["file"])
-            if not isinstance(item.get("tests"), list):
-                raise SystemExit("tests must be an argument array")
+            tasks = []
         routes = []
         if args.omniroute_model:
             if not args.omniroute_model.startswith("ollama/"):
@@ -459,15 +688,17 @@ def main():
         mid = uuid.uuid4().hex[:16]
         record = {
             "mission_id": mid,
-            "status": "PENDING",
+            "status": "PENDING" if args.tasks else "PLANNING",
             "repository": str(root),
             "tasks": tasks,
             "index": 0,
             "max_attempts": max(1, min(5, args.max_attempts)),
             "routes": routes,
-            "usage": [planning_usage] if planning_usage else [],
+            "usage": [],
             "events": [],
             "objective": args.objective if not args.tasks else None,
+            "planning_tests": shlex.split(args.test_command),
+            "planning_attempts": 0,
             "api_budget_eur": 0,
             "codex_calls": 0,
             "created_at": time.time(),
@@ -483,7 +714,9 @@ def main():
                     start_new_session=True,
                 )
         print(
-            json.dumps({"mission_id": mid, "status": "STARTED" if args.background else "PENDING"})
+            json.dumps(
+                {"mission_id": mid, "status": "STARTED" if args.background else record["status"]}
+            )
         )
         return
     if args.command == "worker":
@@ -520,31 +753,47 @@ def main():
                         continue
             except (KeyError, OSError, ValueError, json.JSONDecodeError):
                 continue
-        for record in state_dir.glob("*.json"):
-            try:
-                state = json.loads(record.read_text())
-                if state.get("status") in ("PENDING", "RUNNING"):
-                    if state.get("engine") == "full":
-                        if __package__:
-                            from . import agf_full
-                        else:
-                            import agf_full
-                        agf_full.run_mission(state_dir, state["mission_id"])
-                    else:
-                        run_mission(state_dir, state["mission_id"])
-            except (KeyError, OSError, ValueError, json.JSONDecodeError):
-                pass
-        print(json.dumps({"status": "WORKER_CHECKED"}))
+        # Launch bounded independent executors and return without waiting for
+        # an LLM, validation, or Git operation to finish.
+        print(json.dumps(dispatch_queued_missions(
+            state_dir, max_workers=args.max_workers
+        )))
         return
     path = state_dir / f"{args.mission_id}.json"
     if not path.is_file():
         raise SystemExit("unknown mission id")
     state = json.loads(path.read_text())
     if args.command in ("run", "resume"):
-        if args.command == "resume" and state["status"] in ("PAUSED", "BLOCKED"):
-            state["status"] = "PENDING"
-            state.pop("reason", None)
-            write_json(path, state)
+        if args.command == "resume":
+            with (state_dir / f"{args.mission_id}.lock").open("a+") as runner_lock:
+                try:
+                    fcntl.flock(runner_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    print(json.dumps({"mission_id": args.mission_id, "status": "ALREADY_RUNNING"}))
+                    return
+                with control_lock(path):
+                    state = json.loads(path.read_text())
+                    if state["status"] in ("PAUSED", "BLOCKED"):
+                        if state.get("engine") == "full":
+                            result = subprocess.run(
+                                ["git", "-C", state["worktree"], "status", "--porcelain"],
+                                capture_output=True,
+                                text=True,
+                            )
+                            if result.returncode or result.stdout:
+                                state["status"] = "HUMAN_REQUIRED"
+                                state["reason"] = "worktree requires reconciliation before resume"
+                            else:
+                                state["status"] = "PENDING"
+                                state.pop("reason", None)
+                        else:
+                            state["status"] = (
+                                "PLANNING"
+                                if not state["tasks"] and state.get("objective")
+                                else "PENDING"
+                            )
+                            state.pop("reason", None)
+                        _write_json_unlocked(path, state)
         if state.get("engine") == "full":
             if __package__:
                 from . import agf_full
@@ -554,8 +803,24 @@ def main():
         else:
             state = run_mission(state_dir, args.mission_id)
     elif args.command in ("pause", "stop"):
-        state["status"] = "PAUSED" if args.command == "pause" else "STOPPED"
-        write_json(path, state)
+        with control_lock(path):
+            state = json.loads(path.read_text())
+            target = (
+                (
+                    "PAUSING"
+                    if state.get("engine") == "full" and state["status"] in {"RUNNING", "PAUSING"}
+                    else "PAUSED"
+                )
+                if args.command == "pause"
+                else "STOPPED"
+            )
+            allowed = {"PENDING", "PLANNING", "RUNNING"}
+            if args.command == "stop":
+                allowed.update({"PAUSING", "PAUSED", "BLOCKED"})
+            if state["status"] not in allowed | {target}:
+                raise SystemExit("mission status does not permit this control action")
+            state["status"] = target
+            _write_json_unlocked(path, state)
     if args.command == "status":
         print(
             json.dumps(

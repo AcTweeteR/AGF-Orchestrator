@@ -113,7 +113,7 @@ def test_durable_mission_isolated_from_caller_and_committed(repo, tmp_path, monk
     assert worktree.is_dir()
     attempts = [0]
 
-    def fake_changes(worktree, task, failure):
+    def fake_changes(worktree, task, failure, **kwargs):
         attempts[0] += 1
         if attempts[0] == 1:
             return {"logic.py": "def answer():\n    return 0\n"}, {
@@ -161,7 +161,7 @@ def test_dependent_tasks_only_require_final_integrated_tests(repo, tmp_path, mon
         state_dir, repo, objective=None, tasks_path=tasksfile, tests=tests, model="ollama/local"
     )
 
-    def edits(root, task, previous):
+    def edits(root, task, previous, **kwargs):
         if "logic.py" in task["files"]:
             return {"logic.py": "def answer():\n    return 42\n"}, {
                 "provider": "ollama",
@@ -195,7 +195,7 @@ def test_planning_failure_keeps_queryable_mission(repo, tmp_path, monkeypatch):
     state_dir = tmp_path / "state"
     monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
     with patch.object(agf_full, "plan", side_effect=TimeoutError("planner timed out")):
-        result = agf_full.start(
+        queued = agf_full.start(
             state_dir,
             repo,
             objective="Improve answer calculation",
@@ -204,12 +204,13 @@ def test_planning_failure_keeps_queryable_mission(repo, tmp_path, monkeypatch):
             model="ollama/qwen3.5:9b-q4_K_M",
             background=False,
         )
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
     assert result["status"] == "BLOCKED"
     persisted = json.loads((state_dir / (result["mission_id"] + ".json")).read_text())
     assert persisted["status"] == "BLOCKED"
     assert "planner timed out" in persisted["reason"]
     assert persisted["mission_id"] == result["mission_id"]
-    assert not (tmp_path / "worktrees" / result["mission_id"]).exists()
+    assert (tmp_path / "worktrees" / result["mission_id"]).exists()
 
 
 def test_planning_record_is_saved_before_model_call(repo, tmp_path, monkeypatch):
@@ -221,12 +222,12 @@ def test_planning_record_is_saved_before_model_call(repo, tmp_path, monkeypatch)
         assert len(records) == 1
         record = json.loads(records[0].read_text())
         assert record["status"] == "PLANNING"
-        assert record["planning_pid"] > 0
+        assert record["pid"] > 0
         assert record["worktree"] == str(worktree)
         raise ValueError("controlled planning failure")
 
     with patch.object(agf_full, "plan", side_effect=check_record):
-        result = agf_full.start(
+        queued = agf_full.start(
             state_dir,
             repo,
             objective="Improve answer calculation",
@@ -234,6 +235,7 @@ def test_planning_record_is_saved_before_model_call(repo, tmp_path, monkeypatch)
             tests=[sys.executable, "-m", "unittest", "test_logic"],
             model="ollama/qwen3.5:9b-q4_K_M",
         )
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
     assert result["status"] == "BLOCKED"
     recorded = json.loads((state_dir / (result["mission_id"] + ".json")).read_text())
     assert "planning_pid" not in recorded
@@ -268,3 +270,103 @@ def test_check_task_respects_objective_approved_tests_and_rejects_unapproved(rep
         agf_full.check_task(repo, task)
     with pytest.raises(ValueError, match="unavailable, or unsafe"):
         agf_full.check_task(repo, {**task, "files": ["../outside.py"]}, approved_files=allowed)
+
+
+def _queued_recovery_fixture(repo, tmp_path, monkeypatch):
+    """Create an owned worktree without making a network/model call."""
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    test_argv = [sys.executable, "-m", "unittest", "-q", "test_logic"]
+    task = {
+        "files": ["logic.py", "addon.xml"],
+        "instruction": "Repair the integrated sources",
+        "tests": test_argv,
+    }
+    tasksfile = tmp_path / "recovery-tasks.json"
+    tasksfile.write_text(json.dumps([task]))
+    state_dir = tmp_path / "recovery-state"
+    queued = agf_full.start(
+        state_dir, repo, objective=None, tasks_path=tasksfile,
+        tests=test_argv, model="ollama/local",
+    )
+    return state_dir, queued, task
+
+
+def _make_recovery_commit(state_dir, queued, task, *, safe_markers=True, extra_file=False):
+    """Simulate process exit after Git commit but before JSON checkpoint."""
+    mid = queued["mission_id"]
+    root = Path(queued["worktree"])
+    (root / "logic.py").write_text("def answer():\n    return 42\n")
+    (root / "addon.xml").write_text('<addon id="a" name="After"/>\n')
+    files = ["logic.py", "addon.xml"]
+    if extra_file:
+        (root / "test_logic.py").write_text("# unapproved change\n")
+        files.append("test_logic.py")
+    subprocess.run(["git", "-C", str(root), "add", "--", *files], check=True)
+    trailer = (
+        f"AGF-Mission: {mid}\n"
+        f"AGF-Task: 1\n"
+        f"AGF-Task-Digest: {agf_full._task_digest(task)}"
+    ) if safe_markers else "missing AGF provenance"
+    subprocess.run([
+        "git", "-C", str(root),
+        "-c", "user.name=AGF Test",
+        "-c", "user.email=test@example.invalid",
+        "commit", "-qm", "AGF free-first task 1", "-m", trailer,
+    ], check=True)
+    path = state_dir / f"{mid}.json"
+    state = json.loads(path.read_text())
+    state["status"] = "RUNNING"
+    state["attempt"] = 1
+    agf_full.chat.write_json(path, state)
+    return root
+
+
+def test_deepseek_style_commit_recovery_without_reexecuting_model(repo, tmp_path, monkeypatch):
+    state_dir, queued, task = _queued_recovery_fixture(repo, tmp_path, monkeypatch)
+    root = _make_recovery_commit(state_dir, queued, task)
+    with patch.object(agf_full, "propose_edits", side_effect=AssertionError("model replay")):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == "COMPLETED", result.get("reason")
+    assert result["index"] == 1
+    assert any(event.get("recovered") is True for event in result["events"])
+    assert result["expected_head"] == subprocess.check_output(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+    ).strip()
+    assert (repo / "logic.py").read_text().endswith("return 0\n")
+
+
+@pytest.mark.parametrize("safe_markers,extra_file", [(False, False), (True, True)])
+def test_interrupted_untrusted_commit_requires_human(
+    repo, tmp_path, monkeypatch, safe_markers, extra_file
+):
+    state_dir, queued, task = _queued_recovery_fixture(repo, tmp_path, monkeypatch)
+    _make_recovery_commit(
+        state_dir, queued, task, safe_markers=safe_markers, extra_file=extra_file
+    )
+    with patch.object(agf_full, "propose_edits", side_effect=AssertionError("model replay")):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == "HUMAN_REQUIRED"
+    assert result["index"] == 0
+
+
+def test_clean_interrupted_attempt_resumes_with_persisted_budget(repo, tmp_path, monkeypatch):
+    state_dir, queued, task = _queued_recovery_fixture(repo, tmp_path, monkeypatch)
+    path = state_dir / f"{queued['mission_id']}.json"
+    state = json.loads(path.read_text())
+    state["status"] = "RUNNING"
+    state["attempt"] = 0
+    agf_full.chat.write_json(path, state)
+
+    def simulated_model(_root, _task, _failure, **kwargs):
+        return {
+            "logic.py": "def answer():\n    return 42\n",
+            "addon.xml": '<addon id="a" name="After"/>\n',
+        }, {"provider": "ollama", "model": "local", "prompt_tokens": 1}
+
+    with patch.object(agf_full, "propose_edits", side_effect=simulated_model):
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    assert result["status"] == "COMPLETED"
+    assert any(
+        event.get("recovered") == "clean_interrupted_attempt"
+        for event in result["events"]
+    )
