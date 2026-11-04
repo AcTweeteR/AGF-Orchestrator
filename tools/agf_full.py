@@ -44,6 +44,10 @@ def inventory(root: Path, query: str = "", scope: str = "") -> list[str]:
     raw = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z"], text=True)
     eligible = []
     terms = [w.strip(".,:;!?()").lower() for w in query.split() if len(w) >= 4]
+    test_goal = any(term in query.lower() for term in ("test", "prueba", "coverage", "cobertura"))
+    fixture_goal = any(
+        term in query.lower() for term in ("fixture", "test data", "datos de prueba")
+    )
     documentation_goal = any(
         term in query.lower() for term in ("documentation", "documentación", "readme", "docs")
     )
@@ -63,8 +67,15 @@ def inventory(root: Path, query: str = "", scope: str = "") -> list[str]:
             len(rel.parts) > 7
             or any(part in SKIP_DIRS for part in rel.parts)
             or rel.suffix.lower() not in SOURCE_SUFFIXES
-            or rel.name.startswith("test_")
-            or rel.name.endswith("_test.py")
+            or (
+                not test_goal
+                and (
+                    rel.name.startswith("test_")
+                    or rel.name.endswith("_test.py")
+                    or "tests" in rel.parts
+                )
+            )
+            or (not fixture_goal and "fixtures" in rel.parts)
         ):
             continue
         path = root / rel
@@ -201,7 +212,7 @@ def plan(
     return tasks, evidence
 
 
-def check_task(root: Path, task: dict) -> None:
+def check_task(root: Path, task: dict, *, approved_files: list[str] | None = None) -> None:
     names = task.get("files")
     if (
         not isinstance(names, list)
@@ -209,8 +220,9 @@ def check_task(root: Path, task: dict) -> None:
         or len(set(names)) != len(names)
     ):
         raise ValueError("task must select 1-4 distinct files")
+    allowed = approved_files if approved_files is not None else inventory(root)
     for name in names:
-        if not isinstance(name, str) or name not in inventory(root):
+        if not isinstance(name, str) or name not in allowed:
             raise ValueError("task includes an unknown, unavailable, or unsafe source")
         target = chat.safe_target(root, name)
         if not target.is_file() or target.is_symlink():
@@ -274,8 +286,42 @@ def start(
     if Path(top).resolve() != repository:
         raise ValueError("repository must be its Git toplevel")
     mission_id = uuid.uuid4().hex[:16]
-    worktree, branch = create_worktree(repository, mission_id)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = state_dir / (mission_id + ".json")
+    record = {
+        "engine": "full",
+        "mission_id": mission_id,
+        "status": "PLANNING",
+        "repository": str(repository),
+        "worktree": None,
+        "branch": None,
+        "objective": objective,
+        "scope": scope,
+        "tasks": [],
+        "planning_tests": shlex.split(tests) if isinstance(tests, str) else tests,
+        "planning_model": model,
+        "planning_attempts": 0,
+        "index": 0,
+        "attempt": 0,
+        "max_attempts": max(1, min(5, max_attempts)),
+        "usage": [],
+        "events": [],
+        "api_budget_eur": 0,
+        "codex_calls": 0,
+        "created_at": time.time(),
+        "planning_pid": os.getpid(),
+    }
+    # Persist before creating a worktree or invoking a potentially slow model.
+    chat.write_json(path, record)
+    worktree = None
+    branch = None
     try:
+        worktree, branch = create_worktree(repository, mission_id)
+        head = subprocess.check_output(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True
+        ).strip()
+        record.update(worktree=str(worktree), branch=branch, expected_head=head)
+        chat.write_json(path, record)
         if tasks_path:
             tasks = json.loads(tasks_path.read_text())
             planning = None
@@ -283,44 +329,34 @@ def start(
             tasks, planning = None, None
         if tasks is not None and (not isinstance(tasks, list) or not 1 <= len(tasks) <= 30):
             raise ValueError("must have between 1 and 30 tasks")
+        approved = inventory(worktree, query=objective or "", scope=scope)
         for task in tasks or []:
-            check_task(worktree, task)
+            check_task(worktree, task, approved_files=approved)
             if scope and any(
                 not (name == scope or name.startswith(scope.rstrip("/") + "/"))
                 for name in task["files"]
             ):
                 raise ValueError("task file outside owner-selected scope")
-        record = {
-            "engine": "full",
-            "mission_id": mission_id,
-            "status": "PENDING",
-            "repository": str(repository),
-            "worktree": str(worktree),
-            "branch": branch,
-            "objective": objective,
-            "scope": scope,
-            "tasks": tasks,
-            "planning_tests": shlex.split(tests) if isinstance(tests, str) else tests,
-            "planning_model": model,
-            "planning_attempts": 0,
-            "index": 0,
-            "attempt": 0,
-            "max_attempts": max(1, min(5, max_attempts)),
-            "usage": [planning] if planning else [],
-            "events": [],
-            "api_budget_eur": 0,
-            "codex_calls": 0,
-            "created_at": time.time(),
-        }
-        state_dir.mkdir(parents=True, exist_ok=True)
-        chat.write_json(state_dir / (mission_id + ".json"), record)
-    except Exception:
-        subprocess.run(
-            ["git", "-C", str(repository), "worktree", "remove", "--force", str(worktree)],
-            capture_output=True,
+        record.update(status="PENDING", tasks=tasks, usage=[planning] if planning else [])
+        record.pop("planning_pid", None)
+        chat.write_json(path, record)
+    except Exception as exc:
+        record.update(
+            status="BLOCKED",
+            reason=f"Mission preparation failed: {type(exc).__name__}: {str(exc)[:600]}",
         )
-        subprocess.run(["git", "-C", str(repository), "branch", "-D", branch], capture_output=True)
-        raise
+        record.pop("planning_pid", None)
+        chat.write_json(path, record)
+        if worktree is not None:
+            subprocess.run(
+                ["git", "-C", str(repository), "worktree", "remove", "--force", str(worktree)],
+                capture_output=True,
+            )
+        if branch is not None:
+            subprocess.run(
+                ["git", "-C", str(repository), "branch", "-D", branch], capture_output=True
+            )
+        return {"mission_id": mission_id, "status": "BLOCKED", "reason": record["reason"]}
     if background:
         with (state_dir / (mission_id + ".log")).open("ab") as logfile:
             subprocess.Popen(
@@ -477,10 +513,35 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
             state.pop("pid", None)
             chat.write_json(path, state)
             return state
+        if not state.get("worktree"):
+            state["status"] = "BLOCKED"
+            state["reason"] = "mission has no validated worktree or tasks"
+            state.pop("pid", None)
+            chat.write_json(path, state)
+            return state
         root = Path(state["worktree"]).resolve()
         if not root.is_dir():
             state["status"] = "BLOCKED"
             state["reason"] = "isolated mission worktree is missing"
+            chat.write_json(path, state)
+            return state
+        try:
+            actual_head = subprocess.check_output(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+            ).strip()
+            actual_branch = subprocess.check_output(
+                ["git", "-C", str(root), "branch", "--show-current"], text=True
+            ).strip()
+            actual_root = subprocess.check_output(
+                ["git", "-C", str(root), "rev-parse", "--show-toplevel"], text=True
+            ).strip()
+            if (actual_head != state.get("expected_head")
+                    or actual_branch != state.get("branch")
+                    or Path(actual_root).resolve() != root):
+                raise ValueError("worktree identity or HEAD changed")
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            state["status"] = "HUMAN_REQUIRED"
+            state["reason"] = f"worktree identity cannot be verified: {exc}"
             chat.write_json(path, state)
             return state
         if state.get("tasks") is None:
@@ -511,8 +572,11 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                 tasks, usage = plan(root, state.get("objective") or "", state["planning_tests"],
                                     model=state["planning_model"], scope=state.get("scope", ""),
                                     usage_observer=record_planning_usage)
+                approved = inventory(
+                    root, query=state.get("objective") or "", scope=state.get("scope") or ""
+                )
                 for task in tasks:
-                    check_task(root, task)
+                    check_task(root, task, approved_files=approved)
                 latest = json.loads(path.read_text())
                 if not recorded_planning_usage:
                     latest["usage"].append(usage)
@@ -522,6 +586,7 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     return latest
                 state = latest
                 state["tasks"] = tasks
+                chat.write_json(path, state)
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
                 latest = json.loads(path.read_text())
                 latest["status"] = (
@@ -539,6 +604,9 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
             state.pop("pid", None)
             chat.write_json(path, state)
             return state
+        approved = inventory(
+            root, query=state.get("objective") or "", scope=state.get("scope") or ""
+        )
         for index in range(state["index"], len(state["tasks"])):
             task = state["tasks"][index]
             historical_attempts = sum(
@@ -559,7 +627,7 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     return state
                 backups = {}
                 try:
-                    check_task(root, task)
+                    check_task(root, task, approved_files=approved)
                     recorded_usage = []
 
                     def record_usage(usage):
@@ -712,6 +780,9 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     chat._write_json_unlocked(path, state)
                     return state
                 state["index"] = index + 1
+                state["expected_head"] = subprocess.check_output(
+                    ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+                ).strip()
                 state["attempt"] = 0
                 state["updated_at"] = time.time()
                 state["events"].append(

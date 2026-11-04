@@ -461,9 +461,11 @@ def parse_args():
     create.add_argument("--model", default=DEFAULT_MODELS[0])
     create.add_argument("--fallback-model", default=DEFAULT_MODELS[1])
     create.add_argument("--omniroute-model", help="Explicit ollama/ model, optional")
+    create.add_argument(
+        "--scope", default="", help="Restrict all changes to a repository-relative path prefix"
+    )
     create.add_argument("--max-attempts", type=int, default=3)
     create.add_argument("--background", action="store_true")
-    create.add_argument("--scope", default="", help="Repository-relative project-wide scope")
     create.add_argument(
         "--project-wide", action="store_true", help="isolated multi-file mission with local commits"
     )
@@ -508,7 +510,7 @@ def main():
                 args.repository.expanduser(),
                 objective=args.objective,
                 tasks_path=args.tasks,
-                tests=args.test_command,
+                tests=shlex.split(args.test_command),
                 model=args.omniroute_model or "ollama/qwen3.5:9b-q4_K_M",
                 max_attempts=args.max_attempts,
                 background=args.background,
@@ -575,6 +577,39 @@ def main():
         )
         return
     if args.command == "worker":
+        # Workers must not run a partly constructed mission. A planning owner
+        # interrupted before persistence of tasks leaves an auditable BLOCKED
+        # record rather than a permanently invisible or unexecutable mission.
+        for record in state_dir.glob("*.json"):
+            try:
+                state = json.loads(record.read_text())
+                if state.get("engine") != "full" or state.get("status") != "PLANNING":
+                    continue
+                lock = state_dir / (state["mission_id"] + ".planning.lock")
+                with lock.open("a+") as stream:
+                    try:
+                        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    current = json.loads(record.read_text())
+                    if current.get("status") != "PLANNING":
+                        continue
+                    # Never interrupt active planning based on elapsed time alone.
+                    # Only an owner PID known to have exited may be reclaimed.
+                    pid = current.get("planning_pid")
+                    if not isinstance(pid, int) or pid <= 0:
+                        continue
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        current["status"] = "BLOCKED"
+                        current["reason"] = "planning process exited before persisting tasks"
+                        current.pop("planning_pid", None)
+                        write_json(record, current)
+                    except PermissionError:
+                        continue
+            except (KeyError, OSError, ValueError, json.JSONDecodeError):
+                continue
         for record in state_dir.glob("*.json"):
             try:
                 state = json.loads(record.read_text())

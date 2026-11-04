@@ -624,9 +624,12 @@ def test_cli_scope_restricts_owner_supplied_tasks(repo, tmp_path, monkeypatch, c
         "agf-chat", "--state-dir", str(tmp_path / "state"), "start", "--project-wide",
         "--repository", str(repo), "--tasks", str(tasks), "--scope", "logic.py",
     ])
-    with pytest.raises(ValueError, match="outside owner-selected scope"):
-        agf_full.chat.main()
-    assert not list((tmp_path / "state").glob("*.json"))
+    agf_full.chat.main()
+    rejected = json.loads(capsys.readouterr().out)
+    assert rejected["status"] == "BLOCKED"
+    assert json.loads((tmp_path / "state" / (rejected["mission_id"] + ".json")).read_text())[
+        "status"
+    ] == "BLOCKED"
     tasks.write_text(json.dumps([{
         "files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable],
     }]))
@@ -634,3 +637,127 @@ def test_cli_scope_restricts_owner_supplied_tasks(repo, tmp_path, monkeypatch, c
     mission_id = json.loads(capsys.readouterr().out)["mission_id"]
     state = json.loads((tmp_path / "state" / (mission_id + ".json")).read_text())
     assert state["scope"] == "logic.py"
+
+def test_planning_failure_keeps_queryable_mission(repo, tmp_path, monkeypatch):
+    """A failed planner must not silently erase the accepted mission."""
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    with patch.object(agf_full, "plan", side_effect=TimeoutError("planner timed out")):
+        result = agf_full.start(
+            state_dir,
+            repo,
+            objective="Improve answer calculation",
+            tasks_path=None,
+            tests=[sys.executable, "-m", "unittest", "test_logic"],
+            model="ollama/qwen3.5:9b-q4_K_M",
+            background=False,
+        )
+        result = agf_full.run_mission(state_dir, result["mission_id"])
+    assert result["status"] == "BLOCKED"
+    persisted = json.loads((state_dir / (result["mission_id"] + ".json")).read_text())
+    assert persisted["status"] == "BLOCKED"
+    assert "planner timed out" in persisted["reason"]
+    assert persisted["mission_id"] == result["mission_id"]
+    assert (tmp_path / "worktrees" / result["mission_id"]).exists()
+
+
+def test_planning_record_is_saved_before_model_call(repo, tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+
+    def check_record(worktree, objective, tests, **kwargs):
+        records = list(state_dir.glob("*.json"))
+        assert len(records) == 1
+        record = json.loads(records[0].read_text())
+        assert record["status"] == "PLANNING"
+        assert record["pid"] > 0
+        assert record["worktree"] == str(worktree)
+        raise ValueError("controlled planning failure")
+
+    with patch.object(agf_full, "plan", side_effect=check_record):
+        result = agf_full.start(
+            state_dir,
+            repo,
+            objective="Improve answer calculation",
+            tasks_path=None,
+            tests=[sys.executable, "-m", "unittest", "test_logic"],
+            model="ollama/qwen3.5:9b-q4_K_M",
+        )
+        result = agf_full.run_mission(state_dir, result["mission_id"])
+    assert result["status"] == "BLOCKED"
+    recorded = json.loads((state_dir / (result["mission_id"] + ".json")).read_text())
+    assert "planning_pid" not in recorded
+
+
+def test_inventory_excludes_fixtures_unless_explicit(repo):
+    fixture = repo / "tests" / "fixtures" / "valid_state.json"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text('{"state": "ready"}\n')
+    test_file = repo / "tests" / "test_report.py"
+    test_file.write_text("def test_report(): pass\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    ordinary = agf_full.inventory(repo, query="Improve mission reporting")
+    assert "tests/fixtures/valid_state.json" not in ordinary
+    assert "tests/test_report.py" not in ordinary
+    testing = agf_full.inventory(repo, query="Improve reporting tests")
+    assert "tests/test_report.py" in testing
+    assert "tests/fixtures/valid_state.json" not in testing
+    fixtures = agf_full.inventory(repo, query="Improve reporting test fixtures")
+    assert "tests/fixtures/valid_state.json" in fixtures
+
+
+def test_check_task_respects_objective_approved_tests_and_rejects_unapproved(repo):
+    allowed = agf_full.inventory(repo, query="Improve tests")
+    task = {
+        "files": ["test_logic.py"],
+        "instruction": "Improve assertions",
+        "tests": [sys.executable, "-m", "unittest", "test_logic"],
+    }
+    agf_full.check_task(repo, task, approved_files=allowed)
+    with pytest.raises(ValueError, match="unavailable, or unsafe"):
+        agf_full.check_task(repo, task)
+    with pytest.raises(ValueError, match="unavailable, or unsafe"):
+        agf_full.check_task(repo, {**task, "files": ["../outside.py"]}, approved_files=allowed)
+
+
+def test_clean_branch_drift_requires_reconciliation(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps([{
+        "files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable],
+    }]))
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(state_dir, repo, objective=None, tasks_path=tasks,
+                            tests=[sys.executable], model="ollama/local")
+    path = state_dir / (queued["mission_id"] + ".json")
+    worktree = json.loads(path.read_text())["worktree"]
+    subprocess.run(["git", "-C", worktree, "checkout", "-qb", "unapproved"], check=True)
+    with patch.object(agf_full, "propose_edits") as dispatch:
+        result = agf_full.run_mission(state_dir, queued["mission_id"])
+    dispatch.assert_not_called()
+    assert result["status"] == "HUMAN_REQUIRED"
+
+
+def test_validated_plan_survives_interruption_before_execution(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(agf_full, "WORKTREE_ROOT", tmp_path / "worktrees")
+    state_dir = tmp_path / "state"
+    queued = agf_full.start(state_dir, repo, objective="fix answer", tasks_path=None,
+                            tests=[sys.executable], model="ollama/local")
+    task = {"files": ["logic.py"], "instruction": "fix answer", "tests": [sys.executable]}
+    original_write = agf_full.chat.write_json
+
+    def interrupt_after_plan(path, record):
+        original_write(path, record)
+        if record.get("status") == "PLANNING" and record.get("tasks"):
+            raise KeyboardInterrupt
+
+    with patch.object(agf_full, "plan", return_value=([task], {})), \
+            patch.object(agf_full.chat, "write_json", side_effect=interrupt_after_plan):
+        with pytest.raises(KeyboardInterrupt):
+            agf_full.run_mission(state_dir, queued["mission_id"])
+    path = state_dir / (queued["mission_id"] + ".json")
+    assert json.loads(path.read_text())["tasks"] == [task]
+    with patch.object(agf_full, "plan") as planner, \
+            patch.object(agf_full, "propose_edits", side_effect=ValueError("controlled")):
+        agf_full.run_mission(state_dir, queued["mission_id"])
+    planner.assert_not_called()
