@@ -99,7 +99,7 @@ def provider_status() -> dict:
     return result
 
 
-def ask_model(prompt: str, *, provider: str, model: str) -> tuple[dict, dict]:
+def ask_model(prompt: str, *, provider: str, model: str, usage_observer=None) -> tuple[dict, dict]:
     messages = [
         {
             "role": "system",
@@ -124,7 +124,6 @@ def ask_model(prompt: str, *, provider: str, model: str) -> tuple[dict, dict]:
             },
             timeout=180,
         )
-        raw = reply["message"]["content"]
         usage = {
             "provider": "ollama",
             "model": reply.get("model", model),
@@ -132,6 +131,9 @@ def ask_model(prompt: str, *, provider: str, model: str) -> tuple[dict, dict]:
             "completion_tokens": reply.get("eval_count", 0),
             "api_eur": 0,
         }
+        if usage_observer:
+            usage_observer(usage)
+        raw = reply["message"]["content"]
     elif provider == "omniroute":
         key = os.environ.get("AGF_OMNIROUTE_KEY")
         # Loopback OmniRoute may permit local keyless requests; if API-key
@@ -157,9 +159,6 @@ def ask_model(prompt: str, *, provider: str, model: str) -> tuple[dict, dict]:
         # OmniRoute reports the Ollama upstream's bare model ID even for an
         # explicitly addressed ollama/<id> request. Permit only that exact
         # canonical alias; never permit unrelated fallbacks or auto routing.
-        if used not in {model, model.removeprefix("ollama/")}:
-            raise ValueError(f"OmniRoute model substitution not approved: {used!r}")
-        raw = reply["choices"][0]["message"]["content"]
         usage_data = reply.get("usage") or {}
         usage = {
             "provider": "omniroute/ollama",
@@ -169,6 +168,11 @@ def ask_model(prompt: str, *, provider: str, model: str) -> tuple[dict, dict]:
             "completion_tokens": usage_data.get("completion_tokens", 0),
             "api_eur": 0,
         }
+        if usage_observer:
+            usage_observer(usage)
+        if used not in {model, model.removeprefix("ollama/")}:
+            raise ValueError(f"OmniRoute model substitution not approved: {used!r}")
+        raw = reply["choices"][0]["message"]["content"]
     else:
         raise ValueError(f"unknown provider {provider}")
     output = json.loads(raw)
@@ -177,7 +181,9 @@ def ask_model(prompt: str, *, provider: str, model: str) -> tuple[dict, dict]:
     return output, usage
 
 
-def plan_objective(root: Path, objective: str, tests: list[str]) -> tuple[list[dict], dict]:
+def plan_objective(
+    root: Path, objective: str, tests: list[str], *, usage_observer=None
+) -> tuple[list[dict], dict]:
     """Build a bounded task plan using the local free model, no paid provider."""
     if not objective.strip() or len(objective) > 4000:
         raise ValueError("objective must contain 1-4000 characters")
@@ -220,6 +226,16 @@ def plan_objective(root: Path, objective: str, tests: list[str]) -> tuple[list[d
         },
         timeout=150,
     )
+    usage = {
+        "provider": "ollama",
+        "model": reply.get("model", DEFAULT_MODELS[0]),
+        "prompt_tokens": reply.get("prompt_eval_count", 0),
+        "completion_tokens": reply.get("eval_count", 0),
+        "api_eur": 0,
+        "purpose": "planning",
+    }
+    if usage_observer:
+        usage_observer(usage)
     data = json.loads(reply["message"]["content"])
     raw_tasks = data.get("tasks") if isinstance(data, dict) else None
     if not isinstance(raw_tasks, list) or not 1 <= len(raw_tasks) <= 3:
@@ -236,14 +252,6 @@ def plan_objective(root: Path, objective: str, tests: list[str]) -> tuple[list[d
         tasks.append(
             {"file": item["file"], "instruction": item["instruction"], "tests": list(tests)}
         )
-    usage = {
-        "provider": "ollama",
-        "model": reply.get("model", DEFAULT_MODELS[0]),
-        "prompt_tokens": reply.get("prompt_eval_count", 0),
-        "completion_tokens": reply.get("eval_count", 0),
-        "api_eur": 0,
-        "purpose": "planning",
-    }
     return tasks, usage
 
 
@@ -310,8 +318,18 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     return state
                 state["planning_attempts"] = attempts + 1
                 _write_json_unlocked(path, state)
+            recorded_usage = []
+
+            def record_planning_usage(usage):
+                with control_lock(path):
+                    current = json.loads(path.read_text())
+                    current["usage"].append(usage)
+                    _write_json_unlocked(path, current)
+                recorded_usage.append(usage)
+
             try:
-                tasks, usage = plan_objective(root, state["objective"], state["planning_tests"])
+                tasks, usage = plan_objective(root, state["objective"], state["planning_tests"],
+                                              usage_observer=record_planning_usage)
                 validate_tasks(root, tasks)
             except (ValueError, OSError, KeyError, subprocess.SubprocessError) as exc:
                 with control_lock(path):
@@ -323,7 +341,7 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                 return state
             with control_lock(path):
                 state = json.loads(path.read_text())
-                if usage:
+                if usage and not recorded_usage:
                     state["usage"].append(usage)
                 if state["status"] != "PLANNING":
                     _write_json_unlocked(path, state)
@@ -344,10 +362,24 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
             tests = task["tests"]
             failure = ""
             completed = False
-            for attempt in range(1, state["max_attempts"] + 1):
+            historical = sum(
+                1 for event in state["events"]
+                if event.get("task") == state["index"] and type(event.get("attempt")) is int
+            )
+            attempts = state.get("attempt", 0)
+            if type(attempts) is not int or attempts < 0:
+                state["status"] = "HUMAN_REQUIRED"
+                state["reason"] = "invalid persisted attempt budget"
+                write_json(path, state)
+                return state
+            for attempt in range(max(attempts, historical) + 1, state["max_attempts"] + 1):
                 latest = json.loads(path.read_text())
                 if latest["status"] in ("PAUSED", "STOPPED"):
                     return latest
+                state["attempt"] = attempt
+                write_json(path, state)
+                if state["status"] in ("PAUSED", "STOPPED", "HUMAN_REQUIRED"):
+                    return state
                 prompt = (
                     f"Task: {task['instruction']}\nFile: {task['file']}\n"
                     f"Current file content:\n{target.read_text() if target.exists() else ''}\n"
@@ -360,8 +392,21 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                     routes = state["routes"]
                     errors = []
                     for route in routes:
+                        latest = json.loads(path.read_text())
+                        if latest["status"] in ("PAUSED", "STOPPED", "HUMAN_REQUIRED"):
+                            return latest
                         try:
-                            output, usage = ask_model(prompt, **route)
+                            observed = []
+
+                            def record_usage(usage):
+                                with control_lock(path):
+                                    current = json.loads(path.read_text())
+                                    current["usage"].append(usage)
+                                    _write_json_unlocked(path, current)
+                                    state["usage"] = current["usage"]
+                                observed.append(usage)
+
+                            output, usage = ask_model(prompt, **route, usage_observer=record_usage)
                             new_content = output["content"]
                             if not new_content.strip() or len(new_content) > 120000:
                                 raise ValueError("model returned empty or oversized source")
@@ -378,14 +423,30 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                         raise ValueError("; ".join(errors))
                     with control_lock(path):
                         latest = json.loads(path.read_text())
-                        latest["usage"].append(usage)
+                        if not observed:
+                            latest["usage"].append(usage)
                         _write_json_unlocked(path, latest)
                         if latest["status"] in ("PAUSED", "STOPPED", "HUMAN_REQUIRED"):
                             return latest
                         state["usage"] = latest["usage"]
                         target.parent.mkdir(parents=True, exist_ok=True)
-                        target.write_text(new_content)
-                    ok, report = execute_tests(root, tests)
+                        fd, temp_path = tempfile.mkstemp(prefix=".agf-edit-", dir=target.parent)
+                        try:
+                            with os.fdopen(fd, "w") as stream:
+                                stream.write(new_content)
+                                stream.flush()
+                                os.fsync(stream.fileno())
+                            if target.exists():
+                                os.chmod(temp_path, target.stat().st_mode & 0o777)
+                            os.replace(temp_path, target)
+                        finally:
+                            if os.path.exists(temp_path):
+                                os.unlink(temp_path)
+                    with control_lock(path):
+                        latest = json.loads(path.read_text())
+                        if latest["status"] in ("PAUSED", "STOPPED", "HUMAN_REQUIRED"):
+                            return latest
+                        ok, report = execute_tests(root, tests)
                     latest = json.loads(path.read_text())
                     if latest["status"] in ("PAUSED", "STOPPED"):
                         return latest
@@ -420,6 +481,7 @@ def run_mission(state_dir: Path, mission_id: str) -> dict:
                 write_json(path, state)
                 return state
             state["index"] += 1
+            state["attempt"] = 0
             state["updated_at"] = time.time()
             write_json(path, state)
         latest = json.loads(path.read_text())
