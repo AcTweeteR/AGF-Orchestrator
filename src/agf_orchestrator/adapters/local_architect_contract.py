@@ -7,6 +7,7 @@ AGF, not the model, assembles the required owner-bound Architect schema.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from ..architect_planning import architect_request_hash
@@ -14,6 +15,18 @@ from ..architect_planning import architect_request_hash
 _SAFE_SUFFIXES = frozenset({
     ".py", ".md", ".xml", ".json", ".js", ".ts", ".swift", ".toml", ".yaml", ".yml",
 })
+
+
+def _explicit_owner_file(objective: object) -> str | None:
+    """A single file:/path: directive is exact scope, never an LLM suggestion."""
+    if not isinstance(objective, str):
+        raise ValueError("local Architect objective is not text")
+    matches = re.findall(
+        r"(?i)\b(?:file|path)\s*:\s*([^\s,]+)", objective,
+    )
+    if len(matches) > 1:
+        raise ValueError("local Architect only permits one exact requested file")
+    return matches[0] if matches else None
 
 
 def prepare_compact_request(instruction: str, repository: str) -> tuple[str, dict] | None:
@@ -38,9 +51,14 @@ def prepare_compact_request(instruction: str, repository: str) -> tuple[str, dic
             and not any(segment in {".git", "secrets", "keys", "credentials"}
                         for segment in Path(item).parts)
         ]
-        if not allowed or not isinstance(source["objective"], str):
+        if not allowed:
             raise ValueError("no evidenced source files for Architect")
-        if len(allowed) > 120:
+        explicit = _explicit_owner_file(source["objective"])
+        if explicit is not None:
+            if explicit not in allowed:
+                raise ValueError("explicit owner file is absent or protected")
+            allowed = [explicit]
+        elif len(allowed) > 120:
             terms = source["objective"].casefold().split()
             allowed.sort(
                 key=lambda p: (-sum(t in p.casefold() for t in terms), p)
@@ -79,6 +97,9 @@ def expand_compact_response(model_content: str, source: dict) -> str:
         rationale = reply["rationale"]
         confidence = reply["confidence"]
         assessment = source["assessment"]
+        explicit = _explicit_owner_file(source["objective"])
+        if explicit is not None and name != explicit:
+            raise ValueError("local Architect changed the exact requested file")
         if (
             not isinstance(name, str)
             or name not in assessment["repository_structure"]

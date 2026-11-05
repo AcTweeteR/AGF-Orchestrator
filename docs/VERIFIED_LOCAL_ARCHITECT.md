@@ -13,7 +13,7 @@ Owner gates. There is no change to delivery or merge authority.
 - Gateway: fixed localhost OmniRoute at \`127.0.0.1:20128\`, with optional
   owner-configured \`AGF_OMNIROUTE_KEY\`.
 - Cost: a verified zero-paid-model route only. No Codex, cloud or paid fallback.
-- Provider identity is bound to a SHA-256 of the local adapter's installed source.
+- Provider identity is bound to the SHA-256 of the local adapter, strict compact-scope contract, and model gateway implementation.
 - Explicit Owner candidate renewal is necessary for changed commit, policy,
   generation, provider source or after the signed 24-hour eligibility expiry.
 
@@ -26,6 +26,13 @@ preserves independent delivery controls.
 A task requiring multiple bound Owner task IDs cannot use this local
 single-file Architect. The result is a typed failure, never invented task
 coverage. No-work is not asserted from a model guess.
+
+An objective that explicitly names one `file:relative/path` or
+`path:relative/path` constrains the proposal to **exactly that tracked,
+non-protected path**. Absent, multiple or sensitive directives fail closed;
+Qwen cannot substitute another similarly named file. This was detected on
+Kodi when the prior model chose `docs/testing/README.md` instead of the
+specified `file:README.md`.
 
 ## Model performance
 

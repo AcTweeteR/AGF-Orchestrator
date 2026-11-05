@@ -23,9 +23,19 @@ MAX_MODEL_INPUT_CHARS = 64_000
 
 
 def local_architect_provenance() -> str:
-    """Bind eligibility to the inspected implementation and exact local model."""
-    digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-    return f"runtime-canary:omniroute-local:{LOCAL_ARCHITECT_MODEL}:{digest}"
+    """Bind eligibility to the complete local adapter, contract and gateway."""
+    components = (
+        Path(__file__),
+        Path(__file__).with_name("local_architect_contract.py"),
+        Path(__file__).resolve().parents[1] / "model_gateway.py",
+    )
+    digest = hashlib.sha256()
+    for part in components:
+        data = part.read_bytes()
+        digest.update(part.name.encode("utf-8") + b"\0")
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return f"runtime-canary:omniroute-local:{LOCAL_ARCHITECT_MODEL}:{digest.hexdigest()}"
 
 
 class LocalArchitectAdapter:

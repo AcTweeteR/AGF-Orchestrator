@@ -216,3 +216,63 @@ def test_large_tampered_canonical_source_is_never_sent_to_provider(tmp_path):
     remote.assert_not_called()
     assert result.invocation_verified is False
     assert result.transport_error == "LOCAL_ARCHITECT_GATEWAY_FAILED"
+
+
+
+def test_exact_owner_file_is_the_only_model_candidate(tmp_path):
+    root, _, instruction, _, source = _ready(tmp_path)
+    prompt, trusted = prepare_compact_request(instruction, str(root))
+    assert 'Allowed evidenced paths: ["README.md"]' in prompt
+    assert "tests/test_smoke.py" not in prompt
+    assert trusted["objective"].startswith("Improve file:README.md")
+
+
+def test_model_cannot_substitute_another_tracked_file_for_explicit_request(tmp_path):
+    root, request, instruction, _, original = _ready(tmp_path)
+    assert "tests/test_smoke.py" in request.assessment.repository_structure
+    with pytest.raises(ValueError, match="compact proposal is invalid"):
+        expand_compact_response(_response("tests/test_smoke.py"), original)
+
+
+@pytest.mark.parametrize("explicit_goal", [
+    "Improve file:missing.md with complete safe documentation",
+    "Review file:.git/config without modifying anything",
+    "Change file:../README.md and inspect the scope",
+    "Improve file:README.md and path:tests/test_smoke.py together",
+    "Review file:README.md* and show the output",
+])
+def test_invalid_owner_scoped_file_never_reaches_the_local_model(tmp_path, explicit_goal):
+    from agf_orchestrator.architect_planning import architect_request_hash
+
+    root, _, instruction, _, _ = _ready(tmp_path)
+    original = json.loads(instruction.rsplit("\n", 1)[-1])
+    original["objective"] = explicit_goal
+    original["request_hash"] = architect_request_hash(original)
+    host_request = instruction.rsplit("\n", 1)[0] + "\n" + json.dumps(original)
+    with patch(
+        "agf_orchestrator.adapters.local_architect.ModelGatewayProvider.complete"
+    ) as transport:
+        response = LocalArchitectAdapter().execute(host_request, str(root))
+    transport.assert_not_called()
+    assert response.invocation_verified is False
+    assert response.transport_error == "LOCAL_ARCHITECT_GATEWAY_FAILED"
+
+
+def test_provenance_binds_model_transport_and_compact_scope_contract(tmp_path):
+    from pathlib import Path
+
+    from agf_orchestrator.adapters.local_architect import local_architect_provenance
+
+    canonical = local_architect_provenance()
+    read = Path.read_bytes
+
+    def changed(self):
+        content = read(self)
+        if self.name in {"local_architect_contract.py", "model_gateway.py"}:
+            return content + b"\n# altered logic"
+        return content
+
+    with patch.object(Path, "read_bytes", changed):
+        modified = local_architect_provenance()
+    assert modified != canonical
+    assert len(modified.split(":")[-1]) == 64
