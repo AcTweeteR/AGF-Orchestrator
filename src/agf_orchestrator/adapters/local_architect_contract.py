@@ -22,7 +22,7 @@ def _explicit_owner_file(objective: object) -> str | None:
     if not isinstance(objective, str):
         raise ValueError("local Architect objective is not text")
     matches = re.findall(
-        r"(?i)\b(?:file|path)\s*:\s*([^\s,]+)", objective,
+        r"(?i)\b(?:file|path)\s*:\s*([^\s,;]+)", objective,
     )
     if len(matches) > 1:
         raise ValueError("local Architect only permits one exact requested file")
