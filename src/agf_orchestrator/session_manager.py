@@ -515,6 +515,8 @@ class SessionManager:
             raise SessionManagerError("no-work disposition requires bound assessment evidence")
         if to_status is SessionStatus.COMPLETED:
             raise SessionManagerError("completion requires verified Objective acceptance evidence")
+        if to_status is SessionStatus.AUDITED:
+            raise SessionManagerError("audit disposition requires read-only evidence")
         operation_id = operation_id or f"transition:{to_status.value}"
         with session_lock(self.store.state_dir, session_id, f"transition:{to_status.value}"):
             session = self.store.load(session_id)
@@ -2343,6 +2345,65 @@ class SessionManager:
         session.updated_at = timestamp
         session.blocking_issues = list(blocking_issues)
         return session
+
+    def audit_readonly(self, session_id: str) -> dict:
+        """Specialized static-only terminal disposition. NEVER authorizes delivery.
+
+        A prior failed Architect selection may legitimately have BLOCKED an
+        audit goal. This is a separate, explicitly selected offline outcome,
+        never a generic override of the constitutional implementation gates.
+        """
+        from .readonly_audit import ReadOnlyAuditError, build_readonly_audit
+
+        with session_lock(self.store.state_dir, session_id, "read-only-audit"):
+            session = self.store.load(session_id)
+            if session.status is SessionStatus.AUDITED:
+                path = self.store.ensure_safe_path(
+                    self.store.artifacts_dir / session_id / "read-only-audit.json"
+                )
+                if (
+                    not path.is_file() or path.is_symlink()
+                    or self.store.artifact_hash(str(path))
+                    != session.artifact_hashes.get("read_only_audit")
+                ):
+                    raise SessionManagerError("persisted audit report was tampered with")
+                report = json.loads(path.read_text(encoding="utf-8"))
+                if (
+                    report.get("session_id") != session_id
+                    or report.get("base_sha") != session.base_sha
+                    or report.get("outcome") != "STATIC_AUDIT_COMPLETED"
+                ):
+                    raise SessionManagerError("persisted audit binding is invalid")
+                return {"session": session.to_dict(), "report_path": str(path),
+                        "report": report, "replayed": True}
+            if session.status not in {SessionStatus.READY, SessionStatus.BLOCKED}:
+                raise SessionManagerError("read-only audit requires a READY or BLOCKED session")
+            goal = session.goal.casefold()
+            if not any(token in goal for token in ("auditoría", "auditoria", "audit")):
+                raise SessionManagerError("read-only audit needs an explicitly stated audit goal")
+            with project_lock(self.store.state_dir, session.project_id, "read-only-audit"):
+                project = self.registry.verify_read_only(session.project_id)
+                try:
+                    report = build_readonly_audit(project, session)
+                except ReadOnlyAuditError as exc:
+                    raise SessionManagerError(str(exc)) from exc
+                name = "read-only-audit.json"
+                path, digest = self.store.write_artifact(
+                    session_id, name, json.dumps(
+                        report, sort_keys=True, indent=2, ensure_ascii=False
+                    ) + "\n",
+                )
+                # No Objective sign-off, code execution, network provider,
+                # PR, production deploy or normal completion is claimed here.
+                session.artifact_hashes["read_only_audit"] = digest
+                session = self._append_event(
+                    session, session.status, SessionStatus.AUDITED,
+                    "static read-only audit recorded, not an approved execution",
+                    [path], [], "REVIEWER", "audit-readonly:" + report["report_sha256"],
+                )
+                self._save(session)
+                return {"session": session.to_dict(), "report_path": path,
+                        "report": report, "replayed": False}
 
     def cancel(self, session_id: str, reason: str = "cancelled by human") -> Session:
         return self.transition(

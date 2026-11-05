@@ -187,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
     for command in (
         "show", "resume", "assess", "repair-lineage", "reconcile-external",
         "reconcile-external-result", "reconcile-canonical", "cancel", "doctor", "archive",
-        "audit-completion",
+        "audit-completion", "audit-readonly",
         "complete", "continue",
     ):
         item = session_commands.add_parser(command)
@@ -427,6 +427,9 @@ def run_session(args: argparse.Namespace) -> int:
             _output([s.to_dict() for s in manager.list()], args.json)
         elif args.session_command == "show":
             _output(manager.get(args.session).to_dict(), args.json)
+        elif args.session_command == "audit-readonly":
+            result = manager.audit_readonly(args.session)
+            _output(result, args.json)
         elif args.session_command == "audit-completion":
             from .completion_audit import audit_session_completion
 
