@@ -119,3 +119,100 @@ def test_compact_adapter_never_claims_validity_from_untrusted_path(tmp_path):
     complete.assert_called_once()
     assert answer.invocation_verified is False
     assert answer.transport_error=="LOCAL_ARCHITECT_GATEWAY_FAILED"
+
+
+
+def test_large_real_git_inventory_is_compacted_before_model_call(tmp_path):
+    """Kodi has 3,310 paths / 450k host characters; only ~8k is model input."""
+    import subprocess
+    from types import SimpleNamespace
+
+    from agf_orchestrator.adapters.local_architect import (
+        MAX_CANONICAL_INPUT_CHARS,
+        MAX_MODEL_INPUT_CHARS,
+    )
+
+    root = repo(tmp_path)
+    many = root / "tests" / "many"
+    many.mkdir(parents=True)
+    for index in range(1300):
+        (many / ("document_" + str(index).zfill(5) + "_" + "x" * 49 + ".md")).write_text(
+            "file placeholder\n"
+        )
+    subprocess.run(["git", "-C", str(root), "add", "tests/many"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "large-readonly-inventory"],
+        check=True, capture_output=True,
+    )
+    repository = context(root)
+    request = build_architect_request(
+        "Improve file:README.md with accurate usage context and no source edits",
+        repository, assess(repository), registered_project=SimpleNamespace(
+            project_id="project-test", repository_root=str(root),
+            origin_url=repository.origin,
+        ),
+    )
+    source = _AdapterArchitectProvider._instruction(request)
+    assert 64000 < len(source) < MAX_CANONICAL_INPUT_CHARS
+    prompt, original = prepare_compact_request(source, str(root))
+    assert len(prompt) < MAX_MODEL_INPUT_CHARS
+    assert len(prompt) < len(source) // 4
+    observed = GatewayResult(
+        model="ollama/qwen3.5:9b-q4_K_M", provider="ollama",
+        content=_response(), prompt_tokens=80, completion_tokens=30,
+    )
+    with patch(
+        "agf_orchestrator.adapters.local_architect.ModelGatewayProvider.complete",
+        return_value=observed,
+    ) as provider:
+        result = LocalArchitectAdapter().execute(source, str(root))
+    assert result.invocation_verified is True
+    assert result.transport_error is None
+    actual = validate_architect_response(result.final_message, request)
+    assert actual["tasks"][0]["allowed_paths"] == ["README.md"]
+    passed_message = provider.call_args.kwargs["messages"][1]["content"]
+    assert passed_message == prompt
+    assert len(passed_message) < MAX_MODEL_INPUT_CHARS
+    assert result.execution_observation["monetary_cost_eur"] == 0
+
+
+def test_full_host_budget_and_large_noncompact_payloads_fail_before_gateway(tmp_path):
+    from agf_orchestrator.adapters.local_architect import (
+        MAX_CANONICAL_INPUT_CHARS,
+        MAX_MODEL_INPUT_CHARS,
+    )
+
+    root, _, _, _, _ = _ready(tmp_path)
+    with patch(
+        "agf_orchestrator.adapters.local_architect.ModelGatewayProvider.complete"
+    ) as remote:
+        too_large = LocalArchitectAdapter().execute(
+            "A" * (MAX_CANONICAL_INPUT_CHARS + 1), str(root),
+        )
+        not_compactable = LocalArchitectAdapter().execute(
+            "A" * (MAX_MODEL_INPUT_CHARS + 1), str(root),
+        )
+    remote.assert_not_called()
+    assert too_large.invocation_verified is False and too_large.human_required
+    assert not_compactable.invocation_verified is False
+    assert not_compactable.transport_error == "LOCAL_ARCHITECT_GATEWAY_FAILED"
+
+
+def test_large_tampered_canonical_source_is_never_sent_to_provider(tmp_path):
+    from agf_orchestrator.adapters.local_architect import MAX_MODEL_INPUT_CHARS
+
+    root, _, instruction, _, _ = _ready(tmp_path)
+    source = json.loads(instruction.rsplit("\n", 1)[-1])
+    # Increase size without recalculating the canonical request hash.
+    source["assessment"]["repository_structure"] += [
+        "other-" + str(i).zfill(5) + "_" + "x" * 55 + ".py" for i in range(1000)
+    ]
+    forged = instruction.rsplit("\n", 1)[0] + "\n" + json.dumps(source)
+    assert len(forged) > MAX_MODEL_INPUT_CHARS
+    with patch(
+        "agf_orchestrator.adapters.local_architect.ModelGatewayProvider.complete"
+    ) as remote:
+        result = LocalArchitectAdapter().execute(forged, str(root))
+    remote.assert_not_called()
+    assert result.invocation_verified is False
+    assert result.transport_error == "LOCAL_ARCHITECT_GATEWAY_FAILED"
