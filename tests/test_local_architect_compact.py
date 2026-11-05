@@ -276,3 +276,31 @@ def test_provenance_binds_model_transport_and_compact_scope_contract(tmp_path):
         modified = local_architect_provenance()
     assert modified != canonical
     assert len(modified.split(":")[-1]) == 64
+
+@pytest.mark.parametrize("goal", [
+    "Read-only review of file:README.md; do not change source",
+    "Assess path:README.md; validate only the registered Git file",
+])
+def test_semicolon_after_explicit_file_is_sentence_punctuation(tmp_path, goal):
+    from agf_orchestrator.architect_planning import architect_request_hash
+
+    root, _, instruction, _, _ = _ready(tmp_path)
+    original = json.loads(instruction.rsplit("\n", 1)[-1])
+    original["objective"] = goal
+    original["request_hash"] = architect_request_hash(original)
+    request = instruction.rsplit("\n", 1)[0] + "\n" + json.dumps(original)
+    prompt, validated = prepare_compact_request(request, str(root))
+    assert 'Allowed evidenced paths: ["README.md"]' in prompt
+    assert validated["objective"] == goal
+
+
+def test_semicolon_does_not_hide_a_second_owner_file_directive(tmp_path):
+    from agf_orchestrator.architect_planning import architect_request_hash
+
+    root, _, instruction, _, _ = _ready(tmp_path)
+    original = json.loads(instruction.rsplit("\n", 1)[-1])
+    original["objective"] = "Inspect file:README.md; path:tests/test_smoke.py"
+    original["request_hash"] = architect_request_hash(original)
+    request = instruction.rsplit("\n", 1)[0] + "\n" + json.dumps(original)
+    with pytest.raises(ValueError, match="canonically bound"):
+        prepare_compact_request(request, str(root))
