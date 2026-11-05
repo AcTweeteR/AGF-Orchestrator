@@ -82,3 +82,27 @@ Owner controller still requires a verified chain of external advancements or
 a canonical delivery receipt. Git ancestry or a merged GitHub PR alone is
 insufficient. An incomplete chain remains `HUMAN_REQUIRED`; never rewrite the
 old `architect.json` or manufacture the missing historical evidence.
+
+## Large indexed repositories — Kodi acceptance case (2026-11-05)
+
+The independently verified Kodi checkout had **3,310 tracked paths**, which
+generated a canonical Architect instruction of **449,851 characters**. The
+previous adapter rejected it at its 64k model-input gate *before* applying
+the already existing source-bound compact-representation function.
+
+The adapter now enforces two distinct limits:
+
+- **Host-side canonical evidence:** up to **1,000,000 characters**, checked
+  against the exact repository SHA and canonical request hash.
+- **Actual model input:** up to **64,000 characters**, enforced *after*
+  compacting the validated host evidence into a bounded single-file shortlist.
+
+The full repository inventory is **never forwarded to the model**. Tampered
+hashes, unknown paths, oversized instructions and noncompact huge inputs
+fail closed. Owner criteria, risk gates and response validation are unchanged.
+
+Live isolated Kodi validation with local Qwen reduced 449,851 characters
+to 6,783, returned a schema-valid one-file plan restricted to `README.md`,
+and recorded 0 € monetary model usage. Kodi's checkout remained clean.
+After deployment, the external Owner controller must renew the signed
+provider profile because this adapter's implementation-source hash changed.

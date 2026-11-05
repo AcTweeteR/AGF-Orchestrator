@@ -16,6 +16,10 @@ from .local_architect_contract import expand_compact_response, prepare_compact_r
 
 LOCAL_ARCHITECT_MODEL = "ollama/qwen3.5:9b-q4_K_M"
 LOCAL_ARCHITECT_PROVIDER_ID = "provider-omniroute-local"
+# Signed repository inventories may exceed a typical model input window.
+# Compact the verified host request FIRST; never send this full payload to LLM.
+MAX_CANONICAL_INPUT_CHARS = 1_000_000
+MAX_MODEL_INPUT_CHARS = 64_000
 
 
 def local_architect_provenance() -> str:
@@ -44,9 +48,13 @@ class LocalArchitectAdapter:
                 "local Architect mode denied", 2, "", "read-only mode required",
                 human_required=True,
             )
-        # Repository path is used for identity only. The model receives solely
-        # the already-validated Architect request and cannot modify the repo.
-        if not Path(repository).resolve().is_dir() or len(instruction) > 64000:
+        # The full validated inventory is host-side evidence, never a model
+        # context. A 3000-file project legitimately exceeds 64k characters.
+        # Keep a separate bound on the canonical JSON processed by AGF.
+        if (
+            not Path(repository).resolve().is_dir()
+            or len(instruction) > MAX_CANONICAL_INPUT_CHARS
+        ):
             return CodexProcessResult(
                 "local Architect input denied", 2, "", "invalid bounded request",
                 human_required=True,
@@ -54,6 +62,8 @@ class LocalArchitectAdapter:
         try:
             compact = prepare_compact_request(instruction, repository)
             payload = compact[0] if compact is not None else instruction
+            if len(payload) > MAX_MODEL_INPUT_CHARS:
+                raise ValueError("model request exceeds bounded compact context")
             observation = ModelGatewayProvider(
                 token=os.environ.get("AGF_OMNIROUTE_KEY")
             ).complete(
